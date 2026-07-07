@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "react": "^19.0.0",
