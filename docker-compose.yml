@@ -3,9 +3,12 @@
 #   docker compose up --build
 #
 # Then open http://localhost:3000 (the admin password is printed in the
-# `cityhall` logs on first launch). Configure SMTP in Settings pointing at the
-# bundled Mailpit instance: host `mailpit`, port `1025`, encryption `none`.
-# View captured mail at http://localhost:8025.
+# `cityhall` logs on first launch). SMTP is pre-configured via environment
+# variables to point at the bundled Mailpit instance, so email works out of the
+# box; view captured mail at http://localhost:8025. Because it is env-managed,
+# the Settings form is read-only. To exercise the settings-page path instead,
+# comment out the SMTP_* variables below and configure SMTP in the UI (host
+# `mailpit`, port `1025`, encryption `none`).
 
 services:
   db:
@@ -39,12 +42,14 @@ services:
       # Required to store the SMTP password set via the settings page.
       # Dev-only value; generate your own with: openssl rand -base64 32
       CITYHALL_SECRET_KEY: "ZGV2LW9ubHkta2V5LTMyLWJ5dGVzLWxvbmchISEhISE="
-      # To manage SMTP via the environment instead of the settings page,
-      # uncomment these (the settings form then becomes read-only):
-      # SMTP_HOST: mailpit
-      # SMTP_PORT: "1025"
-      # SMTP_ENCRYPTION: none
-      # SMTP_FROM_ADDRESS: cityhall@example.com
+      # SMTP pre-configured to point at the bundled Mailpit (env-managed, so the
+      # settings form is read-only). Comment these out to configure SMTP in the
+      # UI instead.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_ENCRYPTION: none
+      SMTP_FROM_ADDRESS: cityhall@example.com
+      SMTP_FROM_NAME: CityHall
     ports:
       - "3000:3000"
 

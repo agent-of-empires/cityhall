@@ -71,9 +71,9 @@ docker compose up --build
 ```
 
 CityHall serves on `http://localhost:3000` (admin password is printed in the
-logs on first launch); Mailpit's UI is at `http://localhost:8025`. Configure
-SMTP under Settings pointing at `mailpit:1025` (encryption `none`) to see mail
-land in Mailpit.
+logs on first launch); Mailpit's UI is at `http://localhost:8025`. SMTP is
+pre-configured to point at Mailpit, so sending email works out of the box and
+messages land in the Mailpit UI.
 
 ## Frontend development
 

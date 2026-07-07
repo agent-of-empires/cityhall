@@ -79,10 +79,13 @@ docker compose up --build
   `cityhall` logs on first launch).
 - Mailpit web UI: <http://localhost:8025>.
 
-By default SMTP is not env-managed, so configure it in **Settings** pointing at
-Mailpit: host `mailpit`, port `1025`, encryption `none`. Sent mail appears in
-the Mailpit UI. The compose file sets a dev `CITYHALL_SECRET_KEY`; replace it
-for anything but local testing (`openssl rand -base64 32`).
+SMTP is pre-configured via `SMTP_*` environment variables to point at Mailpit,
+so email works out of the box and sent mail appears in the Mailpit UI. Because
+it is env-managed, the Settings form is read-only; comment out the `SMTP_*`
+variables in `docker-compose.yml` to configure SMTP in the UI instead (host
+`mailpit`, port `1025`, encryption `none`). The compose file sets a dev
+`CITYHALL_SECRET_KEY`; replace it for anything but local testing
+(`openssl rand -base64 32`).
 
 ## Database and migrations
 
