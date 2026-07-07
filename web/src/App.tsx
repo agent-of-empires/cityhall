@@ -4,6 +4,7 @@ import { api, ApiError, type Me } from "./lib/api";
 import { LoginPage } from "./components/LoginPage";
 import { ChangePasswordPage } from "./components/ChangePasswordPage";
 import { UsersPage } from "./components/UsersPage";
+import { RolesPage } from "./components/RolesPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
@@ -63,6 +64,18 @@ export function App() {
             <Navigate to="/change-password" replace />
           ) : (
             <UsersPage me={me} onLogout={refresh} />
+          )
+        }
+      />
+      <Route
+        path="/roles"
+        element={
+          !me ? (
+            <Navigate to="/login" replace />
+          ) : me.must_change_password ? (
+            <Navigate to="/change-password" replace />
+          ) : (
+            <RolesPage me={me} onLogout={refresh} />
           )
         }
       />

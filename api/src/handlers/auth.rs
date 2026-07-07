@@ -9,6 +9,7 @@ use crate::auth::{
     consume_reset_token, create_reset_token, create_session, delete_session, verify_password,
     AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
 };
+use crate::entities::user;
 use crate::error::AppError;
 use crate::{mailer, service};
 
@@ -29,6 +30,32 @@ pub struct MeResponse {
     pub username: String,
     pub email: Option<String>,
     pub must_change_password: bool,
+    pub role_id: Option<i32>,
+    pub role: Option<String>,
+    /// Effective permission keys, with the wildcard expanded, so the frontend
+    /// can gate UI with a simple membership check.
+    pub permissions: Vec<String>,
+}
+
+/// Build a `MeResponse`, resolving the role name for display.
+async fn me_response(
+    db: &DatabaseConnection,
+    user: &user::Model,
+    perms: &crate::rbac::Perms,
+) -> Result<MeResponse, AppError> {
+    let role = match user.role_id {
+        Some(id) => service::find_role_by_id(db, id).await?.map(|r| r.name),
+        None => None,
+    };
+    Ok(MeResponse {
+        id: user.id,
+        username: user.username.clone(),
+        email: user.email.clone(),
+        must_change_password: user.must_change_password,
+        role_id: user.role_id,
+        role,
+        permissions: perms.effective_keys(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -77,21 +104,19 @@ pub async fn logout(
     Ok(jar.remove(Cookie::from(SESSION_COOKIE)))
 }
 
-pub async fn me(AuthUser(user): AuthUser) -> Json<MeResponse> {
-    Json(MeResponse {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        must_change_password: user.must_change_password,
-    })
+pub async fn me(
+    State(db): State<DatabaseConnection>,
+    caller: AuthUser,
+) -> Result<Json<MeResponse>, AppError> {
+    Ok(Json(me_response(&db, &caller.user, &caller.perms).await?))
 }
 
 pub async fn change_password(
     State(db): State<DatabaseConnection>,
-    AuthUser(user): AuthUser,
+    caller: AuthUser,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Json<MeResponse>, AppError> {
-    if !verify_password(&body.current_password, &user.password_hash) {
+    if !verify_password(&body.current_password, &caller.user.password_hash) {
         return Err(AppError::BadRequest("current password is incorrect"));
     }
     if body.new_password.len() < 8 {
@@ -99,13 +124,8 @@ pub async fn change_password(
             "new password must be at least 8 characters",
         ));
     }
-    let updated = service::set_password(&db, user, &body.new_password, false).await?;
-    Ok(Json(MeResponse {
-        id: updated.id,
-        username: updated.username,
-        email: updated.email,
-        must_change_password: updated.must_change_password,
-    }))
+    let updated = service::set_password(&db, caller.user, &body.new_password, false).await?;
+    Ok(Json(me_response(&db, &updated, &caller.perms).await?))
 }
 
 #[derive(Deserialize)]

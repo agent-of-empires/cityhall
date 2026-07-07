@@ -39,4 +39,6 @@ pub enum Users {
     PasswordHash,
     MustChangePassword,
     CreatedAt,
+    // Added by m0006.
+    RoleId,
 }

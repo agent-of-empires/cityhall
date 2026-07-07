@@ -1,26 +1,45 @@
-import { useState } from "react";
-import { api, ApiError, type User } from "../lib/api";
-import { Button, ErrorText, Field, Input } from "./ui";
+import { useEffect, useState } from "react";
+import { api, ApiError, can, type Me, type Role, type User } from "../lib/api";
+import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 type Result = { kind: "password"; value: string } | { kind: "email"; address: string };
 
 export function UserDialog({
+  me,
   user,
   onClose,
   onSaved,
 }: {
+  me: Me;
   user: User | null; // null = create mode
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
   const editing = user !== null;
+  const canManageRoles = can(me, "roles.read");
   const [username, setUsername] = useState(user?.username ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
   const [password, setPassword] = useState("");
   const [sendSetup, setSendSetup] = useState(false);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [roleId, setRoleId] = useState<number | null>(user?.role_id ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
+
+  useEffect(() => {
+    if (!canManageRoles) return;
+    api
+      .listRoles()
+      .then((rs) => {
+        setRoles(rs);
+        // Default a new user to the `member` role when present.
+        if (!editing && roleId === null) {
+          setRoleId(rs.find((r) => r.name === "member")?.id ?? rs[0]?.id ?? null);
+        }
+      })
+      .catch(() => {});
+  }, [canManageRoles, editing, roleId]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -32,6 +51,7 @@ export function UserDialog({
           username,
           email,
           ...(password ? { password } : {}),
+          ...(canManageRoles && roleId !== null ? { role_id: roleId } : {}),
         });
         await onSaved();
         onClose();
@@ -42,6 +62,7 @@ export function UserDialog({
         email: email || null,
         password: sendSetup ? undefined : password || undefined,
         sendSetupEmail: sendSetup,
+        roleId: canManageRoles && roleId !== null ? roleId : undefined,
       });
       await onSaved();
       if (res.generated_password) {
@@ -102,6 +123,21 @@ export function UserDialog({
                 placeholder={!editing && sendSetup ? "required for setup email" : "optional"}
               />
             </Field>
+
+            {canManageRoles && (
+              <Field label="Role">
+                <Select
+                  value={roleId ?? ""}
+                  onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  {roles.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
 
             {!editing && (
               <label className="flex items-center gap-2 text-sm text-text-primary">

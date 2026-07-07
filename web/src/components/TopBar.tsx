@@ -1,7 +1,7 @@
 import clsx from "clsx";
-import { LogOut, Settings, Users } from "lucide-react";
+import { LogOut, Settings, Shield, Users } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import { api, type Me } from "../lib/api";
+import { api, can, type Me } from "../lib/api";
 import { Button } from "./ui";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
@@ -25,10 +25,18 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
             <Users size={14} />
             Users
           </NavLink>
-          <NavLink to="/settings" className={navLinkClass}>
-            <Settings size={14} />
-            Settings
-          </NavLink>
+          {can(me, "roles.read") && (
+            <NavLink to="/roles" className={navLinkClass}>
+              <Shield size={14} />
+              Roles
+            </NavLink>
+          )}
+          {can(me, "settings.read") && (
+            <NavLink to="/settings" className={navLinkClass}>
+              <Settings size={14} />
+              Settings
+            </NavLink>
+          )}
         </nav>
       </div>
       <div className="flex items-center gap-3">

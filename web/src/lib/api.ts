@@ -3,6 +3,7 @@ export interface User {
   username: string;
   email: string | null;
   must_change_password: boolean;
+  role_id: number | null;
 }
 
 export interface Me {
@@ -10,6 +11,29 @@ export interface Me {
   username: string;
   email: string | null;
   must_change_password: boolean;
+  role_id: number | null;
+  role: string | null;
+  permissions: string[];
+}
+
+/** Whether `me` holds a permission (used to gate UI). */
+export function can(me: Me | null, permission: string): boolean {
+  return !!me && me.permissions.includes(permission);
+}
+
+export interface Role {
+  id: number;
+  name: string;
+  description: string | null;
+  permissions: string[];
+  is_system: boolean;
+  created_at: string;
+  user_count: number;
+}
+
+export interface PermissionEntry {
+  key: string;
+  description: string;
 }
 
 export interface CreateUserInput {
@@ -18,6 +42,7 @@ export interface CreateUserInput {
   // Omit/empty to generate a password (unless sendSetupEmail is set).
   password?: string;
   sendSetupEmail?: boolean;
+  roleId?: number;
 }
 
 export interface CreateUserResponse extends User {
@@ -110,14 +135,22 @@ export const api = {
         email: input.email,
         password: input.password,
         send_setup_email: input.sendSetupEmail ?? false,
+        role_id: input.roleId,
       }),
     }),
-  updateUser: (id: number, patch: { username?: string; email?: string; password?: string }) =>
+  updateUser: (id: number, patch: { username?: string; email?: string; password?: string; role_id?: number }) =>
     request<User>(`/users/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
   deleteUser: (id: number) => request<{ deleted: boolean }>(`/users/${id}`, { method: "DELETE" }),
+  listRoles: () => request<Role[]>("/roles"),
+  listPermissions: () => request<PermissionEntry[]>("/permissions"),
+  createRole: (input: { name: string; description: string | null; permissions: string[] }) =>
+    request<Role>("/roles", { method: "POST", body: JSON.stringify(input) }),
+  updateRole: (id: number, patch: { name?: string; description?: string | null; permissions?: string[] }) =>
+    request<Role>(`/roles/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteRole: (id: number) => request<{ deleted: boolean }>(`/roles/${id}`, { method: "DELETE" }),
   getSmtpSettings: () => request<SmtpSettings>("/settings/smtp"),
   updateSmtpSettings: (patch: SmtpUpdate) =>
     request<SmtpSettings>("/settings/smtp", {

@@ -5,7 +5,7 @@ use sea_orm::{
 };
 
 use crate::auth::hash_password;
-use crate::entities::user;
+use crate::entities::{role, user};
 use crate::error::AppError;
 
 pub async fn find_by_username(
@@ -41,6 +41,7 @@ pub async fn create(
     email: Option<String>,
     password: &str,
     must_change_password: bool,
+    role_id: Option<i32>,
 ) -> Result<user::Model, AppError> {
     if username.trim().is_empty() {
         return Err(AppError::BadRequest("username is required"));
@@ -57,11 +58,29 @@ pub async fn create(
         password_hash: Set(hash_password(password)?),
         must_change_password: Set(must_change_password),
         created_at: Set(chrono::Utc::now()),
+        role_id: Set(role_id),
         ..Default::default()
     }
     .insert(db)
     .await?;
     Ok(model)
+}
+
+pub async fn find_role_by_name(
+    db: &DatabaseConnection,
+    name: &str,
+) -> Result<Option<role::Model>, AppError> {
+    Ok(role::Entity::find()
+        .filter(role::Column::Name.eq(name))
+        .one(db)
+        .await?)
+}
+
+pub async fn find_role_by_id(
+    db: &DatabaseConnection,
+    id: i32,
+) -> Result<Option<role::Model>, AppError> {
+    Ok(role::Entity::find_by_id(id).one(db).await?)
 }
 
 pub async fn set_password(

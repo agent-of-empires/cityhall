@@ -6,10 +6,11 @@
 api/    Rust backend (axum + SeaORM)
   build.rs     Builds web/dist during `cargo build` (skip: SKIP_FRONTEND_BUILD=1)
   src/
-    entities/    SeaORM models (user, session, smtp_settings, password_reset_token)
+    entities/    SeaORM models (user, role, session, smtp_settings, password_reset_token)
     migration/   Embedded migrations
-    handlers/    HTTP handlers (auth, users, settings)
-    auth.rs      Password hashing, sessions, the AuthUser extractor
+    handlers/    HTTP handlers (auth, users, roles, settings)
+    auth.rs      Password hashing, sessions, the AuthUser extractor (with permissions)
+    rbac.rs      Permission-key catalog and the Perms set resolved from a role
     crypto.rs    AES-256-GCM encryption for secrets at rest
     mailer.rs    SMTP config resolution (env vs database) and sending
     service.rs   User operations shared by the API and CLI
@@ -106,7 +107,9 @@ so they apply across all supported databases.
 ## Adding an endpoint
 
 1. Add a handler in `api/src/handlers/`. Take `State<DatabaseConnection>` and, if
-   it requires auth, the `AuthUser` extractor.
+   it requires auth, the `AuthUser` extractor. Gate it with
+   `caller.require("some.permission")?`, adding the key to the `CATALOG` in
+   `rbac.rs` (this also enforces the forced-password-change gate).
 2. Reuse shared logic in `service.rs` where possible so the CLI and API stay in
    sync.
 3. Wire the route into `api_router` in `api/src/server.rs`.

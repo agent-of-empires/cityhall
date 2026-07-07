@@ -3,7 +3,7 @@ use axum::Json;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{require_active, AuthUser};
+use crate::auth::AuthUser;
 use crate::crypto;
 use crate::entities::smtp_settings;
 use crate::error::AppError;
@@ -99,9 +99,9 @@ fn response_from_row(row: Option<smtp_settings::Model>) -> SmtpSettingsResponse 
 
 pub async fn get(
     State(db): State<DatabaseConnection>,
-    AuthUser(caller): AuthUser,
+    caller: AuthUser,
 ) -> Result<Json<SmtpSettingsResponse>, AppError> {
-    require_active(&caller)?;
+    caller.require("settings.read")?;
     if let Some(cfg) = mailer::from_env() {
         return Ok(Json(response_from_env(&cfg)));
     }
@@ -110,10 +110,10 @@ pub async fn get(
 
 pub async fn update(
     State(db): State<DatabaseConnection>,
-    AuthUser(caller): AuthUser,
+    caller: AuthUser,
     Json(body): Json<UpdateSmtpRequest>,
 ) -> Result<Json<SmtpSettingsResponse>, AppError> {
-    require_active(&caller)?;
+    caller.require("settings.write")?;
     if mailer::from_env().is_some() {
         return Err(AppError::Conflict(
             "SMTP is managed via environment variables",
@@ -167,10 +167,10 @@ pub async fn update(
 
 pub async fn test(
     State(db): State<DatabaseConnection>,
-    AuthUser(caller): AuthUser,
+    caller: AuthUser,
     Json(body): Json<TestSmtpRequest>,
 ) -> Result<Json<TestSmtpResponse>, AppError> {
-    require_active(&caller)?;
+    caller.require("settings.write")?;
     if body.to.trim().is_empty() {
         return Err(AppError::BadRequest("recipient address is required"));
     }

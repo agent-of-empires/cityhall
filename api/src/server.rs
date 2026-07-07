@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use sea_orm::DatabaseConnection;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::handlers::{auth, settings, users};
+use crate::handlers::{auth, roles, settings, users};
 
 /// Directory holding the built frontend. Overridable via `STATIC_DIR` for
 /// container images that place the bundle elsewhere.
@@ -31,6 +31,9 @@ pub fn api_router(db: DatabaseConnection) -> Router {
             "/users/{id}",
             get(users::get).patch(users::update).delete(users::delete),
         )
+        .route("/roles", get(roles::list).post(roles::create))
+        .route("/roles/{id}", patch(roles::update).delete(roles::delete))
+        .route("/permissions", get(roles::permissions))
         .route("/settings/smtp", get(settings::get).put(settings::update))
         .route("/settings/smtp/test", post(settings::test))
         // Unknown /api/* paths return a JSON 404 instead of falling through to

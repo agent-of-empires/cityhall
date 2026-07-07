@@ -19,6 +19,16 @@ return `403 Forbidden` with `{"error":"password change required"}`. Only
 `GET /api/auth/me`, `POST /api/auth/change-password`, and `POST /api/auth/logout`
 are permitted until the password is changed.
 
+### Authorization (RBAC)
+
+Every user has a role, and a role holds a set of permission keys (the wildcard
+`*` grants all). Endpoints require a specific permission; a caller lacking it
+gets `403 Forbidden` with `{"error":"insufficient permissions"}`. The current
+keys are `users.read`, `users.write`, `roles.read`, `roles.write`,
+`settings.read`, and `settings.write`. `GET /api/auth/me` returns the caller's
+effective permission list so a client can gate its UI. Built-in roles are
+`admin` (all permissions) and `member` (`users.read`).
+
 ## Errors
 
 Errors use HTTP status codes with a JSON body:
@@ -28,7 +38,8 @@ Errors use HTTP status codes with a JSON body:
 ```
 
 Common codes: `400` (bad request), `401` (unauthenticated), `403` (password
-change required), `404` (not found), `409` (conflict, e.g. duplicate username).
+change required or insufficient permissions), `404` (not found), `409`
+(conflict, e.g. duplicate username).
 
 ## Endpoints
 
@@ -56,10 +67,18 @@ Clears the session (server-side and cookie). Returns `200`.
 
 ### `GET /api/auth/me`
 
-Returns the current user:
+Returns the current user, including their role and effective permissions:
 
 ```json
-{ "id": 1, "username": "admin", "email": null, "must_change_password": false }
+{
+  "id": 1,
+  "username": "admin",
+  "email": null,
+  "must_change_password": false,
+  "role_id": 1,
+  "role": "admin",
+  "permissions": ["users.read", "users.write", "roles.read", "roles.write", "settings.read", "settings.write"]
+}
 ```
 
 ### `POST /api/auth/change-password`
@@ -99,11 +118,11 @@ unknown, expired, or already-used token returns `400`.
 
 ### `GET /api/users`
 
-Returns all users:
+Requires `users.read`. Returns all users:
 
 ```json
 [
-  { "id": 1, "username": "admin", "email": null, "must_change_password": false, "created_at": "2026-07-07T09:20:50Z" }
+  { "id": 1, "username": "admin", "email": null, "must_change_password": false, "created_at": "2026-07-07T09:20:50Z", "role_id": 1 }
 ]
 ```
 
@@ -111,12 +130,14 @@ Password hashes are never included in any response.
 
 ### `POST /api/users`
 
+Requires `users.write`.
+
 ```json
-{ "username": "bob", "email": "bob@example.com", "password": "...", "send_setup_email": false }
+{ "username": "bob", "email": "bob@example.com", "password": "...", "send_setup_email": false, "role_id": 2 }
 ```
 
-`email` may be omitted or `null`. `password` and `send_setup_email` are
-optional. Behavior:
+`email` may be omitted or `null`. `password`, `send_setup_email`, and `role_id`
+are optional; `role_id` defaults to the `member` role. Behavior:
 
 - `send_setup_email: true` emails the user a setup link (requires an email and
   configured SMTP, else `400`); the user sets their own password.
@@ -140,26 +161,82 @@ Returns a single user, or `404` if not found.
 
 ### `PATCH /api/users/{id}`
 
-Partial update; every field is optional:
+Requires `users.write`. Partial update; every field is optional:
 
 ```json
-{ "username": "bob2", "email": "new@example.com", "password": "..." }
+{ "username": "bob2", "email": "new@example.com", "password": "...", "role_id": 3 }
 ```
 
-Renaming to an existing username returns `409`. Returns the updated user.
+Renaming to an existing username returns `409`; an unknown `role_id` returns
+`400`. Returns the updated user.
 
 ### `DELETE /api/users/{id}`
 
-Deletes a user. Deleting your own account returns `400`. Returns:
+Requires `users.write`. Deletes a user. Deleting your own account returns `400`.
+Returns:
 
 ```json
 { "deleted": true }
 ```
 
+### `GET /api/permissions`
+
+Requires `roles.read`. Returns the permission-key catalog for building a role
+editor:
+
+```json
+[
+  { "key": "users.read", "description": "View users" },
+  { "key": "users.write", "description": "Create, edit, and delete users" }
+]
+```
+
+### `GET /api/roles`
+
+Requires `roles.read`. Returns all roles. `permissions` is the array of keys
+(`["*"]` for the wildcard); `user_count` is how many users hold the role.
+
+```json
+[
+  {
+    "id": 1,
+    "name": "admin",
+    "description": "Full access to everything",
+    "permissions": ["*"],
+    "is_system": true,
+    "created_at": "2026-07-07T09:20:50Z",
+    "user_count": 1
+  }
+]
+```
+
+### `POST /api/roles`
+
+Requires `roles.write`.
+
+```json
+{ "name": "editor", "description": "Manage users", "permissions": ["users.read", "users.write"] }
+```
+
+`description` may be omitted or `null`. Unknown permission keys return `400`; a
+duplicate name returns `409`. Returns the created role.
+
+### `PATCH /api/roles/{id}`
+
+Requires `roles.write`. Partial update (`name`, `description`, `permissions`).
+The built-in `admin` role cannot be modified (`403`); a built-in role cannot be
+renamed (`403`). Unknown permission keys return `400`. Returns the updated role.
+
+### `DELETE /api/roles/{id}`
+
+Requires `roles.write`. Deletes a role. Built-in roles cannot be deleted
+(`403`), and a role still assigned to users cannot be deleted (`409`). Returns
+`{ "deleted": true }`.
+
 ### `GET /api/settings/smtp`
 
-Returns the effective SMTP configuration. The password itself is never
-returned, only whether one is stored (`password_set`).
+Requires `settings.read`. Returns the effective SMTP configuration. The password
+itself is never returned, only whether one is stored (`password_set`).
 
 ```json
 {
@@ -183,7 +260,7 @@ environment and `PUT` is rejected. `secret_key_available` reflects whether
 
 ### `PUT /api/settings/smtp`
 
-Updates the stored SMTP configuration:
+Requires `settings.write`. Updates the stored SMTP configuration:
 
 ```json
 {
@@ -205,6 +282,8 @@ to be set, otherwise the request returns `400`. When SMTP is env-managed, this
 returns `409`. Returns the updated settings (same shape as `GET`).
 
 ### `POST /api/settings/smtp/test`
+
+Requires `settings.write`.
 
 ```json
 { "to": "you@example.com" }

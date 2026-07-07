@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::auth::random_token;
 use crate::error::AppError;
-use crate::{db, seed, server, service};
+use crate::{db, rbac, seed, server, service};
 
 #[derive(Parser)]
 #[command(
@@ -42,6 +42,9 @@ pub enum UserAction {
         email: Option<String>,
         #[arg(long)]
         password: Option<String>,
+        /// Role name to assign (defaults to `member`).
+        #[arg(long)]
+        role: Option<String>,
     },
     /// List all users.
     List,
@@ -61,6 +64,7 @@ pub enum UserAction {
 
 pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let db = db::connect().await?;
+    seed::ensure_roles(&db).await?;
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => {
@@ -81,11 +85,16 @@ async fn run_user_action(
             username,
             email,
             password,
+            role,
         } => {
+            let role_name = role.unwrap_or_else(|| rbac::MEMBER_ROLE.to_string());
+            let role = service::find_role_by_name(db, &role_name)
+                .await?
+                .ok_or(AppError::BadRequest("unknown role"))?;
             let (password, generated) = resolve_password(password);
             let must_change = generated;
-            service::create(db, &username, email, &password, must_change).await?;
-            println!("created user '{username}'");
+            service::create(db, &username, email, &password, must_change, Some(role.id)).await?;
+            println!("created user '{username}' with role '{role_name}'");
             if generated {
                 println!("generated password: {password}");
             }

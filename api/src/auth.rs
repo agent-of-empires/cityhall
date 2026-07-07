@@ -10,8 +10,9 @@ use rand::distr::Alphanumeric;
 use rand::RngExt;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 
-use crate::entities::{password_reset_token, session, user};
+use crate::entities::{password_reset_token, role, session, user};
 use crate::error::AppError;
+use crate::rbac::Perms;
 
 pub const SESSION_COOKIE: &str = "cityhall_session";
 const SESSION_TTL_DAYS: i64 = 30;
@@ -126,9 +127,32 @@ pub fn require_active(user: &user::Model) -> Result<(), AppError> {
     Ok(())
 }
 
-/// The authenticated user, resolved from the session cookie. Rejects with 401
-/// when the cookie is missing, unknown, or expired (expired rows are pruned).
-pub struct AuthUser(pub user::Model);
+/// The authenticated user with the permission set resolved from their role.
+/// Rejects with 401 when the session cookie is missing, unknown, or expired
+/// (expired rows are pruned).
+pub struct AuthUser {
+    pub user: user::Model,
+    pub perms: Perms,
+}
+
+impl AuthUser {
+    /// Whether the caller holds `permission`.
+    pub fn can(&self, permission: &str) -> bool {
+        self.perms.can(permission)
+    }
+
+    /// Require `permission`, returning `403` when the caller lacks it. Also
+    /// enforces the forced-password-change gate: a user who must change their
+    /// password cannot exercise any permission.
+    pub fn require(&self, permission: &str) -> Result<(), AppError> {
+        require_active(&self.user)?;
+        if self.can(permission) {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden("insufficient permissions"))
+        }
+    }
+}
 
 impl FromRequestParts<DatabaseConnection> for AuthUser {
     type Rejection = AppError;
@@ -158,7 +182,15 @@ impl FromRequestParts<DatabaseConnection> for AuthUser {
             .await?
             .ok_or(AppError::Unauthorized)?;
 
-        Ok(AuthUser(user))
+        let role = match user.role_id {
+            Some(id) => role::Entity::find_by_id(id).one(db).await?,
+            None => None,
+        };
+
+        Ok(AuthUser {
+            user,
+            perms: Perms::from_role(role.as_ref()),
+        })
     }
 }
 
@@ -176,7 +208,7 @@ mod tests {
     }
 
     async fn make_user(db: &DatabaseConnection) -> i32 {
-        crate::service::create(db, "u", None, "password123", false)
+        crate::service::create(db, "u", None, "password123", false, None)
             .await
             .unwrap()
             .id
