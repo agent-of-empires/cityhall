@@ -1,0 +1,16 @@
+{
+  "name": "cityhall-website",
+  "type": "module",
+  "scripts": {
+    "sync-docs": "node scripts/sync-docs.mjs",
+    "dev": "npm run sync-docs && astro dev",
+    "build": "npm run sync-docs && astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "3.7.3",
+    "@tailwindcss/postcss": "^4.3.1",
+    "astro": "^6.4.8",
+    "tailwindcss": "^4.2.4"
+  }
+}

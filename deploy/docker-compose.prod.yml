@@ -1,0 +1,65 @@
+# Production stack: CityHall + Postgres + Caddy (automatic HTTPS).
+#
+#   cd deploy
+#   cp .env.example .env      # edit domain, secret key, DB password
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Point your domain's DNS at this host first so Caddy can get a certificate.
+# Only Caddy's 80/443 are exposed; CityHall stays on the internal network.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cityhall
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?set DB_PASSWORD in .env}"
+      POSTGRES_DB: cityhall
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cityhall"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  cityhall:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: cityhall:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://cityhall:${DB_PASSWORD}@db:5432/cityhall"
+      BIND_ADDR: "0.0.0.0:3000"
+      CITYHALL_SECRET_KEY: "${CITYHALL_SECRET_KEY:?generate with: openssl rand -base64 32}"
+      CITYHALL_BASE_URL: "https://${CITYHALL_DOMAIN:?set CITYHALL_DOMAIN in .env}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - cityhall
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CITYHALL_DOMAIN: "${CITYHALL_DOMAIN}"
+      ACME_EMAIL: "${ACME_EMAIL:?set ACME_EMAIL in .env}"
+    volumes:
+      - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

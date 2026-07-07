@@ -1,6 +1,7 @@
 /target
 web/node_modules
 web/dist
+website
 .git
 .claude
 **/*.db

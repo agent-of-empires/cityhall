@@ -1,0 +1,68 @@
+# CityHall behind Traefik with automatic HTTPS (Let's Encrypt TLS-ALPN).
+# Alternative to the Caddy stack in ../docker-compose.prod.yml.
+#
+#   cd deploy/reverse-proxy
+#   CITYHALL_DOMAIN=cityhall.example.com ACME_EMAIL=admin@example.com \
+#   DB_PASSWORD=... CITYHALL_SECRET_KEY=... \
+#   docker compose -f docker-compose.traefik.yml up -d --build
+
+services:
+  traefik:
+    image: traefik:v3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:?set ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cityhall
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?set DB_PASSWORD}"
+      POSTGRES_DB: cityhall
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cityhall"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  cityhall:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: cityhall:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://cityhall:${DB_PASSWORD}@db:5432/cityhall"
+      BIND_ADDR: "0.0.0.0:3000"
+      CITYHALL_SECRET_KEY: "${CITYHALL_SECRET_KEY:?generate: openssl rand -base64 32}"
+      CITYHALL_BASE_URL: "https://${CITYHALL_DOMAIN:?set CITYHALL_DOMAIN}"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.cityhall.rule=Host(`${CITYHALL_DOMAIN}`)
+      - traefik.http.routers.cityhall.entrypoints=websecure
+      - traefik.http.routers.cityhall.tls.certresolver=le
+      - traefik.http.services.cityhall.loadbalancer.server.port=3000
+
+volumes:
+  pgdata:
+  letsencrypt:

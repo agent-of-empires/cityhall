@@ -1,0 +1,72 @@
+# Minimal single-instance Postgres for CityHall. Fine for small deployments;
+# for production prefer a managed Postgres or an operator (CNPG, Zalando) and
+# remove this file from kustomization.yaml, pointing DATABASE_URL at it instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cityhall-db
+  namespace: cityhall
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cityhall-db
+  namespace: cityhall
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # single RWO volume: never run two pods at once
+  selector:
+    matchLabels:
+      app: cityhall-db
+  template:
+    metadata:
+      labels:
+        app: cityhall-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: cityhall
+            - name: POSTGRES_DB
+              value: cityhall
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cityhall
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "cityhall"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cityhall-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cityhall-db
+  namespace: cityhall
+spec:
+  selector:
+    app: cityhall-db
+  ports:
+    - port: 5432
+      targetPort: 5432

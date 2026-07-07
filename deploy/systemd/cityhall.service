@@ -1,0 +1,33 @@
+# systemd unit for running CityHall on a bare VPS.
+# Install:
+#   sudo cp deploy/systemd/cityhall.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cityhall
+#
+# Expects the binary at /opt/cityhall/cityhall, the built frontend at
+# /opt/cityhall/web/dist, and config in /etc/cityhall.env (chmod 600).
+
+[Unit]
+Description=CityHall control-plane server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cityhall
+Group=cityhall
+WorkingDirectory=/opt/cityhall
+EnvironmentFile=/etc/cityhall.env
+ExecStart=/opt/cityhall/cityhall
+Restart=on-failure
+RestartSec=5
+
+# Hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Allow writing only the data dir (e.g. a SQLite database under /opt/cityhall).
+ReadWritePaths=/opt/cityhall
+
+[Install]
+WantedBy=multi-user.target

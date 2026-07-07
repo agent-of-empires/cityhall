@@ -1,0 +1,12 @@
+# Caddy config for CityHall. Automatic HTTPS via Let's Encrypt.
+# Used by ../docker-compose.prod.yml, which injects CITYHALL_DOMAIN and
+# ACME_EMAIL. Standalone use: replace the placeholders with literal values.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$CITYHALL_DOMAIN} {
+	# Caddy sets X-Forwarded-Proto/-For/Host automatically.
+	reverse_proxy cityhall:3000
+}

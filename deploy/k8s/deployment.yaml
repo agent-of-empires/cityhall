@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cityhall
+  namespace: cityhall
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cityhall
+  template:
+    metadata:
+      labels:
+        app: cityhall
+    spec:
+      containers:
+        - name: cityhall
+          # Replace with your pushed registry path, e.g.
+          # registry.example.com/cityhall:latest
+          image: cityhall:latest
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:3000
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cityhall
+                  key: DATABASE_URL
+            - name: CITYHALL_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cityhall
+                  key: CITYHALL_SECRET_KEY
+            - name: CITYHALL_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cityhall
+                  key: CITYHALL_BASE_URL
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

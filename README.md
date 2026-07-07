@@ -77,6 +77,10 @@ logs on first launch); Mailpit's UI is at `http://localhost:8025`. SMTP is
 pre-configured to point at Mailpit, so sending email works out of the box and
 messages land in the Mailpit UI.
 
+For production (Postgres + automatic HTTPS + Kubernetes/VPS/systemd), see the
+copy-paste examples in [`deploy/`](deploy/README.md) and the
+[Deployment guide](docs/deployment.md).
+
 ## Frontend development
 
 ```sh
@@ -88,11 +92,23 @@ npm run build          # produces web/dist for the backend to serve
 
 ## Documentation
 
-Full docs live in [`docs/`](docs/index.md):
+Full docs live in [`docs/`](docs/index.md). To browse them as a website locally
+(Astro static site, same approach as the AoE site):
+
+```sh
+cd website
+npm install
+npm run dev            # http://localhost:4321
+```
+
+See [`website/README.md`](website/README.md) for details.
+
+Pages:
 
 - [Overview](docs/index.md)
 - [Quick start](docs/quick-start.md)
 - [Configuration](docs/configuration.md) (database, bind address, logging, email, SSO)
+- [Deployment](docs/deployment.md) (Docker, Compose, Kubernetes, VPS, HTTPS, databases)
 - [CLI reference](docs/cli.md)
 - [API reference](docs/api.md)
 - [Development](docs/development.md)

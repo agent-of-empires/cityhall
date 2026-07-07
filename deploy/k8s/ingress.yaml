@@ -1,0 +1,25 @@
+# Assumes ingress-nginx + cert-manager. Adjust annotations/host for your setup.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cityhall
+  namespace: cityhall
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cityhall.example.com
+      secretName: cityhall-tls
+  rules:
+    - host: cityhall.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cityhall
+                port:
+                  number: 80

@@ -1,0 +1,50 @@
+image:
+  repository: cityhall
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+# Secrets. Generate secretKey once: openssl rand -base64 32
+# For real deployments prefer an external secret manager over inline values;
+# set existingSecret to a Secret you manage and leave these blank.
+config:
+  # Public URL (must match ingress host). Emails/OIDC links use it.
+  baseUrl: https://cityhall.example.com
+  # Base64 32-byte key encrypting stored SMTP/OIDC secrets.
+  secretKey: ""
+  # Overrides the built-in postgres DATABASE_URL. Set when using an external DB.
+  databaseUrl: ""
+  # Extra env vars passed through verbatim (e.g. SMTP_*, OIDC_*).
+  extraEnv: {}
+
+# Reference an existing Secret instead of creating one from config above.
+# It must provide keys: DATABASE_URL, CITYHALL_SECRET_KEY, CITYHALL_BASE_URL.
+existingSecret: ""
+
+# Bundled single-instance Postgres. Disable to use an external database
+# (then set config.databaseUrl or existingSecret).
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  password: change-me-to-a-strong-password
+  storage: 10Gi
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cityhall.example.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls: true
+  tlsSecretName: cityhall-tls
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

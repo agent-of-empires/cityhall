@@ -1,0 +1,38 @@
+---
+const repo = 'https://github.com/agent-of-empires/cityhall';
+---
+
+<footer class="pt-0 pb-8 px-6">
+  <div class="footer-gradient-border mb-12"></div>
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-8 mb-12">
+      <div class="col-span-2 md:col-span-1">
+        <div class="flex items-center gap-3 mb-4">
+          <img src="/assets/logo.svg" alt="CityHall" class="w-7 h-7" />
+          <span class="text-white font-semibold">CityHall</span>
+        </div>
+        <p class="text-gray-500 text-sm leading-relaxed">The self-hostable control-plane server for Agent of Empires.</p>
+      </div>
+      <div>
+        <h4 class="text-gray-100 font-semibold text-sm uppercase tracking-wider mb-4">Docs</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href="/docs/quick-start/" class="text-gray-400 hover:text-white transition-colors">Quick Start</a></li>
+          <li><a href="/docs/configuration/" class="text-gray-400 hover:text-white transition-colors">Configuration</a></li>
+          <li><a href="/docs/deployment/" class="text-gray-400 hover:text-white transition-colors">Deployment</a></li>
+          <li><a href="/docs/api/" class="text-gray-400 hover:text-white transition-colors">API Reference</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 class="text-gray-100 font-semibold text-sm uppercase tracking-wider mb-4">Community</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href={repo} class="text-gray-400 hover:text-white transition-colors">GitHub</a></li>
+          <li><a href={`${repo}/issues`} class="text-gray-400 hover:text-white transition-colors">Issues</a></li>
+          <li><a href={`${repo}/blob/main/LICENSE`} class="text-gray-400 hover:text-white transition-colors">MIT License</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="border-t border-surface-800/50 pt-6 text-gray-600 text-sm">
+      Part of the Agent of Empires project.
+    </div>
+  </div>
+</footer>
