@@ -45,6 +45,8 @@ export function App() {
         element={
           !me ? (
             <Navigate to="/login" replace />
+          ) : !me.must_change_password ? (
+            <Navigate to="/" replace />
           ) : (
             <ChangePasswordPage forced={me.must_change_password} onDone={refresh} />
           )
