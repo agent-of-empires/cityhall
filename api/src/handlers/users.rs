@@ -3,7 +3,7 @@ use axum::Json;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::Deserialize;
 
-use crate::auth::{hash_password, AuthUser};
+use crate::auth::{hash_password, require_active, AuthUser};
 use crate::entities::user;
 use crate::error::AppError;
 use crate::service;
@@ -20,15 +20,6 @@ pub struct UpdateUserRequest {
     pub username: Option<String>,
     pub email: Option<String>,
     pub password: Option<String>,
-}
-
-/// Callers must have completed a forced password change before touching any
-/// user-management route. RBAC (admin-only) will layer on top of this later.
-fn require_active(user: &user::Model) -> Result<(), AppError> {
-    if user.must_change_password {
-        return Err(AppError::Forbidden("password change required"));
-    }
-    Ok(())
 }
 
 pub async fn list(

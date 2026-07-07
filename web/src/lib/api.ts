@@ -12,6 +12,31 @@ export interface Me {
   must_change_password: boolean;
 }
 
+export interface SmtpSettings {
+  env_managed: boolean;
+  enabled: boolean;
+  host: string;
+  port: number;
+  encryption: string;
+  username: string | null;
+  from_address: string;
+  from_name: string | null;
+  password_set: boolean;
+  secret_key_available: boolean;
+}
+
+export interface SmtpUpdate {
+  host: string;
+  port: number;
+  encryption: string;
+  username: string | null;
+  // Omit to keep the stored password; set a value to replace it.
+  password?: string;
+  from_address: string;
+  from_name: string | null;
+  enabled: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -66,4 +91,15 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   deleteUser: (id: number) => request<{ deleted: boolean }>(`/users/${id}`, { method: "DELETE" }),
+  getSmtpSettings: () => request<SmtpSettings>("/settings/smtp"),
+  updateSmtpSettings: (patch: SmtpUpdate) =>
+    request<SmtpSettings>("/settings/smtp", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  testSmtp: (to: string) =>
+    request<{ ok: boolean; error: string | null }>("/settings/smtp/test", {
+      method: "POST",
+      body: JSON.stringify({ to }),
+    }),
 };

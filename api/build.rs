@@ -49,7 +49,10 @@ fn main() {
     }
 
     if !web.join("node_modules").exists() {
-        run(Command::new(npm).arg("install").current_dir(&web), "npm install");
+        run(
+            Command::new(npm).arg("install").current_dir(&web),
+            "npm install",
+        );
     }
     run(
         Command::new(npm).args(["run", "build"]).current_dir(&web),

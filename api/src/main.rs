@@ -1,9 +1,11 @@
 mod auth;
 mod cli;
+mod crypto;
 mod db;
 mod entities;
 mod error;
 mod handlers;
+mod mailer;
 mod migration;
 mod seed;
 mod server;

@@ -12,12 +12,16 @@ name = "cityhall"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm = "0.11.0"
 argon2 = "0.5.3"
 async-trait = "0.1.89"
 axum = "0.8"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
+base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
+getrandom = "0.3"
+lettre = { version = "0.11.22", default-features = false, features = ["builder", "smtp-transport", "pool", "tokio1", "tokio1-rustls-tls", "hostname"] }
 rand = "0.10.2"
 sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-rustls", "macros", "with-chrono"] }
 sea-orm-migration = { version = "1.1.20", features = ["runtime-tokio-rustls", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }

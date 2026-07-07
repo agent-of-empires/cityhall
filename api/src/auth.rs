@@ -64,6 +64,15 @@ pub async fn delete_session(db: &DatabaseConnection, token: &str) -> Result<(), 
     Ok(())
 }
 
+/// Callers must have completed a forced password change before touching any
+/// authenticated route. RBAC (admin-only) will layer on top of this later.
+pub fn require_active(user: &user::Model) -> Result<(), AppError> {
+    if user.must_change_password {
+        return Err(AppError::Forbidden("password change required"));
+    }
+    Ok(())
+}
+
 /// The authenticated user, resolved from the session cookie. Rejects with 401
 /// when the cookie is missing, unknown, or expired (expired rows are pruned).
 pub struct AuthUser(pub user::Model);

@@ -7,7 +7,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::handlers::{auth, users};
+use crate::handlers::{auth, settings, users};
 
 /// Directory holding the built frontend. Overridable via `STATIC_DIR` for
 /// container images that place the bundle elsewhere.
@@ -29,6 +29,8 @@ pub fn api_router(db: DatabaseConnection) -> Router {
             "/users/{id}",
             get(users::get).patch(users::update).delete(users::delete),
         )
+        .route("/settings/smtp", get(settings::get).put(settings::update))
+        .route("/settings/smtp/test", post(settings::test))
         // Unknown /api/* paths return a JSON 404 instead of falling through to
         // the SPA index (which the outer fallback_service would otherwise serve).
         .fallback(|| async { AppError::NotFound("not found") })

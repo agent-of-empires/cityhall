@@ -113,3 +113,67 @@ Deletes a user. Deleting your own account returns `400`. Returns:
 ```json
 { "deleted": true }
 ```
+
+### `GET /api/settings/smtp`
+
+Returns the effective SMTP configuration. The password itself is never
+returned, only whether one is stored (`password_set`).
+
+```json
+{
+  "env_managed": false,
+  "enabled": true,
+  "host": "smtp.example.com",
+  "port": 587,
+  "encryption": "starttls",
+  "username": "cityhall",
+  "from_address": "cityhall@example.com",
+  "from_name": "CityHall",
+  "password_set": true,
+  "secret_key_available": true
+}
+```
+
+`env_managed` is `true` when SMTP is configured through environment variables
+(see [Configuration](configuration.md)); the values then come from the
+environment and `PUT` is rejected. `secret_key_available` reflects whether
+`CITYHALL_SECRET_KEY` is set, which is required to store a password.
+
+### `PUT /api/settings/smtp`
+
+Updates the stored SMTP configuration:
+
+```json
+{
+  "host": "smtp.example.com",
+  "port": 587,
+  "encryption": "starttls",
+  "username": "cityhall",
+  "password": "...",
+  "from_address": "cityhall@example.com",
+  "from_name": "CityHall",
+  "enabled": true
+}
+```
+
+`encryption` is one of `none`, `starttls`, `tls`. `username`, `password`, and
+`from_name` may be omitted or `null`. Omitting `password` keeps the stored one;
+sending a value replaces it. Storing a password requires `CITYHALL_SECRET_KEY`
+to be set, otherwise the request returns `400`. When SMTP is env-managed, this
+returns `409`. Returns the updated settings (same shape as `GET`).
+
+### `POST /api/settings/smtp/test`
+
+```json
+{ "to": "you@example.com" }
+```
+
+Sends a test email using the effective configuration. Always returns `200` with
+the result, so a delivery failure surfaces the provider's message rather than an
+HTTP error:
+
+```json
+{ "ok": false, "error": "send failed: connection refused" }
+```
+
+Returns `400` if SMTP is not configured or not enabled.

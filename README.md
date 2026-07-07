@@ -61,6 +61,20 @@ cargo run -- user delete  --username bob
 
 Omit `--password` on `create`/`passwd` to generate a random one (printed once).
 
+## Docker Compose
+
+A full local stack (CityHall + Postgres + [Mailpit](https://mailpit.axllent.org/)
+for testing email) is provided:
+
+```sh
+docker compose up --build
+```
+
+CityHall serves on `http://localhost:3000` (admin password is printed in the
+logs on first launch); Mailpit's UI is at `http://localhost:8025`. Configure
+SMTP under Settings pointing at `mailpit:1025` (encryption `none`) to see mail
+land in Mailpit.
+
 ## Frontend development
 
 ```sh
@@ -76,7 +90,7 @@ Full docs live in [`docs/`](docs/index.md):
 
 - [Overview](docs/index.md)
 - [Quick start](docs/quick-start.md)
-- [Configuration](docs/configuration.md) (database, bind address, logging)
+- [Configuration](docs/configuration.md) (database, bind address, logging, email)
 - [CLI reference](docs/cli.md)
 - [API reference](docs/api.md)
 - [Development](docs/development.md)

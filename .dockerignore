@@ -1,0 +1,10 @@
+/target
+web/node_modules
+web/dist
+.git
+.claude
+**/*.db
+**/*.db-shm
+**/*.db-wal
+.env
+.env.local

@@ -1,0 +1,52 @@
+# Local stack for developing and testing CityHall, including email flows.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:3000 (the admin password is printed in the
+# `cityhall` logs on first launch). Configure SMTP in Settings pointing at the
+# bundled Mailpit instance: host `mailpit`, port `1025`, encryption `none`.
+# View captured mail at http://localhost:8025.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cityhall
+      POSTGRES_PASSWORD: cityhall
+      POSTGRES_DB: cityhall
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cityhall"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025" # web UI
+      - "1025:1025" # SMTP
+
+  cityhall:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://cityhall:cityhall@db:5432/cityhall
+      BIND_ADDR: 0.0.0.0:3000
+      # Required to store the SMTP password set via the settings page.
+      # Dev-only value; generate your own with: openssl rand -base64 32
+      CITYHALL_SECRET_KEY: "ZGV2LW9ubHkta2V5LTMyLWJ5dGVzLWxvbmchISEhISE="
+      # To manage SMTP via the environment instead of the settings page,
+      # uncomment these (the settings form then becomes read-only):
+      # SMTP_HOST: mailpit
+      # SMTP_PORT: "1025"
+      # SMTP_ENCRYPTION: none
+      # SMTP_FROM_ADDRESS: cityhall@example.com
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

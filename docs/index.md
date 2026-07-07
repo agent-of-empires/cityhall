@@ -32,7 +32,7 @@ control plane builds on:
 ## Next steps
 
 - [Quick start](quick-start.md): run it and sign in.
-- [Configuration](configuration.md): database, bind address, and logging.
+- [Configuration](configuration.md): database, bind address, logging, and email.
 - [CLI reference](cli.md): manage users from the terminal.
 - [API reference](api.md): the HTTP endpoints.
 - [Development](development.md): build, test, and extend CityHall.

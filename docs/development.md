@@ -4,11 +4,14 @@
 
 ```
 api/    Rust backend (axum + SeaORM)
+  build.rs     Builds web/dist during `cargo build` (skip: SKIP_FRONTEND_BUILD=1)
   src/
-    entities/    SeaORM models (user, session)
+    entities/    SeaORM models (user, session, smtp_settings)
     migration/   Embedded migrations
-    handlers/    HTTP handlers (auth, users)
+    handlers/    HTTP handlers (auth, users, settings)
     auth.rs      Password hashing, sessions, the AuthUser extractor
+    crypto.rs    AES-256-GCM encryption for secrets at rest
+    mailer.rs    SMTP config resolution (env vs database) and sending
     service.rs   User operations shared by the API and CLI
     server.rs    Router + static file serving
     cli.rs       clap CLI (serve, user ...)
@@ -16,7 +19,7 @@ api/    Rust backend (axum + SeaORM)
     seed.rs      First-launch admin seed
 web/    React frontend (Vite + TypeScript + Tailwind)
   src/
-    components/  Pages and UI (Login, ChangePassword, Users, dialogs)
+    components/  Pages and UI (Login, ChangePassword, Users, Settings, dialogs)
     lib/api.ts   Typed API client
 ```
 
@@ -62,6 +65,25 @@ npm run format:check
 npm run build
 ```
 
+## Docker Compose
+
+A `docker-compose.yml` at the repo root brings up the full stack: CityHall
+(built from the `Dockerfile`), Postgres, and [Mailpit](https://mailpit.axllent.org/)
+as a local mail sink for testing email flows.
+
+```sh
+docker compose up --build
+```
+
+- CityHall: <http://localhost:3000> (admin password is printed in the
+  `cityhall` logs on first launch).
+- Mailpit web UI: <http://localhost:8025>.
+
+By default SMTP is not env-managed, so configure it in **Settings** pointing at
+Mailpit: host `mailpit`, port `1025`, encryption `none`. Sent mail appears in
+the Mailpit UI. The compose file sets a dev `CITYHALL_SECRET_KEY`; replace it
+for anything but local testing (`openssl rand -base64 32`).
+
 ## Database and migrations
 
 CityHall targets SQLite, Postgres, and MySQL through SeaORM; the backend is
@@ -70,7 +92,7 @@ and run automatically on startup and before every CLI command.
 
 To add a schema change:
 
-1. Add a `m0003_*.rs` module in `api/src/migration/` implementing
+1. Add a `m0004_*.rs` module in `api/src/migration/` implementing
    `MigrationTrait`.
 2. Register it in the `migrations()` list in `api/src/migration/mod.rs`.
 3. Update or add the matching entity in `api/src/entities/`.

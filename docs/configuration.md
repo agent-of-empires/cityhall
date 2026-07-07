@@ -10,6 +10,14 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `STATIC_DIR`    | `web/dist`                       | Directory of the built frontend to serve.           |
 | `CITYHALL_LOG`  | _(unset)_                        | Single log level for the app and its dependencies.  |
 | `RUST_LOG`      | _(unset)_                        | Per-target log filter (overrides the default).      |
+| `CITYHALL_SECRET_KEY` | _(unset)_                  | Base64 32-byte key; encrypts secrets (SMTP password) at rest. |
+| `SMTP_HOST`     | _(unset)_                        | SMTP host. Setting it makes SMTP env-managed (see below). |
+| `SMTP_PORT`     | _(per encryption)_               | SMTP port; defaults to 25/587/465 for none/starttls/tls. |
+| `SMTP_ENCRYPTION` | `starttls`                     | `none`, `starttls`, or `tls`.                       |
+| `SMTP_USERNAME` | _(unset)_                        | SMTP auth username (optional).                      |
+| `SMTP_PASSWORD` | _(unset)_                        | SMTP auth password (optional).                      |
+| `SMTP_FROM_ADDRESS` | _(username)_                 | From address for outgoing mail.                     |
+| `SMTP_FROM_NAME` | _(unset)_                       | Display name for the from address (optional).       |
 
 ## Database
 
@@ -67,3 +75,41 @@ control verbosity, in order of precedence:
 
 3. **Default** (neither set): `info,sqlx::query=warn`, which keeps SeaORM's
    per-query logging out of normal output.
+
+## Email (SMTP)
+
+CityHall can send email (for future flows such as password reset). SMTP is
+configured in one of two ways, resolved at send time:
+
+1. **Environment variables.** If `SMTP_HOST` is set, the whole SMTP
+   configuration comes from the `SMTP_*` variables and the settings page is
+   read-only. This is the recommended path for containerized deployments.
+2. **Settings page.** If `SMTP_HOST` is unset, SMTP is configured in the web UI
+   under **Settings**, and stored in the database.
+
+Environment variables win as a block: it is env-managed or database-managed, not
+a mix.
+
+### Encryption
+
+`SMTP_ENCRYPTION` (or the settings-page selector) chooses the transport
+security, which also determines the default port:
+
+- `none`: no transport security, port 25. Development only.
+- `starttls`: upgrade a plaintext connection with STARTTLS, port 587.
+- `tls`: implicit TLS from the first byte, port 465.
+
+### Secret key
+
+When a password is set through the settings page, it is encrypted at rest with
+AES-256-GCM using `CITYHALL_SECRET_KEY` (a base64-encoded 32-byte key). Generate
+one with:
+
+```sh
+openssl rand -base64 32
+```
+
+Without the key set, saving an SMTP password is rejected. Passwords supplied
+through `SMTP_PASSWORD` are read straight from the environment and do not need
+the key. Losing or changing the key makes a previously stored password
+undecryptable; re-enter it in the settings page after rotating the key.

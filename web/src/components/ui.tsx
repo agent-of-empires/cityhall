@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import type { ButtonHTMLAttributes, InputHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes } from "react";
 
 export function Button({
   className,
@@ -34,6 +34,21 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
         "w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm",
         "text-text-primary placeholder:text-text-muted",
         "focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      className={clsx(
+        "w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm",
+        "text-text-primary",
+        "focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}
