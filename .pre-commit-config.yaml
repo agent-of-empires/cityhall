@@ -1,0 +1,42 @@
+# Install once with: pre-commit install
+# Run against everything with: pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: web-format
+        name: web format (oxfmt)
+        entry: bash -c 'cd web && npx oxfmt --check .'
+        language: system
+        files: ^web/.*\.(ts|tsx|js|jsx|json)$
+        pass_filenames: false
+
+      - id: web-lint
+        name: web lint (eslint)
+        entry: bash -c 'cd web && npx eslint .'
+        language: system
+        files: ^web/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: false
