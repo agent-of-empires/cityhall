@@ -35,3 +35,6 @@ Thumbs.db
 *.db-wal
 
 debug.log
+
+# Playwright MCP artifacts
+.playwright-mcp/

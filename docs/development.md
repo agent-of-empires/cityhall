@@ -6,7 +6,7 @@
 api/    Rust backend (axum + SeaORM)
   build.rs     Builds web/dist during `cargo build` (skip: SKIP_FRONTEND_BUILD=1)
   src/
-    entities/    SeaORM models (user, session, smtp_settings)
+    entities/    SeaORM models (user, session, smtp_settings, password_reset_token)
     migration/   Embedded migrations
     handlers/    HTTP handlers (auth, users, settings)
     auth.rs      Password hashing, sessions, the AuthUser extractor

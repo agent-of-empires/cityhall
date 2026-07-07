@@ -10,11 +10,16 @@ use rand::distr::Alphanumeric;
 use rand::RngExt;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 
-use crate::entities::{session, user};
+use crate::entities::{password_reset_token, session, user};
 use crate::error::AppError;
 
 pub const SESSION_COOKIE: &str = "cityhall_session";
 const SESSION_TTL_DAYS: i64 = 30;
+
+/// How long a self-service password-reset token is valid, in hours.
+pub const RESET_TOKEN_TTL_HOURS: i64 = 1;
+/// How long an admin-issued account-setup token is valid, in hours.
+pub const SETUP_TOKEN_TTL_HOURS: i64 = 72;
 
 /// Generate a random ASCII-alphanumeric string of `len` chars.
 pub fn random_token(len: usize) -> String {
@@ -64,6 +69,54 @@ pub async fn delete_session(db: &DatabaseConnection, token: &str) -> Result<(), 
     Ok(())
 }
 
+/// Create a single-use password-reset/setup token for `user_id`, valid for
+/// `ttl_hours`, and return it.
+pub async fn create_reset_token(
+    db: &DatabaseConnection,
+    user_id: i32,
+    ttl_hours: i64,
+) -> Result<String, AppError> {
+    let token = random_token(48);
+    let now = Utc::now();
+    password_reset_token::ActiveModel {
+        token: Set(token.clone()),
+        user_id: Set(user_id),
+        expires_at: Set(now + Duration::hours(ttl_hours)),
+        created_at: Set(now),
+        used_at: Set(None),
+    }
+    .insert(db)
+    .await?;
+    Ok(token)
+}
+
+/// Validate a reset token and mark it used, returning the owning user. Rejects
+/// tokens that are unknown, already used, or expired.
+pub async fn consume_reset_token(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<user::Model, AppError> {
+    let row = password_reset_token::Entity::find_by_id(token.to_string())
+        .one(db)
+        .await?
+        .ok_or(AppError::BadRequest("invalid or expired reset token"))?;
+
+    if row.used_at.is_some() || row.expires_at < Utc::now() {
+        return Err(AppError::BadRequest("invalid or expired reset token"));
+    }
+
+    let user = user::Entity::find_by_id(row.user_id)
+        .one(db)
+        .await?
+        .ok_or(AppError::BadRequest("invalid or expired reset token"))?;
+
+    let mut active: password_reset_token::ActiveModel = row.into();
+    active.used_at = Set(Some(Utc::now()));
+    active.update(db).await?;
+
+    Ok(user)
+}
+
 /// Callers must have completed a forced password change before touching any
 /// authenticated route. RBAC (admin-only) will layer on top of this later.
 pub fn require_active(user: &user::Model) -> Result<(), AppError> {
@@ -106,5 +159,52 @@ impl FromRequestParts<DatabaseConnection> for AuthUser {
             .ok_or(AppError::Unauthorized)?;
 
         Ok(AuthUser(user))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::Migrator;
+    use sea_orm::Database;
+    use sea_orm_migration::MigratorTrait;
+
+    async fn setup() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn make_user(db: &DatabaseConnection) -> i32 {
+        crate::service::create(db, "u", None, "password123", false)
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn reset_token_valid_then_single_use() {
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let token = create_reset_token(&db, uid, RESET_TOKEN_TTL_HOURS)
+            .await
+            .unwrap();
+        assert_eq!(consume_reset_token(&db, &token).await.unwrap().id, uid);
+        // A second redemption is rejected.
+        assert!(consume_reset_token(&db, &token).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_token_rejected() {
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let token = create_reset_token(&db, uid, -1).await.unwrap();
+        assert!(consume_reset_token(&db, &token).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn unknown_token_rejected() {
+        let db = setup().await;
+        assert!(consume_reset_token(&db, "does-not-exist").await.is_err());
     }
 }

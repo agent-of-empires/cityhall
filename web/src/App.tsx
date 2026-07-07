@@ -5,6 +5,8 @@ import { LoginPage } from "./components/LoginPage";
 import { ChangePasswordPage } from "./components/ChangePasswordPage";
 import { UsersPage } from "./components/UsersPage";
 import { SettingsPage } from "./components/SettingsPage";
+import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -76,6 +78,8 @@ export function App() {
           )
         }
       />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

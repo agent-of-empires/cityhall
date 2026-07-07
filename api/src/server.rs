@@ -24,6 +24,8 @@ pub fn api_router(db: DatabaseConnection) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
+        .route("/auth/forgot-password", post(auth::forgot_password))
+        .route("/auth/reset-password", post(auth::reset_password))
         .route("/users", get(users::list).post(users::create))
         .route(
             "/users/{id}",

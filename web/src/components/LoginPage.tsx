@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { Button, ErrorText, Field, Input } from "./ui";
 
@@ -47,6 +48,9 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
         <Button type="submit" variant="primary" className="w-full" disabled={busy}>
           {busy ? "Signing in..." : "Sign in"}
         </Button>
+        <Link to="/forgot-password" className="block text-center text-sm text-text-muted hover:text-text-primary">
+          Forgot password?
+        </Link>
       </form>
     </div>
   );

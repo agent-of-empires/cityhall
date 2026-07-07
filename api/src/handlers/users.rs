@@ -1,18 +1,37 @@
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::Json;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::auth::{hash_password, require_active, AuthUser};
+use crate::auth::{
+    create_reset_token, hash_password, random_token, require_active, AuthUser,
+    SETUP_TOKEN_TTL_HOURS,
+};
 use crate::entities::user;
 use crate::error::AppError;
-use crate::service;
+use crate::{mailer, service};
 
 #[derive(Deserialize)]
 pub struct CreateUserRequest {
     pub username: String,
     pub email: Option<String>,
-    pub password: String,
+    /// Omitted or empty generates a random password (returned once), unless
+    /// `send_setup_email` is set.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// When true, email the user a setup link instead of setting a password.
+    #[serde(default)]
+    pub send_setup_email: bool,
+}
+
+/// The created user, plus the generated password when one was generated (so the
+/// admin can hand it over). Never set when a setup email was sent.
+#[derive(Serialize)]
+pub struct CreateUserResponse {
+    #[serde(flatten)]
+    pub user: user::Model,
+    pub generated_password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -45,12 +64,57 @@ pub async fn get(
 
 pub async fn create(
     State(db): State<DatabaseConnection>,
+    headers: HeaderMap,
     AuthUser(caller): AuthUser,
     Json(body): Json<CreateUserRequest>,
-) -> Result<Json<user::Model>, AppError> {
+) -> Result<Json<CreateUserResponse>, AppError> {
     require_active(&caller)?;
-    let user = service::create(&db, &body.username, body.email, &body.password, false).await?;
-    Ok(Json(user))
+    let email = body.email.filter(|e| !e.trim().is_empty());
+
+    if body.send_setup_email {
+        let address = email.clone().ok_or(AppError::BadRequest(
+            "an email address is required to send a setup email",
+        ))?;
+        let (cfg, _) = mailer::resolve(&db).await?.ok_or(AppError::BadRequest(
+            "SMTP is not configured; cannot send a setup email",
+        ))?;
+
+        // Create with an unknown random password (and must-change), then email a
+        // setup link. If sending fails, roll the user back so a retry is clean.
+        let user = service::create(&db, &body.username, email, &random_token(24), true).await?;
+        let token = create_reset_token(&db, user.id, SETUP_TOKEN_TTL_HOURS).await?;
+        let link = format!(
+            "{}/reset-password?token={token}",
+            mailer::base_url(&headers)
+        );
+        if let Err(e) = mailer::send_reset_link(&cfg, &address, &link, true).await {
+            tracing::warn!("setup email failed, rolling back user: {e}");
+            user::Entity::delete_by_id(user.id).exec(&db).await?;
+            return Err(AppError::Internal("failed to send setup email"));
+        }
+        return Ok(Json(CreateUserResponse {
+            user,
+            generated_password: None,
+        }));
+    }
+
+    match body.password.filter(|p| !p.is_empty()) {
+        Some(password) => {
+            let user = service::create(&db, &body.username, email, &password, false).await?;
+            Ok(Json(CreateUserResponse {
+                user,
+                generated_password: None,
+            }))
+        }
+        None => {
+            let generated = random_token(16);
+            let user = service::create(&db, &body.username, email, &generated, true).await?;
+            Ok(Json(CreateUserResponse {
+                user,
+                generated_password: Some(generated),
+            }))
+        }
+    }
 }
 
 pub async fn update(

@@ -71,6 +71,32 @@ Returns the current user:
 Verifies the current password and requires the new one to be at least 8
 characters. Returns the updated user (with `must_change_password: false`).
 
+### `POST /api/auth/forgot-password`
+
+Public (no authentication).
+
+```json
+{ "email": "user@example.com" }
+```
+
+Always returns `200` regardless of whether the email matches an account, so it
+cannot be used to enumerate addresses. When it matches a user and SMTP is
+configured, a single-use reset link (valid 1 hour) is emailed. Requires SMTP to
+be configured (see [Configuration](configuration.md)); the link's base URL comes
+from `CITYHALL_BASE_URL` or the request host.
+
+### `POST /api/auth/reset-password`
+
+Public (no authentication).
+
+```json
+{ "token": "...", "new_password": "..." }
+```
+
+Redeems a reset or setup token and sets the new password (minimum 8
+characters), clearing `must_change_password`. The token is single-use; an
+unknown, expired, or already-used token returns `400`.
+
 ### `GET /api/users`
 
 Returns all users:
@@ -86,11 +112,27 @@ Password hashes are never included in any response.
 ### `POST /api/users`
 
 ```json
-{ "username": "bob", "email": "bob@example.com", "password": "..." }
+{ "username": "bob", "email": "bob@example.com", "password": "...", "send_setup_email": false }
 ```
 
-`email` may be omitted or `null`. Returns the created user. A duplicate username
-returns `409`.
+`email` may be omitted or `null`. `password` and `send_setup_email` are
+optional. Behavior:
+
+- `send_setup_email: true` emails the user a setup link (requires an email and
+  configured SMTP, else `400`); the user sets their own password.
+- `password` given: used as-is.
+- `password` omitted or empty: a password is generated and the user must change
+  it on first login.
+
+Returns the created user plus `generated_password`, which is the generated
+password when one was generated and `null` otherwise (including when a setup
+email was sent):
+
+```json
+{ "id": 2, "username": "bob", "email": null, "must_change_password": true, "created_at": "...", "generated_password": "..." }
+```
+
+A duplicate username returns `409`.
 
 ### `GET /api/users/{id}`
 

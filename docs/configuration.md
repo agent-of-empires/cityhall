@@ -11,6 +11,7 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `CITYHALL_LOG`  | _(unset)_                        | Single log level for the app and its dependencies.  |
 | `RUST_LOG`      | _(unset)_                        | Per-target log filter (overrides the default).      |
 | `CITYHALL_SECRET_KEY` | _(unset)_                  | Base64 32-byte key; encrypts secrets (SMTP password) at rest. |
+| `CITYHALL_BASE_URL` | _(request host)_             | Public base URL used to build links in emails (e.g. password reset). |
 | `SMTP_HOST`     | _(unset)_                        | SMTP host. Setting it makes SMTP env-managed (see below). |
 | `SMTP_PORT`     | _(per encryption)_               | SMTP port; defaults to 25/587/465 for none/starttls/tls. |
 | `SMTP_ENCRYPTION` | `starttls`                     | `none`, `starttls`, or `tls`.                       |
@@ -113,3 +114,11 @@ Without the key set, saving an SMTP password is rejected. Passwords supplied
 through `SMTP_PASSWORD` are read straight from the environment and do not need
 the key. Losing or changing the key makes a previously stored password
 undecryptable; re-enter it in the settings page after rotating the key.
+
+### Reset links
+
+Password-reset and account-setup emails contain a link back to CityHall. Its
+base URL is `CITYHALL_BASE_URL` when set (e.g. `https://cityhall.example.com`),
+otherwise it is derived from the incoming request (honoring `X-Forwarded-Proto`
+behind a reverse proxy). Set `CITYHALL_BASE_URL` explicitly for deployments
+behind a proxy so links point at the public address.

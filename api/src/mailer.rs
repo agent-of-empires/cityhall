@@ -5,6 +5,7 @@
 //! settings page is read-only); otherwise the single-row `smtp_settings` table
 //! is used when it exists and is enabled.
 
+use axum::http::{header, HeaderMap};
 use lettre::message::{Mailbox, Message};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::AsyncSmtpTransport;
@@ -194,4 +195,49 @@ pub async fn send(cfg: &SmtpConfig, to: &str, subject: &str, body: String) -> Re
         .await
         .map(|_| ())
         .map_err(|e| format!("send failed: {e}"))
+}
+
+/// The externally reachable base URL, used to build links in emails.
+/// `CITYHALL_BASE_URL` wins; otherwise it is derived from the request (honoring
+/// `X-Forwarded-Proto` behind a proxy).
+pub fn base_url(headers: &HeaderMap) -> String {
+    if let Ok(url) = std::env::var("CITYHALL_BASE_URL") {
+        let url = url.trim_end_matches('/');
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:3000");
+    format!("{scheme}://{host}")
+}
+
+/// Send a password-reset or account-setup email containing `link`.
+pub async fn send_reset_link(
+    cfg: &SmtpConfig,
+    to: &str,
+    link: &str,
+    setup: bool,
+) -> Result<(), String> {
+    let (subject, intro) = if setup {
+        (
+            "Set up your CityHall account",
+            "An account has been created for you on CityHall. Use the link below \
+             to set your password:",
+        )
+    } else {
+        (
+            "Reset your CityHall password",
+            "We received a request to reset your CityHall password. Use the link \
+             below to choose a new one:",
+        )
+    };
+    let body = format!("{intro}\n\n{link}\n\nIf you did not expect this email, you can ignore it.");
+    send(cfg, to, subject, body).await
 }

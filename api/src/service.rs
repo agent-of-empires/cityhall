@@ -18,6 +18,16 @@ pub async fn find_by_username(
         .await?)
 }
 
+pub async fn find_by_email(
+    db: &DatabaseConnection,
+    email: &str,
+) -> Result<Option<user::Model>, AppError> {
+    Ok(user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(db)
+        .await?)
+}
+
 pub async fn list(db: &DatabaseConnection) -> Result<Vec<user::Model>, AppError> {
     Ok(user::Entity::find()
         .order_by_asc(user::Column::Id)

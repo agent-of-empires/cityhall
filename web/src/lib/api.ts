@@ -12,6 +12,18 @@ export interface Me {
   must_change_password: boolean;
 }
 
+export interface CreateUserInput {
+  username: string;
+  email: string | null;
+  // Omit/empty to generate a password (unless sendSetupEmail is set).
+  password?: string;
+  sendSetupEmail?: boolean;
+}
+
+export interface CreateUserResponse extends User {
+  generated_password: string | null;
+}
+
 export interface SmtpSettings {
   env_managed: boolean;
   enabled: boolean;
@@ -79,11 +91,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password, new_password }),
     }),
-  listUsers: () => request<User[]>("/users"),
-  createUser: (username: string, email: string | null, password: string) =>
-    request<User>("/users", {
+  forgotPassword: (email: string) =>
+    request<void>("/auth/forgot-password", {
       method: "POST",
-      body: JSON.stringify({ username, email, password }),
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token: string, new_password: string) =>
+    request<void>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password }),
+    }),
+  listUsers: () => request<User[]>("/users"),
+  createUser: (input: CreateUserInput) =>
+    request<CreateUserResponse>("/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username: input.username,
+        email: input.email,
+        password: input.password,
+        send_setup_email: input.sendSetupEmail ?? false,
+      }),
     }),
   updateUser: (id: number, patch: { username?: string; email?: string; password?: string }) =>
     request<User>(`/users/${id}`, {

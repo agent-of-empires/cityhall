@@ -1,12 +1,16 @@
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{create_session, delete_session, verify_password, AuthUser, SESSION_COOKIE};
+use crate::auth::{
+    consume_reset_token, create_reset_token, create_session, delete_session, verify_password,
+    AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
+};
 use crate::error::AppError;
-use crate::service;
+use crate::{mailer, service};
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -102,4 +106,59 @@ pub async fn change_password(
         email: updated.email,
         must_change_password: updated.must_change_password,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+/// Public endpoint. Always returns `200` regardless of whether the email
+/// matches an account, so it cannot be used to enumerate registered addresses.
+/// When it does match and SMTP is configured, a reset link is emailed.
+pub async fn forgot_password(
+    State(db): State<DatabaseConnection>,
+    headers: HeaderMap,
+    Json(body): Json<ForgotPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    let email = body.email.trim();
+    if !email.is_empty() {
+        if let Some(user) = service::find_by_email(&db, email).await? {
+            match mailer::resolve(&db).await? {
+                Some((cfg, _)) => {
+                    let token = create_reset_token(&db, user.id, RESET_TOKEN_TTL_HOURS).await?;
+                    let link = format!(
+                        "{}/reset-password?token={token}",
+                        mailer::base_url(&headers)
+                    );
+                    if let Err(e) = mailer::send_reset_link(&cfg, email, &link, false).await {
+                        tracing::warn!("failed to send password reset email: {e}");
+                    }
+                }
+                None => tracing::warn!("password reset requested but SMTP is not configured"),
+            }
+        }
+    }
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+/// Public endpoint. Redeems a reset/setup token and sets the new password.
+pub async fn reset_password(
+    State(db): State<DatabaseConnection>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    if body.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "new password must be at least 8 characters",
+        ));
+    }
+    let user = consume_reset_token(&db, &body.token).await?;
+    service::set_password(&db, user, &body.new_password, false).await?;
+    Ok(StatusCode::OK)
 }
