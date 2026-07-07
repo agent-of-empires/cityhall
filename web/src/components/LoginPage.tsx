@@ -10,11 +10,15 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
   const [error, setError] = useState<string | null>(params.get("error"));
   const [busy, setBusy] = useState(false);
   const [ssoEnabled, setSsoEnabled] = useState(false);
+  const [signupEnabled, setSignupEnabled] = useState(false);
 
   useEffect(() => {
     api
       .providers()
-      .then((p) => setSsoEnabled(p.oidc))
+      .then((p) => {
+        setSsoEnabled(p.oidc);
+        setSignupEnabled(p.signup);
+      })
       .catch(() => {});
   }, []);
 
@@ -79,6 +83,11 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
         <Link to="/forgot-password" className="block text-center text-sm text-text-muted hover:text-text-primary">
           Forgot password?
         </Link>
+        {signupEnabled && (
+          <Link to="/register" className="block text-center text-sm text-text-muted hover:text-text-primary">
+            Create an account
+          </Link>
+        )}
       </form>
     </div>
   );

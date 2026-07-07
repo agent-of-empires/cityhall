@@ -17,6 +17,9 @@ pub struct Model {
     pub role_id: Option<i32>,
     /// The OIDC `sub` claim, set when the account is linked to an SSO identity.
     pub oidc_subject: Option<String>,
+    /// False only for self-signups awaiting email confirmation; such accounts
+    /// cannot log in until verified.
+    pub email_verified: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -241,3 +241,12 @@ pub async fn send_reset_link(
     let body = format!("{intro}\n\n{link}\n\nIf you did not expect this email, you can ignore it.");
     send(cfg, to, subject, body).await
 }
+
+/// Send a self-signup email-verification link.
+pub async fn send_verification_link(cfg: &SmtpConfig, to: &str, link: &str) -> Result<(), String> {
+    let body = format!(
+        "Welcome to CityHall. Confirm your email address to activate your \
+         account:\n\n{link}\n\nIf you did not sign up, you can ignore this email."
+    );
+    send(cfg, to, "Confirm your CityHall account", body).await
+}

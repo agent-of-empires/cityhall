@@ -3,6 +3,7 @@ import { Send } from "lucide-react";
 import { api, ApiError, type Me, type SmtpSettings } from "../lib/api";
 import { TopBar } from "./TopBar";
 import { OidcSettingsSection } from "./OidcSettings";
+import { SignupSettingsSection } from "./SignupSettings";
 import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
@@ -242,6 +243,8 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
         </div>
 
         <OidcSettingsSection />
+
+        <SignupSettingsSection />
       </main>
     </div>
   );

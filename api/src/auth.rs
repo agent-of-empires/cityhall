@@ -30,6 +30,8 @@ pub fn session_cookie(token: String) -> Cookie<'static> {
 pub const RESET_TOKEN_TTL_HOURS: i64 = 1;
 /// How long an admin-issued account-setup token is valid, in hours.
 pub const SETUP_TOKEN_TTL_HOURS: i64 = 72;
+/// How long a self-signup email-verification token is valid, in hours.
+pub const EMAIL_VERIFY_TTL_HOURS: i64 = 24;
 
 /// Generate a random ASCII-alphanumeric string of `len` chars.
 pub fn random_token(len: usize) -> String {

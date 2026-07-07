@@ -276,6 +276,8 @@ async fn provision(
 pub struct ProvidersResponse {
     /// Whether OIDC SSO is configured and enabled (drives the login button).
     pub oidc: bool,
+    /// Whether self-signup is enabled (drives the register link).
+    pub signup: bool,
 }
 
 /// `GET /api/auth/providers` — public; lets the login page decide what to show.
@@ -284,6 +286,7 @@ pub async fn providers(
 ) -> Result<Json<ProvidersResponse>, AppError> {
     Ok(Json(ProvidersResponse {
         oidc: oidc::resolve(&db).await?.is_some(),
+        signup: service::signup_enabled(&db).await?,
     }))
 }
 

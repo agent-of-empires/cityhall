@@ -8,6 +8,8 @@ import { RolesPage } from "./components/RolesPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
+import { RegisterPage } from "./components/RegisterPage";
+import { VerifyEmailPage } from "./components/VerifyEmailPage";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -93,6 +95,8 @@ export function App() {
       />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

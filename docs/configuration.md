@@ -153,3 +153,15 @@ On first SSO login CityHall provisions a local account, linking by the OIDC
 `member` role. `OIDC_ALLOWED_DOMAINS` (or the settings field) restricts which
 email domains may auto-provision; empty allows any. SSO accounts have no usable
 password until they set one through the reset flow.
+
+## Self-signup
+
+Public registration is **off by default**. An admin enables it under
+**Settings**, where they also set an optional email-domain allow-list and the
+role new accounts receive (defaults to `member`). There are no environment
+variables for signup; it is entirely a settings-page toggle.
+
+When enabled, `POST /api/auth/register` creates an unverified account and emails
+a verification link, so SMTP must be configured. The account cannot log in until
+the link is opened (`POST /api/auth/verify-email`). Accounts created by an admin
+or provisioned via SSO are considered verified and are unaffected.

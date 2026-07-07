@@ -59,7 +59,8 @@ On success, sets the session cookie and returns:
 { "must_change_password": true }
 ```
 
-Invalid credentials return `401`.
+Invalid credentials return `401`. A self-signup account that has not yet
+verified its email returns `403`.
 
 ### `POST /api/auth/logout`
 
@@ -122,10 +123,11 @@ Public (no authentication). Reports which login methods are available so the
 login page can render accordingly:
 
 ```json
-{ "oidc": true }
+{ "oidc": true, "signup": false }
 ```
 
-`oidc` is `true` when OIDC SSO is configured and enabled.
+`oidc` is `true` when OIDC SSO is configured and enabled; `signup` is `true`
+when self-signup is enabled.
 
 ### `GET /api/auth/oidc/login`
 
@@ -140,6 +142,32 @@ Public. The provider's redirect target. Exchanges the code, verifies the ID
 token, provisions or links the user (see [Configuration](configuration.md)),
 starts a session, and `303`-redirects to `/`. On any failure it redirects to
 `/login?error=...` so the SPA can surface the message.
+
+### `POST /api/auth/register`
+
+Public. Only works when self-signup is enabled (see
+[Configuration](configuration.md)), else `400`.
+
+```json
+{ "username": "bob", "email": "bob@example.com", "password": "..." }
+```
+
+Creates an unverified account and emails a verification link (SMTP must be
+configured). Password must be at least 8 characters. Returns `400` if signup is
+disabled, the email domain is not allowed, or SMTP is unconfigured; `409` if the
+username or email is already taken. On success returns `200`; the account cannot
+log in until verified.
+
+### `POST /api/auth/verify-email`
+
+Public.
+
+```json
+{ "token": "..." }
+```
+
+Redeems a verification token and marks the account verified so it can log in.
+The token is single-use; an unknown, expired, or used token returns `400`.
 
 ### `GET /api/users`
 
@@ -366,3 +394,20 @@ Requires `settings.write`. Updates the stored OIDC configuration:
 one; sending a value replaces it (and requires `CITYHALL_SECRET_KEY`, else
 `400`). `allowed_domains` is comma-separated (empty allows any domain). When
 OIDC is env-managed, this returns `409`. Returns the updated settings.
+
+### `GET /api/settings/signup`
+
+Requires `settings.read`. Returns the self-signup configuration.
+
+```json
+{ "signup_enabled": false, "signup_allowed_domains": "example.com", "signup_default_role_id": null }
+```
+
+`signup_default_role_id` is the role assigned to new sign-ups; `null` means the
+`member` role.
+
+### `PUT /api/settings/signup`
+
+Requires `settings.write`. Updates the self-signup configuration (same shape as
+`GET`). `signup_allowed_domains` is comma-separated (empty allows any domain); an
+unknown `signup_default_role_id` returns `400`. Returns the updated settings.

@@ -8,9 +8,9 @@ isolated local instance.
 It ships as a single Rust binary that serves both the API and the web frontend,
 and doubles as a CLI. It covers **user management** (accounts, authentication,
 forced first-login password change, password reset and email invites),
-**role-based access control** (roles with permission keys), **email/SMTP**, and
-**single sign-on** via any OpenID Connect provider; more of the shared control
-plane lands on top of it.
+**role-based access control** (roles with permission keys), **email/SMTP**,
+**single sign-on** via any OpenID Connect provider, and optional **self-signup**
+with email verification; more of the shared control plane lands on top of it.
 
 ## Layout
 

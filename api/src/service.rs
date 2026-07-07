@@ -5,7 +5,7 @@ use sea_orm::{
 };
 
 use crate::auth::{hash_password, random_token};
-use crate::entities::{role, user};
+use crate::entities::{auth_settings, role, user};
 use crate::error::AppError;
 
 pub async fn find_by_username(
@@ -99,6 +99,47 @@ pub async fn create_sso_user(
     .insert(db)
     .await?;
     Ok(model)
+}
+
+/// Create a self-signup account: password set, but unverified until the user
+/// confirms their email (they cannot log in meanwhile).
+pub async fn create_signup_user(
+    db: &DatabaseConnection,
+    username: &str,
+    email: &str,
+    password: &str,
+    role_id: i32,
+) -> Result<user::Model, AppError> {
+    if password.is_empty() {
+        return Err(AppError::BadRequest("password is required"));
+    }
+    let model = user::ActiveModel {
+        username: Set(username.to_string()),
+        email: Set(Some(email.to_string())),
+        password_hash: Set(hash_password(password)?),
+        must_change_password: Set(false),
+        created_at: Set(chrono::Utc::now()),
+        role_id: Set(Some(role_id)),
+        email_verified: Set(false),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+    Ok(model)
+}
+
+pub async fn find_auth_settings(
+    db: &DatabaseConnection,
+) -> Result<Option<auth_settings::Model>, AppError> {
+    Ok(auth_settings::Entity::find_by_id(1).one(db).await?)
+}
+
+/// Whether self-signup is enabled (false when unset).
+pub async fn signup_enabled(db: &DatabaseConnection) -> Result<bool, AppError> {
+    Ok(find_auth_settings(db)
+        .await?
+        .map(|s| s.signup_enabled)
+        .unwrap_or(false))
 }
 
 pub async fn find_role_by_name(

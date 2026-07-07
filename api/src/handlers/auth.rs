@@ -77,6 +77,12 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
+    if !user.email_verified {
+        return Err(AppError::Forbidden(
+            "please verify your email address before signing in",
+        ));
+    }
+
     let token = create_session(&db, user.id).await?;
     Ok((
         jar.add(session_cookie(token)),

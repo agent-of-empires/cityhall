@@ -43,4 +43,6 @@ pub enum Users {
     RoleId,
     // Added by m0008.
     OidcSubject,
+    // Added by m0010.
+    EmailVerified,
 }

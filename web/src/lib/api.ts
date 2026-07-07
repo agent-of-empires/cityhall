@@ -76,6 +76,13 @@ export interface SmtpUpdate {
 
 export interface Providers {
   oidc: boolean;
+  signup: boolean;
+}
+
+export interface SignupSettings {
+  signup_enabled: boolean;
+  signup_allowed_domains: string;
+  signup_default_role_id: number | null;
 }
 
 export interface OidcSettings {
@@ -189,6 +196,22 @@ export const api = {
       body: JSON.stringify({ to }),
     }),
   providers: () => request<Providers>("/auth/providers"),
+  register: (username: string, email: string, password: string) =>
+    request<void>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, email, password }),
+    }),
+  verifyEmail: (token: string) =>
+    request<void>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  getSignupSettings: () => request<SignupSettings>("/settings/signup"),
+  updateSignupSettings: (patch: SignupSettings) =>
+    request<SignupSettings>("/settings/signup", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
   getOidcSettings: () => request<OidcSettings>("/settings/oidc"),
   updateOidcSettings: (patch: OidcUpdate) =>
     request<OidcSettings>("/settings/oidc", {
