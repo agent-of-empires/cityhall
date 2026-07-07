@@ -6,6 +6,7 @@ use sea_orm::DatabaseConnection;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+use crate::error::AppError;
 use crate::handlers::{auth, users};
 
 /// Directory holding the built frontend. Overridable via `STATIC_DIR` for
@@ -28,6 +29,9 @@ pub fn api_router(db: DatabaseConnection) -> Router {
             "/users/{id}",
             get(users::get).patch(users::update).delete(users::delete),
         )
+        // Unknown /api/* paths return a JSON 404 instead of falling through to
+        // the SPA index (which the outer fallback_service would otherwise serve).
+        .fallback(|| async { AppError::NotFound("not found") })
         .with_state(db)
 }
 
@@ -36,7 +40,9 @@ pub fn router(db: DatabaseConnection) -> Router {
     // Serve the SPA: static assets first, fall back to index.html so client
     // routes (e.g. /login) resolve on hard refresh.
     let index = dir.join("index.html");
-    let spa = ServeDir::new(&dir).not_found_service(ServeFile::new(index));
+    // `.fallback` (not `.not_found_service`, which forces a 404 status) so
+    // client routes like /login resolve with 200 on hard refresh.
+    let spa = ServeDir::new(&dir).fallback(ServeFile::new(index));
 
     Router::new()
         .nest("/api", api_router(db))

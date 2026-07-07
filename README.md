@@ -44,6 +44,11 @@ Serves on `http://127.0.0.1:3000` (override with `BIND_ADDR`). The API lives
 under `/api` (health check: `GET /api/health`); everything else serves the
 frontend bundle from `STATIC_DIR` (default `web/dist`).
 
+The build script builds `web/dist` automatically (needs Node.js/npm on
+`PATH`), so a plain `cargo run` serves the frontend. Set
+`SKIP_FRONTEND_BUILD=1` when the bundle is produced separately (docker
+multi-stage build, CI artifact, backend-only iteration).
+
 ### CLI
 
 ```sh
