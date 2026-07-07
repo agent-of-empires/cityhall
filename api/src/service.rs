@@ -142,6 +142,24 @@ pub async fn signup_enabled(db: &DatabaseConnection) -> Result<bool, AppError> {
         .unwrap_or(false))
 }
 
+/// The role id assigned to new external accounts (password signup and SSO
+/// first-login): the configured signup role, else the `member` role.
+pub async fn signup_role_id(db: &DatabaseConnection) -> Result<i32, AppError> {
+    match find_auth_settings(db)
+        .await?
+        .and_then(|s| s.signup_default_role_id)
+    {
+        Some(id) => find_role_by_id(db, id)
+            .await?
+            .map(|r| r.id)
+            .ok_or(AppError::Internal("configured signup role missing")),
+        None => find_role_by_name(db, crate::rbac::MEMBER_ROLE)
+            .await?
+            .map(|r| r.id)
+            .ok_or(AppError::Internal("default role missing")),
+    }
+}
+
 pub async fn find_role_by_name(
     db: &DatabaseConnection,
     name: &str,

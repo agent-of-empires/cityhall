@@ -5,6 +5,7 @@ import { Button, ErrorText, Field, Input, Select } from "./ui";
 export function SignupSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [smtpReady, setSmtpReady] = useState(true);
 
   const [enabled, setEnabled] = useState(false);
   const [allowedDomains, setAllowedDomains] = useState("");
@@ -30,6 +31,10 @@ export function SignupSettingsSection() {
     api
       .listRoles()
       .then(setRoles)
+      .catch(() => {});
+    api
+      .getSmtpSettings()
+      .then((s) => setSmtpReady(s.env_managed || s.enabled))
       .catch(() => {});
   }, [apply]);
 
@@ -64,15 +69,22 @@ export function SignupSettingsSection() {
 
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
+      {!smtpReady && (
+        <div className="rounded-md border border-status-waiting/40 bg-surface-850 px-4 py-3 text-sm text-status-waiting">
+          SMTP is not configured, so self-signup cannot be enabled. Set up email above first.
+        </div>
+      )}
+
       <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
         <label className="flex items-center gap-2 text-sm text-text-primary">
           <input
             type="checkbox"
             checked={enabled}
+            disabled={!smtpReady && !enabled}
             onChange={(e) => setEnabled(e.target.checked)}
             className="h-4 w-4 accent-brand-500"
           />
-          Allow public sign-up (requires SMTP for email verification)
+          Allow public sign-up (also lets new users sign in via SSO for the first time)
         </label>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

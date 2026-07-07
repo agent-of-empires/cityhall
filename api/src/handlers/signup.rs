@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{consume_reset_token, create_reset_token, AuthUser, EMAIL_VERIFY_TTL_HOURS};
 use crate::entities::{auth_settings, user};
 use crate::error::AppError;
-use crate::{mailer, rbac, service};
+use crate::{mailer, service};
 
 const SETTINGS_ID: i32 = 1;
 
@@ -89,16 +89,7 @@ pub async fn register(
         return Err(AppError::Conflict("email already registered"));
     }
 
-    let role_id = match settings.as_ref().and_then(|s| s.signup_default_role_id) {
-        Some(id) => service::find_role_by_id(&db, id)
-            .await?
-            .map(|r| r.id)
-            .ok_or(AppError::Internal("configured signup role missing"))?,
-        None => service::find_role_by_name(&db, rbac::MEMBER_ROLE)
-            .await?
-            .map(|r| r.id)
-            .ok_or(AppError::Internal("default role missing"))?,
-    };
+    let role_id = service::signup_role_id(&db).await?;
 
     let user = service::create_signup_user(&db, username, email, &body.password, role_id).await?;
     let token = create_reset_token(&db, user.id, EMAIL_VERIFY_TTL_HOURS).await?;
@@ -174,6 +165,13 @@ pub async fn update_settings(
     Json(body): Json<UpdateSignupRequest>,
 ) -> Result<Json<SignupSettingsResponse>, AppError> {
     caller.require("settings.write")?;
+    // Self-signup (password path) needs SMTP to send verification email, so it
+    // cannot be enabled while SMTP is unconfigured.
+    if body.signup_enabled && mailer::resolve(&db).await?.is_none() {
+        return Err(AppError::BadRequest(
+            "configure SMTP before enabling self-signup",
+        ));
+    }
     if let Some(id) = body.signup_default_role_id {
         service::find_role_by_id(&db, id)
             .await?

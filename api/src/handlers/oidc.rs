@@ -24,7 +24,7 @@ use crate::entities::oidc_settings;
 use crate::error::AppError;
 use crate::mailer::base_url;
 use crate::oidc::{self, SETTINGS_ID};
-use crate::{rbac, service};
+use crate::service;
 
 /// Carries the OIDC flow across the redirect. Cleared on callback.
 const FLOW_COOKIE: &str = "cityhall_oidc_flow";
@@ -247,14 +247,16 @@ async fn provision(
             .await
             .map_err(|_| "could not link account".to_string());
     }
-    // 3. Provision a new account, if the email domain is allowed.
+    // 3. Provision a new account. Creating new external accounts is gated by the
+    //    self-signup toggle; when off, only accounts an admin already created
+    //    (matched above by subject or email) may sign in via SSO.
+    if !service::signup_enabled(db).await.map_err(err)? {
+        return Err("sign-up is disabled; ask an administrator to create your account".to_string());
+    }
     if !oidc::domain_allowed(cfg, email) {
         return Err("your email domain is not allowed to sign in".to_string());
     }
-    let role = service::find_role_by_name(db, rbac::MEMBER_ROLE)
-        .await
-        .map_err(err)?
-        .ok_or("default role missing")?;
+    let role_id = service::signup_role_id(db).await.map_err(err)?;
 
     // Username defaults to the email; on the rare collision, add a suffix.
     let mut username = email.to_string();
@@ -265,7 +267,7 @@ async fn provision(
     {
         username = format!("{email}-{}", random_token(4));
     }
-    service::create_sso_user(db, &username, email, role.id, subject)
+    service::create_sso_user(db, &username, email, role_id, subject)
         .await
         .map_err(|_| "could not create account".to_string())
 }

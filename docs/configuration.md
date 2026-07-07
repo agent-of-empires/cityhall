@@ -148,20 +148,27 @@ shows the exact URL to register.
 
 ### Provisioning
 
-On first SSO login CityHall provisions a local account, linking by the OIDC
-`sub` claim (or by matching email to an existing account). New accounts get the
-`member` role. `OIDC_ALLOWED_DOMAINS` (or the settings field) restricts which
-email domains may auto-provision; empty allows any. SSO accounts have no usable
-password until they set one through the reset flow.
+On SSO login CityHall links the identity to a local account by the OIDC `sub`
+claim, or by matching email to an existing account. Creating a **new** account
+on first login is gated by the [self-signup](#self-signup) toggle: when signup
+is off, SSO only logs in accounts that already exist (or that an admin created
+with a matching email); when on, first-time SSO login provisions the account
+with the signup default role. `OIDC_ALLOWED_DOMAINS` (or the settings field)
+further restricts which email domains may auto-provision; empty allows any. SSO
+accounts have no usable password until they set one through the reset flow.
 
 ## Self-signup
 
 Public registration is **off by default**. An admin enables it under
 **Settings**, where they also set an optional email-domain allow-list and the
 role new accounts receive (defaults to `member`). There are no environment
-variables for signup; it is entirely a settings-page toggle.
+variables for signup; it is entirely a settings-page toggle. Because the
+password path emails a verification link, **SMTP must be configured before
+signup can be enabled** (enabling it otherwise returns `400`).
 
 When enabled, `POST /api/auth/register` creates an unverified account and emails
-a verification link, so SMTP must be configured. The account cannot log in until
-the link is opened (`POST /api/auth/verify-email`). Accounts created by an admin
-or provisioned via SSO are considered verified and are unaffected.
+a verification link. The account cannot log in until the link is opened
+(`POST /api/auth/verify-email`). This toggle is also the master switch for new
+external accounts in general: it governs whether first-time SSO login may create
+an account (see [Single sign-on](#single-sign-on-oidc)). Accounts created by an
+admin or already linked are considered verified and are unaffected.

@@ -139,9 +139,10 @@ via `fetch`.
 ### `GET /api/auth/oidc/callback`
 
 Public. The provider's redirect target. Exchanges the code, verifies the ID
-token, provisions or links the user (see [Configuration](configuration.md)),
-starts a session, and `303`-redirects to `/`. On any failure it redirects to
-`/login?error=...` so the SPA can surface the message.
+token, links or provisions the user (see [Configuration](configuration.md)),
+starts a session, and `303`-redirects to `/`. Linking to an existing account
+always works; creating a new account on first login requires self-signup to be
+enabled, otherwise it redirects to `/login?error=...` (as with any failure).
 
 ### `POST /api/auth/register`
 
@@ -410,4 +411,6 @@ Requires `settings.read`. Returns the self-signup configuration.
 
 Requires `settings.write`. Updates the self-signup configuration (same shape as
 `GET`). `signup_allowed_domains` is comma-separated (empty allows any domain); an
-unknown `signup_default_role_id` returns `400`. Returns the updated settings.
+unknown `signup_default_role_id` returns `400`. Enabling signup while SMTP is
+unconfigured returns `400` (verification email cannot be sent). Returns the
+updated settings.
