@@ -1,0 +1,16 @@
+# CODEOWNERS - merge gating for agent-of-empires/cityhall
+#
+# Last-match-wins semantics. Pair with branch protection / ruleset on `main`:
+#   - Require PR before merging
+#   - Require status checks (CI) to pass
+#   - Require review from Code Owners
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: njbrake reviews everything not otherwise scoped
+*                   @njbrake
+
+# Supply chain, build, CI
+/Cargo.toml         @njbrake
+/Cargo.lock         @njbrake
+/.github/           @njbrake
