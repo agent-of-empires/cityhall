@@ -1,0 +1,104 @@
+/* Geist Sans */
+@font-face {
+  font-family: "Geist Sans";
+  src: url("/fonts/Geist-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("/fonts/Geist-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("/fonts/Geist-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Geist Mono */
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@import "tailwindcss";
+
+/* Zinc theme, mirrored from Agent of Empires' default web palette. */
+@theme {
+  /* Brand -- amber/copper, used sparingly (focus rings, active accents) */
+  --color-brand-400: #f7b13c;
+  --color-brand-500: #f59e0b;
+  --color-brand-600: #d08609;
+  --color-brand-700: #ac6f08;
+  --color-text-on-brand: #000000;
+
+  /* Accent -- muted teal */
+  --color-accent-500: #14b8a6;
+  --color-accent-600: #0d9488;
+  --color-accent-700: #0f766e;
+
+  /* Surfaces (zinc grays) */
+  --color-surface-500: #65656b;
+  --color-surface-600: #525258;
+  --color-surface-700: #3f3f46;
+  --color-surface-800: #2e2e31;
+  --color-surface-850: #27272a;
+  --color-surface-900: #1c1c1f;
+  --color-surface-950: #0f0f11;
+
+  /* Semantic text (never pure white) */
+  --color-text-primary: #e4e4e7;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-dim: #8b8b94;
+  --color-text-bright: #fafafa;
+
+  /* Status */
+  --color-status-running: #22c55e;
+  --color-status-waiting: #fbbf24;
+  --color-status-idle: #71717a;
+  --color-status-error: #ef4444;
+
+  /* Typography */
+  --font-sans: "Geist Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Layout */
+  --width-dialog: 400px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface-900);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin custom scrollbars, matching the tool aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-700) transparent;
+}

@@ -1,31 +1,80 @@
 # CityHall
 
-A Rust API with a React frontend.
+CityHall is the distributed server for [Agent of Empires](https://github.com/agent-of-empires/agent-of-empires):
+a self-hostable control-plane service that lets teams run and coordinate AoE
+across many machines from one shared backend, instead of each person running an
+isolated local instance.
+
+It ships as a single Rust binary that serves both the API and the web frontend,
+and doubles as a CLI. This first release covers **user management** (accounts,
+authentication, forced first-login password change); more of the shared
+control plane lands on top of it.
 
 ## Layout
 
 ```
-api/    Rust backend (axum)
-web/    React frontend (Vite + TypeScript)
+api/    Rust backend (axum + SeaORM)
+web/    React frontend (Vite + TypeScript + Tailwind)
 ```
 
-## Development
+## Database
 
-### API
+Any relational database SeaORM supports, chosen via `DATABASE_URL`:
 
 ```sh
-cargo run -p cityhall-api
+# SQLite (default when DATABASE_URL is unset) -- zero config, good for local dev
+DATABASE_URL=sqlite://cityhall.db?mode=rwc
+
+# Postgres / MySQL -- for docker, compose, or kube deployments
+DATABASE_URL=postgres://user:pass@host/cityhall
+DATABASE_URL=mysql://user:pass@host/cityhall
 ```
 
-Serves on `http://127.0.0.1:3000`. Health check: `GET /health`.
+Migrations run automatically on startup and before any CLI command. On the
+first launch against an empty database, an `admin` user is seeded with a
+random password (logged once to stdout) that must be changed on first login.
 
-### Web
+## Running
+
+```sh
+cargo run              # runs migrations, seeds admin, serves API + frontend
+```
+
+Serves on `http://127.0.0.1:3000` (override with `BIND_ADDR`). The API lives
+under `/api` (health check: `GET /api/health`); everything else serves the
+frontend bundle from `STATIC_DIR` (default `web/dist`).
+
+### CLI
+
+```sh
+cargo run -- serve                                   # same as no subcommand
+cargo run -- user list
+cargo run -- user create --username bob --email bob@example.com
+cargo run -- user passwd  --username bob
+cargo run -- user delete  --username bob
+```
+
+Omit `--password` on `create`/`passwd` to generate a random one (printed once).
+
+## Frontend development
 
 ```sh
 cd web
 npm install
-npm run dev
+npm run dev            # Vite dev server, proxies /api to the backend on :3000
+npm run build          # produces web/dist for the backend to serve
 ```
+
+## Documentation
+
+Full docs live in [`docs/`](docs/index.md):
+
+- [Overview](docs/index.md)
+- [Quick start](docs/quick-start.md)
+- [Configuration](docs/configuration.md) (database, bind address, logging)
+- [CLI reference](docs/cli.md)
+- [API reference](docs/api.md)
+- [Development](docs/development.md)
 
 ## Contributing
 

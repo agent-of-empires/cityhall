@@ -1,34 +1,49 @@
-use axum::{routing::get, Router};
+mod auth;
+mod cli;
+mod db;
+mod entities;
+mod error;
+mod handlers;
+mod migration;
+mod seed;
+mod server;
+mod service;
+
+use clap::Parser;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let cli = cli::Cli::parse();
+    init_tracing(cli.log_level.as_deref());
 
-    let app = router();
-
-    let addr = "127.0.0.1:3000";
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("bind listener");
-    tracing::info!("cityhall-api listening on http://{addr}");
-    axum::serve(listener, app).await.expect("serve");
+    if let Err(e) = cli::run(cli).await {
+        tracing::error!("fatal: {e}");
+        std::process::exit(1);
+    }
 }
 
-fn router() -> Router {
-    Router::new().route("/health", get(|| async { "ok" }))
+/// An explicit `--log-level`/`CITYHALL_LOG` sets one level for the app and all
+/// dependencies, so raising it to `trace` also traces sqlx queries. Otherwise
+/// `RUST_LOG` wins (full per-target control), falling back to a default that
+/// keeps sqlx's per-query logging quiet.
+fn init_tracing(level: Option<&str>) {
+    use tracing_subscriber::EnvFilter;
+    let filter = match level {
+        Some(level) => EnvFilter::new(level),
+        None => EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info,sqlx::query=warn")),
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::auth::{hash_password, verify_password};
 
-    // Smallest check: the router builds with the health route wired up.
     #[test]
-    fn router_builds() {
-        let _: Router = router();
+    fn password_hash_round_trip() {
+        let hash = hash_password("correct horse").unwrap();
+        assert!(verify_password("correct horse", &hash));
+        assert!(!verify_password("wrong", &hash));
     }
 }

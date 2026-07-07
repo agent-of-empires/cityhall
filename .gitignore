@@ -29,4 +29,9 @@ Thumbs.db
 .env
 .env.local
 
+# SQLite databases (default DATABASE_URL creates cityhall.db in the cwd)
+*.db
+*.db-shm
+*.db-wal
+
 debug.log
