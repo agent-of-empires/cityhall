@@ -50,6 +50,13 @@ services:
       SMTP_ENCRYPTION: none
       SMTP_FROM_ADDRESS: cityhall@example.com
       SMTP_FROM_NAME: CityHall
+      # OIDC SSO is off by default. To enable it env-managed, set your provider's
+      # details here (or leave these unset and configure SSO in the settings UI).
+      # Register http://localhost:3000/api/auth/oidc/callback with the provider.
+      # OIDC_ISSUER: https://accounts.example.com
+      # OIDC_CLIENT_ID: cityhall
+      # OIDC_CLIENT_SECRET: your-client-secret
+      # OIDC_ALLOWED_DOMAINS: example.com
     ports:
       - "3000:3000"
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Send } from "lucide-react";
 import { api, ApiError, type Me, type SmtpSettings } from "../lib/api";
 import { TopBar } from "./TopBar";
+import { OidcSettingsSection } from "./OidcSettings";
 import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
@@ -239,6 +240,8 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
             </p>
           )}
         </div>
+
+        <OidcSettingsSection />
       </main>
     </div>
   );

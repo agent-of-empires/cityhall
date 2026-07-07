@@ -6,9 +6,11 @@ across many machines from one shared backend, instead of each person running an
 isolated local instance.
 
 It ships as a single Rust binary that serves both the API and the web frontend,
-and doubles as a CLI. This first release covers **user management** (accounts,
-authentication, forced first-login password change); more of the shared
-control plane lands on top of it.
+and doubles as a CLI. It covers **user management** (accounts, authentication,
+forced first-login password change, password reset and email invites),
+**role-based access control** (roles with permission keys), **email/SMTP**, and
+**single sign-on** via any OpenID Connect provider; more of the shared control
+plane lands on top of it.
 
 ## Layout
 
@@ -90,7 +92,7 @@ Full docs live in [`docs/`](docs/index.md):
 
 - [Overview](docs/index.md)
 - [Quick start](docs/quick-start.md)
-- [Configuration](docs/configuration.md) (database, bind address, logging, email)
+- [Configuration](docs/configuration.md) (database, bind address, logging, email, SSO)
 - [CLI reference](docs/cli.md)
 - [API reference](docs/api.md)
 - [Development](docs/development.md)

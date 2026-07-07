@@ -19,6 +19,11 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `SMTP_PASSWORD` | _(unset)_                        | SMTP auth password (optional).                      |
 | `SMTP_FROM_ADDRESS` | _(username)_                 | From address for outgoing mail.                     |
 | `SMTP_FROM_NAME` | _(unset)_                       | Display name for the from address (optional).       |
+| `OIDC_ISSUER`   | _(unset)_                        | OIDC issuer URL. Setting it makes SSO env-managed (see below). |
+| `OIDC_CLIENT_ID` | _(unset)_                      | OIDC client id (required when `OIDC_ISSUER` is set). |
+| `OIDC_CLIENT_SECRET` | _(unset)_                  | OIDC client secret (omit for public clients).       |
+| `OIDC_SCOPES`   | `openid email profile`           | Space-separated scopes to request.                  |
+| `OIDC_ALLOWED_DOMAINS` | _(any)_                   | Comma-separated email domains allowed to auto-provision. |
 
 ## Database
 
@@ -122,3 +127,29 @@ base URL is `CITYHALL_BASE_URL` when set (e.g. `https://cityhall.example.com`),
 otherwise it is derived from the incoming request (honoring `X-Forwarded-Proto`
 behind a reverse proxy). Set `CITYHALL_BASE_URL` explicitly for deployments
 behind a proxy so links point at the public address.
+
+## Single sign-on (OIDC)
+
+CityHall supports single sign-on with any OpenID Connect provider (Google,
+Microsoft/Entra, Okta, Auth0, Keycloak, GitLab, Authentik, and so on) through
+one generic configuration. The flow is authorization code with PKCE.
+
+Like SMTP, OIDC is configured either through `OIDC_*` environment variables
+(env-managed, settings page read-only) or through the settings page (stored in
+the database). Setting `OIDC_ISSUER` switches it to env-managed. The client
+secret set through the settings page is encrypted at rest with
+`CITYHALL_SECRET_KEY` (see [Secret key](#secret-key)).
+
+### Redirect URI
+
+Register `{base_url}/api/auth/oidc/callback` with your provider, where
+`base_url` is `CITYHALL_BASE_URL` (or the request host). The settings page
+shows the exact URL to register.
+
+### Provisioning
+
+On first SSO login CityHall provisions a local account, linking by the OIDC
+`sub` claim (or by matching email to an existing account). New accounts get the
+`member` role. `OIDC_ALLOWED_DOMAINS` (or the settings field) restricts which
+email domains may auto-provision; empty allows any. SSO accounts have no usable
+password until they set one through the reset flow.

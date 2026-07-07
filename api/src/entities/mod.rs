@@ -1,3 +1,4 @@
+pub mod oidc_settings;
 pub mod password_reset_token;
 pub mod role;
 pub mod session;

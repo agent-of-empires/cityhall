@@ -1,13 +1,22 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { Button, ErrorText, Field, Input } from "./ui";
 
 export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
+  const [params] = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(params.get("error"));
   const [busy, setBusy] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+
+  useEffect(() => {
+    api
+      .providers()
+      .then((p) => setSsoEnabled(p.oidc))
+      .catch(() => {});
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,6 +57,25 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
         <Button type="submit" variant="primary" className="w-full" disabled={busy}>
           {busy ? "Signing in..." : "Sign in"}
         </Button>
+        {ssoEnabled && (
+          <>
+            <div className="flex items-center gap-3 text-xs text-text-muted">
+              <span className="h-px flex-1 bg-surface-700" />
+              or
+              <span className="h-px flex-1 bg-surface-700" />
+            </div>
+            <Button
+              type="button"
+              variant="default"
+              className="w-full"
+              onClick={() => {
+                window.location.href = "/api/auth/oidc/login";
+              }}
+            >
+              Sign in with SSO
+            </Button>
+          </>
+        )}
         <Link to="/forgot-password" className="block text-center text-sm text-text-muted hover:text-text-primary">
           Forgot password?
         </Link>

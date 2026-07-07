@@ -4,7 +4,7 @@ use argon2::password_hash::{
 use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use axum_extra::extract::cookie::CookieJar;
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
 use rand::distr::Alphanumeric;
 use rand::RngExt;
@@ -16,6 +16,15 @@ use crate::rbac::Perms;
 
 pub const SESSION_COOKIE: &str = "cityhall_session";
 const SESSION_TTL_DAYS: i64 = 30;
+
+/// Build the HttpOnly session cookie carrying `token`.
+pub fn session_cookie(token: String) -> Cookie<'static> {
+    let mut cookie = Cookie::new(SESSION_COOKIE, token);
+    cookie.set_http_only(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/");
+    cookie
+}
 
 /// How long a self-service password-reset token is valid, in hours.
 pub const RESET_TOKEN_TTL_HOURS: i64 = 1;

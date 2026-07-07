@@ -15,6 +15,8 @@ pub struct Model {
     pub must_change_password: bool,
     pub created_at: DateTimeUtc,
     pub role_id: Option<i32>,
+    /// The OIDC `sub` claim, set when the account is linked to an SSO identity.
+    pub oidc_subject: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -7,7 +7,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::handlers::{auth, roles, settings, users};
+use crate::handlers::{auth, oidc, roles, settings, users};
 
 /// Directory holding the built frontend. Overridable via `STATIC_DIR` for
 /// container images that place the bundle elsewhere.
@@ -26,6 +26,9 @@ pub fn api_router(db: DatabaseConnection) -> Router {
         .route("/auth/change-password", post(auth::change_password))
         .route("/auth/forgot-password", post(auth::forgot_password))
         .route("/auth/reset-password", post(auth::reset_password))
+        .route("/auth/providers", get(oidc::providers))
+        .route("/auth/oidc/login", get(oidc::login))
+        .route("/auth/oidc/callback", get(oidc::callback))
         .route("/users", get(users::list).post(users::create))
         .route(
             "/users/{id}",
@@ -36,6 +39,10 @@ pub fn api_router(db: DatabaseConnection) -> Router {
         .route("/permissions", get(roles::permissions))
         .route("/settings/smtp", get(settings::get).put(settings::update))
         .route("/settings/smtp/test", post(settings::test))
+        .route(
+            "/settings/oidc",
+            get(oidc::get_settings).put(oidc::update_settings),
+        )
         // Unknown /api/* paths return a JSON 404 instead of falling through to
         // the SPA index (which the outer fallback_service would otherwise serve).
         .fallback(|| async { AppError::NotFound("not found") })

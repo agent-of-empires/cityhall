@@ -6,13 +6,14 @@
 api/    Rust backend (axum + SeaORM)
   build.rs     Builds web/dist during `cargo build` (skip: SKIP_FRONTEND_BUILD=1)
   src/
-    entities/    SeaORM models (user, role, session, smtp_settings, password_reset_token)
+    entities/    SeaORM models (user, role, session, smtp_settings, oidc_settings, password_reset_token)
     migration/   Embedded migrations
-    handlers/    HTTP handlers (auth, users, roles, settings)
+    handlers/    HTTP handlers (auth, users, roles, settings, oidc)
     auth.rs      Password hashing, sessions, the AuthUser extractor (with permissions)
     rbac.rs      Permission-key catalog and the Perms set resolved from a role
     crypto.rs    AES-256-GCM encryption for secrets at rest
     mailer.rs    SMTP config resolution (env vs database) and sending
+    oidc.rs      OIDC config resolution (env vs database) and provisioning helpers
     service.rs   User operations shared by the API and CLI
     server.rs    Router + static file serving
     cli.rs       clap CLI (serve, user ...)

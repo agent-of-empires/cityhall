@@ -116,6 +116,31 @@ Redeems a reset or setup token and sets the new password (minimum 8
 characters), clearing `must_change_password`. The token is single-use; an
 unknown, expired, or already-used token returns `400`.
 
+### `GET /api/auth/providers`
+
+Public (no authentication). Reports which login methods are available so the
+login page can render accordingly:
+
+```json
+{ "oidc": true }
+```
+
+`oidc` is `true` when OIDC SSO is configured and enabled.
+
+### `GET /api/auth/oidc/login`
+
+Public. Begins the OIDC flow: sets a short-lived flow cookie (CSRF state, nonce,
+PKCE verifier) and `303`-redirects the browser to the identity provider.
+Returns `400` if SSO is not configured. Open it as a top-level navigation, not
+via `fetch`.
+
+### `GET /api/auth/oidc/callback`
+
+Public. The provider's redirect target. Exchanges the code, verifies the ID
+token, provisions or links the user (see [Configuration](configuration.md)),
+starts a session, and `303`-redirects to `/`. On any failure it redirects to
+`/login?error=...` so the SPA can surface the message.
+
 ### `GET /api/users`
 
 Requires `users.read`. Returns all users:
@@ -298,3 +323,46 @@ HTTP error:
 ```
 
 Returns `400` if SMTP is not configured or not enabled.
+
+### `GET /api/settings/oidc`
+
+Requires `settings.read`. Returns the OIDC configuration. The client secret is
+never returned, only whether one is stored (`client_secret_set`).
+
+```json
+{
+  "env_managed": false,
+  "enabled": true,
+  "issuer": "https://accounts.example.com",
+  "client_id": "cityhall",
+  "scopes": "openid email profile",
+  "allowed_domains": "example.com",
+  "client_secret_set": true,
+  "secret_key_available": true,
+  "callback_path": "/api/auth/oidc/callback"
+}
+```
+
+`env_managed` is `true` when OIDC is configured through environment variables;
+the values then come from the environment and `PUT` is rejected. Register
+`{base_url}{callback_path}` with the identity provider.
+
+### `PUT /api/settings/oidc`
+
+Requires `settings.write`. Updates the stored OIDC configuration:
+
+```json
+{
+  "enabled": true,
+  "issuer": "https://accounts.example.com",
+  "client_id": "cityhall",
+  "client_secret": "...",
+  "scopes": "openid email profile",
+  "allowed_domains": "example.com"
+}
+```
+
+`issuer` and `client_id` are required. Omitting `client_secret` keeps the stored
+one; sending a value replaces it (and requires `CITYHALL_SECRET_KEY`, else
+`400`). `allowed_domains` is comma-separated (empty allows any domain). When
+OIDC is env-managed, this returns `409`. Returns the updated settings.

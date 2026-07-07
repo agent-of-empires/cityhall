@@ -41,4 +41,6 @@ pub enum Users {
     CreatedAt,
     // Added by m0006.
     RoleId,
+    // Added by m0008.
+    OidcSubject,
 }

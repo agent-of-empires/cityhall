@@ -50,6 +50,7 @@ cargo run -- user create --username svc --password 's3cret-value'
 | `--username <name>` | yes      | Unique username.                                         |
 | `--email <email>`   | no       | Email address.                                           |
 | `--password <pw>`   | no       | Password. Omit to generate a random one (printed once).  |
+| `--role <name>`     | no       | Role to assign (defaults to `member`).                   |
 
 When `--password` is omitted, a random password is generated and printed, and
 the user must change it on first login.

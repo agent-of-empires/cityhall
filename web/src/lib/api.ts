@@ -74,6 +74,32 @@ export interface SmtpUpdate {
   enabled: boolean;
 }
 
+export interface Providers {
+  oidc: boolean;
+}
+
+export interface OidcSettings {
+  env_managed: boolean;
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+  scopes: string;
+  allowed_domains: string;
+  client_secret_set: boolean;
+  secret_key_available: boolean;
+  callback_path: string;
+}
+
+export interface OidcUpdate {
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+  // Omit to keep the stored secret; set a value to replace it.
+  client_secret?: string;
+  scopes: string;
+  allowed_domains: string;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -161,5 +187,12 @@ export const api = {
     request<{ ok: boolean; error: string | null }>("/settings/smtp/test", {
       method: "POST",
       body: JSON.stringify({ to }),
+    }),
+  providers: () => request<Providers>("/auth/providers"),
+  getOidcSettings: () => request<OidcSettings>("/settings/oidc"),
+  updateOidcSettings: (patch: OidcUpdate) =>
+    request<OidcSettings>("/settings/oidc", {
+      method: "PUT",
+      body: JSON.stringify(patch),
     }),
 };

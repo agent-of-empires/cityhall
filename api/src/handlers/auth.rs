@@ -1,13 +1,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::extract::cookie::{Cookie, CookieJar};
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    consume_reset_token, create_reset_token, create_session, delete_session, verify_password,
-    AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
+    consume_reset_token, create_reset_token, create_session, delete_session, session_cookie,
+    verify_password, AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
 };
 use crate::entities::user;
 use crate::error::AppError;
@@ -62,14 +62,6 @@ async fn me_response(
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
-}
-
-fn session_cookie(token: String) -> Cookie<'static> {
-    let mut cookie = Cookie::new(SESSION_COOKIE, token);
-    cookie.set_http_only(true);
-    cookie.set_same_site(SameSite::Lax);
-    cookie.set_path("/");
-    cookie
 }
 
 pub async fn login(

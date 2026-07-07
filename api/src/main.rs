@@ -7,6 +7,7 @@ mod error;
 mod handlers;
 mod mailer;
 mod migration;
+mod oidc;
 mod rbac;
 mod seed;
 mod server;

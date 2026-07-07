@@ -6,6 +6,8 @@ mod m0003_create_smtp_settings;
 mod m0004_create_password_reset_tokens;
 mod m0005_create_roles;
 mod m0006_add_role_to_users;
+mod m0007_create_oidc_settings;
+mod m0008_add_oidc_subject_to_users;
 
 pub struct Migrator;
 
@@ -19,6 +21,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0004_create_password_reset_tokens::Migration),
             Box::new(m0005_create_roles::Migration),
             Box::new(m0006_add_role_to_users::Migration),
+            Box::new(m0007_create_oidc_settings::Migration),
+            Box::new(m0008_add_oidc_subject_to_users::Migration),
         ]
     }
 }

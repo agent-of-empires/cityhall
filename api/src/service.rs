@@ -4,7 +4,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
 };
 
-use crate::auth::hash_password;
+use crate::auth::{hash_password, random_token};
 use crate::entities::{role, user};
 use crate::error::AppError;
 
@@ -59,6 +59,41 @@ pub async fn create(
         must_change_password: Set(must_change_password),
         created_at: Set(chrono::Utc::now()),
         role_id: Set(role_id),
+        ..Default::default()
+    }
+    .insert(db)
+    .await?;
+    Ok(model)
+}
+
+pub async fn find_by_oidc_subject(
+    db: &DatabaseConnection,
+    subject: &str,
+) -> Result<Option<user::Model>, AppError> {
+    Ok(user::Entity::find()
+        .filter(user::Column::OidcSubject.eq(subject))
+        .one(db)
+        .await?)
+}
+
+/// Provision a local account for an OIDC identity. The password is a random,
+/// unusable value (the user authenticates via SSO), so password login fails
+/// until they set one through the reset flow.
+pub async fn create_sso_user(
+    db: &DatabaseConnection,
+    username: &str,
+    email: &str,
+    role_id: i32,
+    oidc_subject: &str,
+) -> Result<user::Model, AppError> {
+    let model = user::ActiveModel {
+        username: Set(username.to_string()),
+        email: Set(Some(email.to_string())),
+        password_hash: Set(hash_password(&random_token(32))?),
+        must_change_password: Set(false),
+        created_at: Set(chrono::Utc::now()),
+        role_id: Set(Some(role_id)),
+        oidc_subject: Set(Some(oidc_subject.to_string())),
         ..Default::default()
     }
     .insert(db)
