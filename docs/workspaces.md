@@ -1,10 +1,10 @@
 # Workspaces
 
 A workspace is one long-lived [aoe](https://github.com/agent-of-empires/agent-of-empires)
-instance per user, spawned and managed by CityHall (docker containers today;
-the orchestration seam is backend-agnostic). Each workspace has a persistent
-data volume, so aoe sessions and configuration survive stops, restarts, and
-version changes.
+instance per user, spawned and managed by CityHall (docker containers by
+default; kubernetes and bare-process backends are available, see
+[Backends](#backends)). Each workspace has a persistent data volume, so aoe
+sessions and configuration survive stops, restarts, and version changes.
 
 ## How it works
 
@@ -64,14 +64,36 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 | -------- | ------- | ------- |
 | `WORKSPACE_PROXY_BIND_ADDR` | `127.0.0.1:3001` | Address of the workspace proxy listener. |
 | `WORKSPACE_PROXY_PUBLIC_ORIGIN` | _(derived)_ | Public origin browsers use to reach the proxy. |
-| `CONTAINER_CLI` | `docker` | Container CLI binary (e.g. `podman`). |
+
+## Backends
+
+`WORKSPACE_BACKEND` selects how workspaces run (see
+[Configuration](configuration.md) for every variable):
+
+- **`docker`** (default). One container + named volume per user. CityHall on
+  the docker host dials loopback-published ports; with
+  `WORKSPACE_DOCKER_NETWORK` set, workspaces instead join that docker network
+  with no published ports and are dialed by container DNS, which is how
+  CityHall itself runs in docker/compose (socket mounted, see
+  `deploy/docker-compose.workspaces.yml`). Mounting the docker socket gives
+  CityHall effective root on the host; use a restricted socket proxy if that
+  matters.
+- **`kubernetes`**. One Deployment + Service + PVC per user, managed with
+  `kubectl` in the CityHall pod's namespace (override with
+  `WORKSPACE_K8S_NAMESPACE`). Stop scales to zero keeping the PVC; destroy
+  deletes all three. The image template must point at a registry the cluster
+  can pull. Requires the RBAC and NetworkPolicy shipped in `deploy/k8s/` and
+  the helm chart; without the NetworkPolicy any pod in the cluster can reach
+  the auth-none workspaces.
+- **`process`** (unix). One detached `aoe serve` per user with an isolated
+  HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Install
+  each served version's binary at
+  `$WORKSPACE_PROCESS_DIR/versions/<version>/aoe` (from the aoe release
+  tarball). Processes survive CityHall restarts. This isolates data, not
+  security: every workspace runs as the CityHall OS user.
 
 ## Current limitations
 
-- CityHall must run natively on the docker host (the backend dials
-  loopback-published ports). CityHall-in-docker/compose/kubernetes topologies
-  and non-docker backends are tracked in
-  [#18](https://github.com/agent-of-empires/cityhall/issues/18).
 - Workspace images are operator-built ([#17](https://github.com/agent-of-empires/cityhall/issues/17)
   tracks auto-pull/build).
 - Agent credentials are not forwarded into workspaces yet
