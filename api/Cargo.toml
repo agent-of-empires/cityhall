@@ -40,3 +40,7 @@ tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+# Process-group signaling for the bare-process workspace backend.
+libc = "0.2"

@@ -7,6 +7,8 @@
 
 pub mod docker;
 pub mod kubernetes;
+#[cfg(unix)]
+pub mod process;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,8 +84,10 @@ pub fn from_env() -> Result<Arc<dyn Orchestrator>, String> {
     match backend.as_str() {
         "docker" => Ok(Arc::new(docker::DockerCliOrchestrator::from_env())),
         "kubernetes" => Ok(Arc::new(kubernetes::KubectlOrchestrator::from_env())),
+        #[cfg(unix)]
+        "process" => Ok(Arc::new(process::ProcessOrchestrator::from_env())),
         other => Err(format!(
-            "unknown WORKSPACE_BACKEND '{other}' (expected docker or kubernetes)"
+            "unknown WORKSPACE_BACKEND '{other}' (expected docker, kubernetes, or process)"
         )),
     }
 }
