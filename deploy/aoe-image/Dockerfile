@@ -26,8 +26,10 @@ RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 
          arm64) AOE_ARCH=arm64 ;; \
          *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
        esac \
+    # The tarball contains a single arch-suffixed binary (aoe-linux-<arch>).
     && curl -fsSL "https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}/aoe-linux-${AOE_ARCH}.tar.gz" \
        | tar -xz -C /usr/local/bin \
+    && mv "/usr/local/bin/aoe-linux-${AOE_ARCH}" /usr/local/bin/aoe \
     && chmod +x /usr/local/bin/aoe
 
 RUN useradd -m -d /home/aoe aoe \
