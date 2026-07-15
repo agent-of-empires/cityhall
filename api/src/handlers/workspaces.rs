@@ -83,7 +83,6 @@ pub async fn me(
         .and_then(|r| workspaces::effective_version(&cfg, r))
         .or_else(|| cfg.default_version.clone());
     Ok(Json(serde_json::json!({
-        "enabled": cfg.enabled,
         "status": status,
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),
         "effective_version": effective,
@@ -205,7 +204,6 @@ async fn pin_version(
 
 #[derive(Serialize)]
 pub struct WorkspaceSettingsResponse {
-    pub enabled: bool,
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
@@ -213,7 +211,6 @@ pub struct WorkspaceSettingsResponse {
 
 #[derive(Deserialize)]
 pub struct UpdateWorkspaceSettingsRequest {
-    pub enabled: bool,
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
@@ -227,7 +224,6 @@ pub async fn get_settings(
     caller.require("settings.read")?;
     let cfg = workspaces::settings(&state.db).await?;
     Ok(Json(WorkspaceSettingsResponse {
-        enabled: cfg.enabled,
         image_template: cfg.image_template,
         default_version: cfg.default_version,
         idle_stop_minutes: cfg.idle_stop_minutes,
@@ -248,18 +244,12 @@ pub async fn update_settings(
         return Err(AppError::BadRequest("idle stop must be at least 1 minute"));
     }
     let default_version = normalize(body.default_version);
-    if body.enabled && default_version.is_none() {
-        return Err(AppError::BadRequest(
-            "a default version is required to enable workspaces",
-        ));
-    }
 
     let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
         .one(&state.db)
         .await?;
     let model = workspace_settings::ActiveModel {
         id: Set(SETTINGS_ID),
-        enabled: Set(body.enabled),
         image_template: Set(body.image_template.trim().to_string()),
         default_version: Set(default_version),
         idle_stop_minutes: Set(body.idle_stop_minutes),

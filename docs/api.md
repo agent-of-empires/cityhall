@@ -443,7 +443,6 @@ use to reach the workspace proxy:
 
 ```json
 {
-  "enabled": true,
   "status": "stopped",
   "pinned_version": null,
   "effective_version": "v0.5.0",
@@ -490,7 +489,6 @@ Requires `settings.read`.
 
 ```json
 {
-  "enabled": false,
   "image_template": "cityhall/aoe:{version}",
   "default_version": "v0.5.0",
   "idle_stop_minutes": 30
@@ -499,5 +497,5 @@ Requires `settings.read`.
 
 ### `PUT /api/settings/workspaces`
 
-Requires `settings.write`. Same shape as `GET`. Enabling workspaces without a
-default version returns `400`; `idle_stop_minutes` must be at least 1.
+Requires `settings.write`. Same shape as `GET`. `image_template` is required;
+`idle_stop_minutes` must be at least 1.

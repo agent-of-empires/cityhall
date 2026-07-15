@@ -21,7 +21,6 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
         .await?
         .unwrap_or(workspace_settings::Model {
             id: SETTINGS_ID,
-            enabled: false,
             image_template: "cityhall/aoe:{version}".to_string(),
             default_version: None,
             idle_stop_minutes: 30,
@@ -30,7 +29,7 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
 }
 
 /// On a first startup (no settings row saved yet), pre-fill the default
-/// version with the latest aoe release so enabling workspaces is one click.
+/// version with the latest aoe release so workspaces work out of the box.
 /// Best effort: offline or rate-limited lookups just log and skip; a saved
 /// row (even with no version) is never touched.
 pub async fn seed_default_version(db: &DatabaseConnection) -> Result<(), AppError> {
@@ -58,7 +57,6 @@ async fn apply_seeded_version(db: &DatabaseConnection, version: String) -> Resul
     let defaults = settings(db).await?;
     workspace_settings::ActiveModel {
         id: Set(SETTINGS_ID),
-        enabled: Set(defaults.enabled),
         image_template: Set(defaults.image_template),
         default_version: Set(Some(version)),
         idle_stop_minutes: Set(defaults.idle_stop_minutes),
@@ -150,11 +148,6 @@ impl From<OrchestratorError> for AppError {
 /// start endpoint calls it explicitly. Serialized per user against the sweeper.
 pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, AppError> {
     let cfg = settings(&state.db).await?;
-    if !cfg.enabled {
-        return Err(AppError::WorkspaceUnavailable(
-            "workspaces are disabled; an admin can enable them in settings".to_string(),
-        ));
-    }
     let row = get_or_create(&state.db, user_id).await?;
     let spec = build_spec(&cfg, &row)?;
 
@@ -221,9 +214,6 @@ pub async fn idle_sweeper(state: AppState) {
 
 async fn sweep_once(state: &AppState) -> Result<(), AppError> {
     let cfg = settings(&state.db).await?;
-    if !cfg.enabled {
-        return Ok(());
-    }
     let idle_after = Duration::from_secs(cfg.idle_stop_minutes.max(1) as u64 * 60);
 
     for row in workspace::Entity::find().all(&state.db).await? {
@@ -289,7 +279,6 @@ mod tests {
     fn cfg(default_version: Option<&str>) -> workspace_settings::Model {
         workspace_settings::Model {
             id: SETTINGS_ID,
-            enabled: true,
             image_template: "cityhall/aoe:{version}".to_string(),
             default_version: default_version.map(String::from),
             idle_stop_minutes: 30,
@@ -305,7 +294,6 @@ mod tests {
             .unwrap();
         let s = settings(&db).await.unwrap();
         assert_eq!(s.default_version.as_deref(), Some("v9.9.9"));
-        assert!(!s.enabled);
     }
 
     #[tokio::test]
@@ -315,7 +303,6 @@ mod tests {
         // that choice alone (and must not hit the network to do so).
         workspace_settings::ActiveModel {
             id: Set(SETTINGS_ID),
-            enabled: Set(false),
             image_template: Set("cityhall/aoe:{version}".to_string()),
             default_version: Set(None),
             idle_stop_minutes: Set(30),
@@ -333,7 +320,6 @@ mod tests {
     async fn settings_defaults_when_no_row() {
         let db = setup().await;
         let s = settings(&db).await.unwrap();
-        assert!(!s.enabled);
         assert_eq!(s.image_template, "cityhall/aoe:{version}");
         assert_eq!(s.idle_stop_minutes, 30);
     }

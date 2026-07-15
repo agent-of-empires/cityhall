@@ -117,7 +117,6 @@ export interface WorkspaceItem {
 }
 
 export interface MyWorkspace {
-  enabled: boolean;
   status: "not_created" | "stopped" | "running" | "unknown";
   pinned_version: string | null;
   effective_version: string | null;
@@ -125,7 +124,6 @@ export interface MyWorkspace {
 }
 
 export interface WorkspaceSettings {
-  enabled: boolean;
   image_template: string;
   default_version: string | null;
   idle_stop_minutes: number;

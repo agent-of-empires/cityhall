@@ -5,7 +5,6 @@ import { Button, ErrorText, Field, Input } from "./ui";
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [enabled, setEnabled] = useState(false);
   const [imageTemplate, setImageTemplate] = useState("");
   const [defaultVersion, setDefaultVersion] = useState("");
   const [idleStopMinutes, setIdleStopMinutes] = useState(30);
@@ -15,7 +14,6 @@ export function WorkspaceSettingsSection() {
   const [saved, setSaved] = useState(false);
 
   const apply = useCallback((s: WorkspaceSettings) => {
-    setEnabled(s.enabled);
     setImageTemplate(s.image_template);
     setDefaultVersion(s.default_version ?? "");
     setIdleStopMinutes(s.idle_stop_minutes);
@@ -42,7 +40,6 @@ export function WorkspaceSettingsSection() {
     try {
       apply(
         await api.updateWorkspaceSettings({
-          enabled,
           image_template: imageTemplate,
           default_version: defaultVersion.trim() || null,
           idle_stop_minutes: idleStopMinutes,
@@ -63,16 +60,6 @@ export function WorkspaceSettingsSection() {
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
       <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
-        <label className="flex items-center gap-2 text-sm text-text-primary">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            className="h-4 w-4 accent-brand-500"
-          />
-          Enable per-user aoe workspaces
-        </label>
-
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Image template">
             <Input

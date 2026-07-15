@@ -12,15 +12,14 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   );
 
 export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
-  // The user's workspace origin; only fetched when they may use one, only
-  // rendered when workspaces are enabled.
+  // The user's workspace origin; only fetched when they may use one.
   const [workspaceOrigin, setWorkspaceOrigin] = useState<string | null>(null);
 
   useEffect(() => {
     if (!can(me, "workspaces.use")) return;
     api
       .myWorkspace()
-      .then((w) => setWorkspaceOrigin(w.enabled ? w.proxy_origin : null))
+      .then((w) => setWorkspaceOrigin(w.proxy_origin))
       .catch(() => {});
   }, [me]);
 

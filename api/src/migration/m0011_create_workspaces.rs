@@ -32,14 +32,14 @@ impl MigrationTrait for Migration {
             .await?;
 
         // Single-row table (id is always 1) holding orchestration settings.
-        // Workspaces are off by default; an admin enables them in settings.
+        // Workspaces are always on (they are CityHall's core purpose); the
+        // settings only tune how they run.
         manager
             .create_table(
                 Table::create()
                     .table(WorkspaceSettings::Table)
                     .if_not_exists()
                     .col(integer(WorkspaceSettings::Id).primary_key())
-                    .col(boolean(WorkspaceSettings::Enabled).default(false))
                     .col(string(WorkspaceSettings::ImageTemplate).default("cityhall/aoe:{version}"))
                     .col(string_null(WorkspaceSettings::DefaultVersion))
                     .col(integer(WorkspaceSettings::IdleStopMinutes).default(30))
@@ -73,7 +73,6 @@ pub enum Workspaces {
 pub enum WorkspaceSettings {
     Table,
     Id,
-    Enabled,
     ImageTemplate,
     DefaultVersion,
     IdleStopMinutes,

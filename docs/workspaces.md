@@ -23,18 +23,20 @@ version changes.
   settings' image template with `{version}` substituted, e.g.
   `cityhall/aoe:v0.5.0`.
 
-## Enabling workspaces
+## Setup
 
-1. Build the workspace image for the version you want to serve (no official
-   aoe server image is published yet):
+Workspaces are always on; the only required setup is the image. Build the
+workspace image for the version you want to serve (no official aoe server
+image is published yet):
 
-   ```sh
-   docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
-   ```
+```sh
+docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
+```
 
-2. In **Settings → Workspaces**, set the default version (e.g. `v0.5.0`) and
-   enable workspaces. On a first startup the default version is pre-filled
-   with the latest aoe release (skipped when offline; the field stays empty).
+On a first startup the default version is pre-filled with the latest aoe
+release (skipped when offline); adjust it under **Settings → Workspaces** if
+needed. Starting a workspace with no default version set, or with an image
+that is not built, fails with a descriptive error.
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
