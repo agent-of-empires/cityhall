@@ -5,3 +5,5 @@ pub mod role;
 pub mod session;
 pub mod smtp_settings;
 pub mod user;
+pub mod workspace;
+pub mod workspace_settings;

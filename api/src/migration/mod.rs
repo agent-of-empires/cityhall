@@ -10,6 +10,7 @@ mod m0007_create_oidc_settings;
 mod m0008_add_oidc_subject_to_users;
 mod m0009_create_auth_settings;
 mod m0010_add_email_verified_to_users;
+mod m0011_create_workspaces;
 
 pub struct Migrator;
 
@@ -27,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0008_add_oidc_subject_to_users::Migration),
             Box::new(m0009_create_auth_settings::Migration),
             Box::new(m0010_add_email_verified_to_users::Migration),
+            Box::new(m0011_create_workspaces::Migration),
         ]
     }
 }

@@ -8,10 +8,14 @@ mod handlers;
 mod mailer;
 mod migration;
 mod oidc;
+mod orchestrator;
+mod proxy;
 mod rbac;
 mod seed;
 mod server;
 mod service;
+mod state;
+mod workspaces;
 
 use clap::Parser;
 
