@@ -10,7 +10,6 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
 use crate::handlers::{auth, oidc, roles, settings, signup, users, workspaces};
-use crate::orchestrator::docker::DockerCliOrchestrator;
 use crate::proxy;
 use crate::state::AppState;
 
@@ -99,7 +98,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         .build()?;
     Ok(AppState {
         db,
-        orchestrator: Arc::new(DockerCliOrchestrator::from_env()),
+        orchestrator: crate::orchestrator::from_env()?,
         activity: Arc::default(),
         locks: Arc::default(),
         proxy_client,

@@ -6,7 +6,9 @@
 //! treats the runtime as the source of truth for liveness.
 
 pub mod docker;
+pub mod kubernetes;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -71,6 +73,19 @@ pub trait Orchestrator: Send + Sync {
 
     /// Current runtime state.
     async fn status(&self, user_id: i32) -> Result<WorkspaceStatus, OrchestratorError>;
+}
+
+/// The backend selected by `WORKSPACE_BACKEND` (default `docker`). Invalid
+/// values fail CityHall startup instead of surfacing on first workspace use.
+pub fn from_env() -> Result<Arc<dyn Orchestrator>, String> {
+    let backend = std::env::var("WORKSPACE_BACKEND").unwrap_or_else(|_| "docker".to_string());
+    match backend.as_str() {
+        "docker" => Ok(Arc::new(docker::DockerCliOrchestrator::from_env())),
+        "kubernetes" => Ok(Arc::new(kubernetes::KubectlOrchestrator::from_env())),
+        other => Err(format!(
+            "unknown WORKSPACE_BACKEND '{other}' (expected docker or kubernetes)"
+        )),
+    }
 }
 
 /// Render an image template by substituting the `{version}` placeholder.
