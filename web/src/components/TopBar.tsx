@@ -1,5 +1,6 @@
 import clsx from "clsx";
-import { LogOut, Settings, Shield, Users } from "lucide-react";
+import { Boxes, ExternalLink, LogOut, Settings, Shield, Users } from "lucide-react";
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api, can, type Me } from "../lib/api";
 import { Button } from "./ui";
@@ -11,6 +12,18 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   );
 
 export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
+  // The user's workspace origin; only fetched when they may use one, only
+  // rendered when workspaces are enabled.
+  const [workspaceOrigin, setWorkspaceOrigin] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!can(me, "workspaces.use")) return;
+    api
+      .myWorkspace()
+      .then((w) => setWorkspaceOrigin(w.enabled ? w.proxy_origin : null))
+      .catch(() => {});
+  }, [me]);
+
   async function logout() {
     await api.logout();
     await onLogout();
@@ -31,6 +44,12 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
               Roles
             </NavLink>
           )}
+          {can(me, "workspaces.read") && (
+            <NavLink to="/workspaces" className={navLinkClass}>
+              <Boxes size={14} />
+              Workspaces
+            </NavLink>
+          )}
           {can(me, "settings.read") && (
             <NavLink to="/settings" className={navLinkClass}>
               <Settings size={14} />
@@ -40,6 +59,17 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
         </nav>
       </div>
       <div className="flex items-center gap-3">
+        {workspaceOrigin && (
+          <a
+            href={workspaceOrigin}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-text-secondary transition-colors hover:text-text-primary"
+          >
+            <ExternalLink size={14} />
+            Open workspace
+          </a>
+        )}
         <span className="text-sm text-text-secondary">{me.username}</span>
         <Button variant="ghost" onClick={logout} className="flex items-center gap-1.5">
           <LogOut size={14} />

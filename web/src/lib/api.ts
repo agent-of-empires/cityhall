@@ -107,6 +107,30 @@ export interface OidcUpdate {
   allowed_domains: string;
 }
 
+export interface WorkspaceItem {
+  user_id: number;
+  username: string;
+  status: "not_created" | "stopped" | "running" | "unknown";
+  pinned_version: string | null;
+  effective_version: string | null;
+  last_active_at: string | null;
+}
+
+export interface MyWorkspace {
+  enabled: boolean;
+  status: "not_created" | "stopped" | "running" | "unknown";
+  pinned_version: string | null;
+  effective_version: string | null;
+  proxy_origin: string;
+}
+
+export interface WorkspaceSettings {
+  enabled: boolean;
+  image_template: string;
+  default_version: string | null;
+  idle_stop_minutes: number;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -215,6 +239,27 @@ export const api = {
   getOidcSettings: () => request<OidcSettings>("/settings/oidc"),
   updateOidcSettings: (patch: OidcUpdate) =>
     request<OidcSettings>("/settings/oidc", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  listWorkspaces: () => request<WorkspaceItem[]>("/workspaces"),
+  myWorkspace: () => request<MyWorkspace>("/workspaces/me"),
+  startWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/start`, { method: "POST" }),
+  stopWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/stop`, { method: "POST" }),
+  destroyWorkspace: (userId: number) => request<{ destroyed: boolean }>(`/workspaces/${userId}`, { method: "DELETE" }),
+  setWorkspaceVersion: (userId: number, pinnedVersion: string | null) =>
+    request<{ pinned_version: string | null }>(`/workspaces/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned_version: pinnedVersion }),
+    }),
+  bulkSetWorkspaceVersion: (userIds: number[], pinnedVersion: string | null) =>
+    request<{ pinned_version: string | null }>("/workspaces", {
+      method: "PATCH",
+      body: JSON.stringify({ user_ids: userIds, pinned_version: pinnedVersion }),
+    }),
+  getWorkspaceSettings: () => request<WorkspaceSettings>("/settings/workspaces"),
+  updateWorkspaceSettings: (patch: WorkspaceSettings) =>
+    request<WorkspaceSettings>("/settings/workspaces", {
       method: "PUT",
       body: JSON.stringify(patch),
     }),

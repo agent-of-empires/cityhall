@@ -4,6 +4,7 @@ import { api, ApiError, type Me, type SmtpSettings } from "../lib/api";
 import { TopBar } from "./TopBar";
 import { OidcSettingsSection } from "./OidcSettings";
 import { SignupSettingsSection } from "./SignupSettings";
+import { WorkspaceSettingsSection } from "./WorkspaceSettings";
 import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
@@ -245,6 +246,8 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
         <OidcSettingsSection />
 
         <SignupSettingsSection />
+
+        <WorkspaceSettingsSection />
       </main>
     </div>
   );
