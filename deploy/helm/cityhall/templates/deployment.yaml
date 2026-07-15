@@ -14,6 +14,9 @@ spec:
       labels:
         {{- include "cityhall.selector" . | nindent 8 }}
     spec:
+      {{- if .Values.workspaces.enabled }}
+      serviceAccountName: {{ .Release.Name }}
+      {{- end }}
       containers:
         - name: cityhall
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -21,6 +24,16 @@ spec:
           env:
             - name: BIND_ADDR
               value: "0.0.0.0:3000"
+            {{- if .Values.workspaces.enabled }}
+            - name: WORKSPACE_BACKEND
+              value: kubernetes
+            - name: WORKSPACE_K8S_VOLUME_SIZE
+              value: {{ .Values.workspaces.volumeSize | quote }}
+            {{- if .Values.workspaces.storageClass }}
+            - name: WORKSPACE_K8S_STORAGE_CLASS
+              value: {{ .Values.workspaces.storageClass | quote }}
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := .Values.config.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}

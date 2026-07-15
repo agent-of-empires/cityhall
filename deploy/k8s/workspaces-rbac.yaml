@@ -1,0 +1,41 @@
+# Lets CityHall manage per-user workspace objects (Deployment + Service +
+# PVC, plus reading pod status) in its namespace via the kubernetes workspace
+# backend (WORKSPACE_BACKEND=kubernetes).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cityhall
+  namespace: cityhall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cityhall-workspaces
+  namespace: cityhall
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "patch", "update", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cityhall-workspaces
+  namespace: cityhall
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cityhall-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: cityhall
+    namespace: cityhall

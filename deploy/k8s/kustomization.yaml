@@ -8,3 +8,5 @@ resources:
   - deployment.yaml
   - service.yaml
   - ingress.yaml
+  - workspaces-rbac.yaml
+  - workspaces-networkpolicy.yaml

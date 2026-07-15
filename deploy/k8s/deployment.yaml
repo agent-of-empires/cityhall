@@ -13,6 +13,9 @@ spec:
       labels:
         app: cityhall
     spec:
+      # Grants the workspace backend its Deployment/Service/PVC permissions
+      # (workspaces-rbac.yaml).
+      serviceAccountName: cityhall
       containers:
         - name: cityhall
           # Replace with your pushed registry path, e.g.
@@ -21,6 +24,8 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:3000
+            - name: WORKSPACE_BACKEND
+              value: kubernetes
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

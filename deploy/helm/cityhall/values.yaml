@@ -33,6 +33,16 @@ postgres:
 service:
   port: 80
 
+# Per-user aoe workspaces on the kubernetes backend: one Deployment + Service
+# + PVC per user in the release namespace, managed by CityHall through a
+# namespace-scoped Role (see templates/workspaces-rbac.yaml).
+workspaces:
+  enabled: true
+  # PVC size per workspace.
+  volumeSize: 5Gi
+  # Storage class for workspace PVCs; empty uses the cluster default.
+  storageClass: ""
+
 ingress:
   enabled: true
   className: nginx
