@@ -108,6 +108,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
 
 pub async fn serve(db: DatabaseConnection) -> Result<(), Box<dyn std::error::Error>> {
     let state = build_state(db)?;
+    crate::workspaces::seed_default_version(&state.db).await?;
     tokio::spawn(crate::workspaces::idle_sweeper(state.clone()));
 
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());

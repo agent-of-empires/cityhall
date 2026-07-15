@@ -33,7 +33,8 @@ version changes.
    ```
 
 2. In **Settings → Workspaces**, set the default version (e.g. `v0.5.0`) and
-   enable workspaces.
+   enable workspaces. On a first startup the default version is pre-filled
+   with the latest aoe release (skipped when offline; the field stays empty).
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces

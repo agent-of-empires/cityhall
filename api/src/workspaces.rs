@@ -29,6 +29,72 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
         }))
 }
 
+/// On a first startup (no settings row saved yet), pre-fill the default
+/// version with the latest aoe release so enabling workspaces is one click.
+/// Best effort: offline or rate-limited lookups just log and skip; a saved
+/// row (even with no version) is never touched.
+pub async fn seed_default_version(db: &DatabaseConnection) -> Result<(), AppError> {
+    if workspace_settings::Entity::find_by_id(SETTINGS_ID)
+        .one(db)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let version = match fetch_latest_release().await {
+        Ok(tag) => tag,
+        Err(e) => {
+            tracing::warn!(
+                "could not resolve the latest aoe release for the default workspace version: {e}"
+            );
+            return Ok(());
+        }
+    };
+    tracing::info!(version = %version, "seeding workspace default version from the latest aoe release");
+    apply_seeded_version(db, version).await
+}
+
+async fn apply_seeded_version(db: &DatabaseConnection, version: String) -> Result<(), AppError> {
+    let defaults = settings(db).await?;
+    workspace_settings::ActiveModel {
+        id: Set(SETTINGS_ID),
+        enabled: Set(defaults.enabled),
+        image_template: Set(defaults.image_template),
+        default_version: Set(Some(version)),
+        idle_stop_minutes: Set(defaults.idle_stop_minutes),
+        updated_at: Set(Utc::now()),
+    }
+    .insert(db)
+    .await?;
+    Ok(())
+}
+
+/// The `tag_name` of the latest agent-of-empires GitHub release.
+async fn fetch_latest_release() -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = client
+        .get("https://api.github.com/repos/agent-of-empires/agent-of-empires/releases/latest")
+        // GitHub's API rejects requests without a User-Agent.
+        .header("User-Agent", "cityhall")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let release: Release = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    Ok(release.tag_name)
+}
+
 /// The user's workspace intent row, created on first use.
 pub async fn get_or_create(
     db: &DatabaseConnection,
@@ -229,6 +295,38 @@ mod tests {
             idle_stop_minutes: 30,
             updated_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn seeded_version_fills_a_fresh_install() {
+        let db = setup().await;
+        apply_seeded_version(&db, "v9.9.9".to_string())
+            .await
+            .unwrap();
+        let s = settings(&db).await.unwrap();
+        assert_eq!(s.default_version.as_deref(), Some("v9.9.9"));
+        assert!(!s.enabled);
+    }
+
+    #[tokio::test]
+    async fn seeding_never_touches_a_saved_row() {
+        let db = setup().await;
+        // Operator saved settings without a version; the seeder must leave
+        // that choice alone (and must not hit the network to do so).
+        workspace_settings::ActiveModel {
+            id: Set(SETTINGS_ID),
+            enabled: Set(false),
+            image_template: Set("cityhall/aoe:{version}".to_string()),
+            default_version: Set(None),
+            idle_stop_minutes: Set(30),
+            updated_at: Set(Utc::now()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        seed_default_version(&db).await.unwrap();
+        assert_eq!(settings(&db).await.unwrap().default_version, None);
     }
 
     #[tokio::test]
