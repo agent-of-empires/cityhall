@@ -44,6 +44,15 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
       .catch(() => {});
   }, [load]);
 
+  // While an image pull/build or binary download runs, poll so progress and
+  // completion show up without a manual refresh.
+  const anyProvisioning = items.some((i) => i.provisioning && !i.provisioning.failed);
+  useEffect(() => {
+    if (!anyProvisioning) return;
+    const timer = setInterval(() => void load(), 3000);
+    return () => clearInterval(timer);
+  }, [anyProvisioning, load]);
+
   function toggle(userId: number) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -140,7 +149,21 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                     </td>
                   )}
                   <td className="px-4 py-2.5 text-text-primary">{item.username}</td>
-                  <td className={`px-4 py-2.5 ${STATUS_STYLES[item.status]}`}>{STATUS_LABELS[item.status]}</td>
+                  <td className="px-4 py-2.5">
+                    {item.provisioning ? (
+                      <span
+                        className={item.provisioning.failed ? "text-status-error" : "text-status-waiting"}
+                        title={item.provisioning.message}
+                      >
+                        {item.provisioning.failed ? "provisioning failed" : "provisioning"}
+                        <span className="block max-w-56 truncate text-xs text-text-muted">
+                          {item.provisioning.message}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className={STATUS_STYLES[item.status]}>{STATUS_LABELS[item.status]}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-text-secondary">
                     {item.pinned_version ?? (item.effective_version ? `default (${item.effective_version})` : "-")}
                   </td>

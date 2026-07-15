@@ -96,12 +96,14 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
+    let (orchestrator, provisioning) = crate::orchestrator::from_env()?;
     Ok(AppState {
         db,
-        orchestrator: crate::orchestrator::from_env()?,
+        orchestrator,
         activity: Arc::default(),
         locks: Arc::default(),
         endpoints: Arc::default(),
+        provisioning,
         proxy_client,
     })
 }

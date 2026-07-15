@@ -12,13 +12,17 @@
 //!   container on the named docker network (socket mounted); workspaces join
 //!   that network with no published ports and are dialed by container DNS.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use super::{wait_ready, Orchestrator, OrchestratorError, WorkspaceSpec, WorkspaceStatus};
+use super::{
+    wait_ready, Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec,
+    WorkspaceStatus,
+};
 
 /// Port aoe serves on inside the workspace container.
 const AOE_PORT: u16 = 8080;
@@ -26,6 +30,14 @@ const AOE_PORT: u16 = 8080;
 /// as user `aoe`); the per-user volume is mounted here.
 const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
+/// Image pulls and first builds legitimately take minutes.
+const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The reference workspace image build, embedded so a running CityHall can
+/// build missing images without a repo checkout. It needs no build context
+/// (it downloads the release tarball itself), so it is piped to
+/// `docker build -`.
+const AOE_IMAGE_DOCKERFILE: &str = include_str!("../../../deploy/aoe-image/Dockerfile");
 
 pub fn container_name(user_id: i32) -> String {
     format!("cityhall-workspace-u{user_id}")
@@ -40,15 +52,17 @@ pub struct DockerCliOrchestrator {
     /// Shared-network addressing mode: workspaces join this docker network
     /// (no published ports) and are dialed by container DNS name.
     network: Option<String>,
+    provisioning: Arc<ProvisioningRegistry>,
 }
 
 impl DockerCliOrchestrator {
-    pub fn from_env() -> Self {
+    pub fn from_env(provisioning: Arc<ProvisioningRegistry>) -> Self {
         DockerCliOrchestrator {
             cli: std::env::var("CONTAINER_CLI").unwrap_or_else(|_| "docker".to_string()),
             network: std::env::var("WORKSPACE_DOCKER_NETWORK")
                 .ok()
                 .filter(|n| !n.trim().is_empty()),
+            provisioning,
         }
     }
 
@@ -122,11 +136,7 @@ impl DockerCliOrchestrator {
 
     async fn create_and_start(&self, spec: &WorkspaceSpec) -> Result<(), OrchestratorError> {
         if !self.image_exists(&spec.image).await? {
-            return Err(OrchestratorError::ArtifactMissing(format!(
-                "workspace image '{}' not found; build it first (see deploy/aoe-image/) \
-                 or fix the image template / version in the workspace settings",
-                spec.image
-            )));
+            return Err(self.provision_image(spec));
         }
         if let Some(net) = &self.network {
             // Surface a clear error now instead of `docker run`'s "not found"
@@ -164,6 +174,142 @@ impl DockerCliOrchestrator {
             Some(_) => Ok(format!("{name}:{AOE_PORT}")),
             None => self.published_addr(name).await,
         }
+    }
+
+    /// Kick off (or report) background provisioning of a missing image:
+    /// `docker pull`, then a local build from the embedded reference
+    /// Dockerfile. Detached from the request so a closed browser tab cannot
+    /// kill a multi-minute build; callers get a retry-shortly error.
+    fn provision_image(&self, spec: &WorkspaceSpec) -> OrchestratorError {
+        let image = spec.image.clone();
+        let message = format!("pulling image {image}");
+        match self.provisioning.begin(&image, &message) {
+            Begin::AlreadyRunning(msg) => OrchestratorError::Provisioning(msg),
+            Begin::RecentlyFailed(msg) => OrchestratorError::ArtifactMissing(msg),
+            Begin::Started => {
+                let cli = self.cli.clone();
+                let registry = self.provisioning.clone();
+                let version = spec.version.clone();
+                tokio::spawn(provision_image_job(cli, image, version, registry));
+                OrchestratorError::Provisioning(message)
+            }
+        }
+    }
+}
+
+async fn provision_image_job(
+    cli: String,
+    image: String,
+    version: String,
+    registry: Arc<ProvisioningRegistry>,
+) {
+    let pull_err = match provision_run(&cli, &["pull", &image], None, &image).await {
+        Ok(()) => {
+            tracing::info!(%image, "pulled workspace image");
+            registry.succeed(&image);
+            return;
+        }
+        Err(e) => e,
+    };
+    registry.progress(
+        &image,
+        &format!("building image {image} (a first build takes a few minutes)"),
+    );
+    let build_arg = format!("AOE_VERSION={version}");
+    match provision_run(
+        &cli,
+        &["build", "--build-arg", &build_arg, "-t", &image, "-"],
+        Some(AOE_IMAGE_DOCKERFILE),
+        &image,
+    )
+    .await
+    {
+        Ok(()) => {
+            tracing::info!(%image, "built workspace image from the reference Dockerfile");
+            registry.succeed(&image);
+        }
+        Err(build_err) => {
+            tracing::warn!(%image, "workspace image provisioning failed");
+            registry.fail(
+                &image,
+                format!("provisioning image {image} failed; pull: {pull_err}; build: {build_err}"),
+            );
+        }
+    }
+}
+
+/// Run a slow provisioning command with its output streamed to a log file
+/// (build logs can be megabytes); failures return the log tail.
+async fn provision_run(
+    cli: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+    log_name: &str,
+) -> Result<(), String> {
+    let sanitized: String = log_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let log_path = std::env::temp_dir().join(format!("cityhall-provision-{sanitized}.log"));
+    let log = std::fs::File::create(&log_path).map_err(|e| format!("cannot open log: {e}"))?;
+    let log_err = log
+        .try_clone()
+        .map_err(|e| format!("cannot open log: {e}"))?;
+
+    let mut cmd = Command::new(cli);
+    cmd.args(args)
+        // kill_on_drop reaps the CLI when the timeout fires; the docker
+        // daemon may still finish server-side, which the next existence
+        // check picks up.
+        .kill_on_drop(true)
+        .stdin(if stdin.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err));
+
+    let run = async {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to run {cli}: {e}"))?;
+        if let Some(payload) = stdin {
+            use tokio::io::AsyncWriteExt;
+            let mut pipe = child.stdin.take().expect("stdin piped");
+            pipe.write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("failed to feed {cli} stdin: {e}"))?;
+            drop(pipe);
+        }
+        child.wait().await.map_err(|e| format!("{cli} failed: {e}"))
+    };
+    let status = tokio::time::timeout(PROVISION_TIMEOUT, run)
+        .await
+        .map_err(|_| format!("{cli} {} timed out after {PROVISION_TIMEOUT:?}", args[0]))??;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(log_tail(&log_path))
+    }
+}
+
+/// The last ~500 bytes of a provisioning log, for error messages.
+fn log_tail(path: &std::path::Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let tail: String = s
+                .chars()
+                .rev()
+                .take(500)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            tail.trim().to_string()
+        }
+        Err(_) => "command failed (no log available)".to_string(),
     }
 }
 

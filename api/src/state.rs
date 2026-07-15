@@ -7,7 +7,7 @@ use std::time::Instant;
 use axum::extract::FromRef;
 use sea_orm::DatabaseConnection;
 
-use crate::orchestrator::Orchestrator;
+use crate::orchestrator::{Orchestrator, ProvisioningRegistry};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,6 +16,9 @@ pub struct AppState {
     pub activity: Arc<ActivityRegistry>,
     pub locks: Arc<WorkspaceLocks>,
     pub endpoints: Arc<EndpointCache>,
+    /// Read side of background artifact provisioning (pulls, builds,
+    /// downloads); the backends write to it.
+    pub provisioning: Arc<ProvisioningRegistry>,
     /// Client for proxied HTTP requests to workspaces (no redirects, HTTP/1.1
     /// so WebSocket upgrades tunnel through).
     pub proxy_client: reqwest::Client,

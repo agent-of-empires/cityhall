@@ -139,7 +139,10 @@ pub fn build_spec(
 
 impl From<OrchestratorError> for AppError {
     fn from(e: OrchestratorError) -> Self {
-        AppError::WorkspaceUnavailable(e.to_string())
+        match e {
+            OrchestratorError::Provisioning(m) => AppError::WorkspaceProvisioning(m),
+            other => AppError::WorkspaceUnavailable(other.to_string()),
+        }
     }
 }
 

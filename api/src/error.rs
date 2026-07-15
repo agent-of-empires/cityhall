@@ -14,6 +14,9 @@ pub enum AppError {
     /// A workspace could not be reached or materialized; the message carries
     /// operator guidance (image missing, runtime down...).
     WorkspaceUnavailable(String),
+    /// The workspace's artifact is being fetched/built in the background;
+    /// clients should retry shortly.
+    WorkspaceProvisioning(String),
     Db(sea_orm::DbErr),
 }
 
@@ -31,7 +34,9 @@ impl std::fmt::Display for AppError {
                 write!(f, "{m}")
             }
             AppError::BadRequest(m) | AppError::Internal(m) => write!(f, "{m}"),
-            AppError::WorkspaceUnavailable(m) => write!(f, "{m}"),
+            AppError::WorkspaceUnavailable(m) | AppError::WorkspaceProvisioning(m) => {
+                write!(f, "{m}")
+            }
             AppError::Db(e) => write!(f, "{e}"),
         }
     }
@@ -54,6 +59,15 @@ impl IntoResponse for AppError {
             AppError::WorkspaceUnavailable(m) => {
                 tracing::warn!("workspace unavailable: {m}");
                 (StatusCode::SERVICE_UNAVAILABLE, m)
+            }
+            AppError::WorkspaceProvisioning(m) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    // Providing a retry hint: provisioning resolves on its own.
+                    [(axum::http::header::RETRY_AFTER, "5")],
+                    Json(json!({ "error": m, "provisioning": true })),
+                )
+                    .into_response();
             }
             AppError::Db(e) => {
                 tracing::error!("database error: {e}");

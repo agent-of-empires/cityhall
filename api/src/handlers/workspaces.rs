@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
-use crate::orchestrator::WorkspaceStatus;
+use crate::orchestrator::{binary_key, render_image, WorkspaceStatus};
 use crate::proxy;
 use crate::state::AppState;
 use crate::workspaces::{self, SETTINGS_ID};
@@ -22,6 +22,15 @@ pub struct WorkspaceItem {
     pub pinned_version: Option<String>,
     pub effective_version: Option<String>,
     pub last_active_at: Option<chrono::DateTime<Utc>>,
+    /// Background artifact provisioning (image pull/build, binary download)
+    /// for this user's effective version, when one is underway or failed.
+    pub provisioning: Option<ProvisioningInfo>,
+}
+
+#[derive(Serialize)]
+pub struct ProvisioningInfo {
+    pub message: String,
+    pub failed: bool,
 }
 
 fn status_str(status: Result<WorkspaceStatus, impl std::fmt::Display>) -> &'static str {
@@ -49,7 +58,21 @@ pub async fn list(
     let mut items = Vec::with_capacity(users.len());
     for user in users {
         let row = rows.iter().find(|r| r.user_id == user.id);
-        let effective = row.and_then(|r| workspaces::effective_version(&cfg, r));
+        let effective = row
+            .and_then(|r| workspaces::effective_version(&cfg, r))
+            .or_else(|| cfg.default_version.clone());
+        // Whichever backend runs, the effective version maps to exactly one
+        // artifact key (image ref or binary); probe both.
+        let provisioning = effective
+            .as_ref()
+            .and_then(|v| {
+                let image = render_image(&cfg.image_template, v);
+                state
+                    .provisioning
+                    .state(&image)
+                    .or_else(|| state.provisioning.state(&binary_key(v)))
+            })
+            .map(|(message, failed)| ProvisioningInfo { message, failed });
         items.push(WorkspaceItem {
             user_id: user.id,
             status: match row {
@@ -58,9 +81,10 @@ pub async fn list(
                 None => "not_created",
             },
             pinned_version: row.and_then(|r| r.pinned_version.clone()),
-            effective_version: effective.or_else(|| cfg.default_version.clone()),
+            effective_version: effective,
             last_active_at: row.and_then(|r| r.last_active_at),
             username: user.username,
+            provisioning,
         });
     }
     Ok(Json(items))

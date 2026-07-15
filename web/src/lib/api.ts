@@ -114,6 +114,7 @@ export interface WorkspaceItem {
   pinned_version: string | null;
   effective_version: string | null;
   last_active_at: string | null;
+  provisioning: { message: string; failed: boolean } | null;
 }
 
 export interface MyWorkspace {
