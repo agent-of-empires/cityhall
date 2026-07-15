@@ -21,17 +21,21 @@ base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 getrandom = "0.3"
+# Direct hyper/hyper-util deps only for the workspace proxy's WebSocket
+# upgrade tunneling (axum already pulls both transitively).
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 lettre = { version = "0.11.22", default-features = false, features = ["builder", "smtp-transport", "pool", "tokio1", "tokio1-rustls-tls", "hostname"] }
 openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest"] }
 rand = "0.10.2"
 # Pins reqwest (pulled transitively by openidconnect via oauth2) to rustls so
 # the build stays OpenSSL-free like the rest of the stack.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-rustls", "macros", "with-chrono"] }
 sea-orm-migration = { version = "1.1.20", features = ["runtime-tokio-rustls", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
 tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["fs", "trace"] }
 tracing = "0.1"

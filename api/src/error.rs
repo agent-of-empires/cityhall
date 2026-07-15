@@ -11,6 +11,9 @@ pub enum AppError {
     Conflict(&'static str),
     BadRequest(&'static str),
     Internal(&'static str),
+    /// A workspace could not be reached or materialized; the message carries
+    /// operator guidance (image missing, runtime down...).
+    WorkspaceUnavailable(String),
     Db(sea_orm::DbErr),
 }
 
@@ -28,6 +31,7 @@ impl std::fmt::Display for AppError {
                 write!(f, "{m}")
             }
             AppError::BadRequest(m) | AppError::Internal(m) => write!(f, "{m}"),
+            AppError::WorkspaceUnavailable(m) => write!(f, "{m}"),
             AppError::Db(e) => write!(f, "{e}"),
         }
     }
@@ -46,6 +50,10 @@ impl IntoResponse for AppError {
             AppError::Internal(m) => {
                 tracing::error!("internal error: {m}");
                 (StatusCode::INTERNAL_SERVER_ERROR, m.to_string())
+            }
+            AppError::WorkspaceUnavailable(m) => {
+                tracing::warn!("workspace unavailable: {m}");
+                (StatusCode::SERVICE_UNAVAILABLE, m)
             }
             AppError::Db(e) => {
                 tracing::error!("database error: {e}");

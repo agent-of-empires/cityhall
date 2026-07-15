@@ -2,7 +2,7 @@ use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
 };
 use argon2::Argon2;
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
@@ -165,13 +165,18 @@ impl AuthUser {
     }
 }
 
-impl FromRequestParts<DatabaseConnection> for AuthUser {
+// Generic over the state so the same extractor serves the main router (state
+// is `AppState`) and DB-only contexts; anything holding a `DatabaseConnection`
+// via `FromRef` works.
+impl<S> FromRequestParts<S> for AuthUser
+where
+    DatabaseConnection: FromRef<S>,
+    S: Send + Sync,
+{
     type Rejection = AppError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        db: &DatabaseConnection,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let db = &DatabaseConnection::from_ref(state);
         let jar = CookieJar::from_headers(&parts.headers);
         let token = jar
             .get(SESSION_COOKIE)

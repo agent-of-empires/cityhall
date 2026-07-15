@@ -29,6 +29,22 @@ pub async fn ensure_roles(db: &DatabaseConnection) -> Result<(), AppError> {
         }
     }
 
+    // Existing installs seeded `member` before workspaces existed; grant the
+    // new default-member key in place so workspaces work out of the box.
+    // Only the system member role is touched, never operator-created roles.
+    if let Some(member) = service::find_role_by_name(db, rbac::MEMBER_ROLE).await? {
+        if member.is_system {
+            let mut keys: Vec<String> =
+                serde_json::from_str(&member.permissions).unwrap_or_default();
+            if !keys.iter().any(|k| k == "workspaces.use") {
+                keys.push("workspaces.use".to_string());
+                let mut active: role::ActiveModel = member.into();
+                active.permissions = Set(rbac::encode(&keys));
+                active.update(db).await?;
+            }
+        }
+    }
+
     let admin = service::find_role_by_name(db, rbac::ADMIN_ROLE)
         .await?
         .ok_or(AppError::Internal("admin role missing after seeding"))?;

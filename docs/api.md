@@ -25,9 +25,10 @@ Every user has a role, and a role holds a set of permission keys (the wildcard
 `*` grants all). Endpoints require a specific permission; a caller lacking it
 gets `403 Forbidden` with `{"error":"insufficient permissions"}`. The current
 keys are `users.read`, `users.write`, `roles.read`, `roles.write`,
-`settings.read`, and `settings.write`. `GET /api/auth/me` returns the caller's
-effective permission list so a client can gate its UI. Built-in roles are
-`admin` (all permissions) and `member` (`users.read`).
+`settings.read`, `settings.write`, `workspaces.use`, `workspaces.read`, and
+`workspaces.write`. `GET /api/auth/me` returns the caller's effective
+permission list so a client can gate its UI. Built-in roles are `admin` (all
+permissions) and `member` (`users.read`, `workspaces.use`).
 
 ## Errors
 
@@ -414,3 +415,87 @@ Requires `settings.write`. Updates the self-signup configuration (same shape as
 unknown `signup_default_role_id` returns `400`. Enabling signup while SMTP is
 unconfigured returns `400` (verification email cannot be sent). Returns the
 updated settings.
+
+### `GET /api/workspaces`
+
+Requires `workspaces.read`. Returns every user with their workspace state (see
+[Workspaces](workspaces.md)). `status` is `not_created`, `stopped`, `running`,
+or `unknown` (runtime unreachable); `effective_version` is the pin or the
+default.
+
+```json
+[
+  {
+    "user_id": 2,
+    "username": "bob",
+    "status": "running",
+    "pinned_version": null,
+    "effective_version": "v0.5.0",
+    "last_active_at": "2026-07-15T09:20:50Z"
+  }
+]
+```
+
+### `GET /api/workspaces/me`
+
+Requires `workspaces.use`. The caller's own workspace plus the origin browsers
+use to reach the workspace proxy:
+
+```json
+{
+  "status": "stopped",
+  "pinned_version": null,
+  "effective_version": "v0.5.0",
+  "proxy_origin": "http://127.0.0.1:3001"
+}
+```
+
+### `POST /api/workspaces/{user_id}/start`
+
+Requires `workspaces.write`. Starts (or resumes) the user's workspace. Returns
+`503` with a descriptive error when the runtime or image is unavailable.
+
+### `POST /api/workspaces/{user_id}/stop`
+
+Requires `workspaces.write`. Stops the workspace, keeping its data volume.
+
+### `DELETE /api/workspaces/{user_id}`
+
+Requires `workspaces.write`. Destroys the workspace AND its data volume.
+Returns `{ "destroyed": true }`.
+
+### `PATCH /api/workspaces/{user_id}`
+
+Requires `workspaces.write`. Pins the served aoe version (`null` or empty
+unpins, following the default). A running workspace is recreated with the new
+image on its next start or proxied request; its volume is kept.
+
+```json
+{ "pinned_version": "v0.5.1" }
+```
+
+### `PATCH /api/workspaces`
+
+Requires `workspaces.write`. Grouped pin: same as above for several users in
+one call.
+
+```json
+{ "user_ids": [2, 3], "pinned_version": "v0.5.1" }
+```
+
+### `GET /api/settings/workspaces`
+
+Requires `settings.read`.
+
+```json
+{
+  "image_template": "cityhall/aoe:{version}",
+  "default_version": "v0.5.0",
+  "idle_stop_minutes": 30
+}
+```
+
+### `PUT /api/settings/workspaces`
+
+Requires `settings.write`. Same shape as `GET`. `image_template` is required;
+`idle_stop_minutes` must be at least 1.

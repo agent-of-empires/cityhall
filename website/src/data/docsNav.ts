@@ -22,6 +22,7 @@ export const docsNav: NavSection[] = [
   {
     title: "Operate",
     items: [
+      { title: "Workspaces", href: "/docs/workspaces/" },
       { title: "Configuration", href: "/docs/configuration/" },
       { title: "Deployment", href: "/docs/deployment/" },
       { title: "CLI Reference", href: "/docs/cli/" },

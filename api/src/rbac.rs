@@ -25,13 +25,20 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("roles.write", "Create, edit, and delete roles"),
     ("settings.read", "View settings"),
     ("settings.write", "Change settings"),
+    ("workspaces.use", "Use your own workspace"),
+    ("workspaces.read", "View all workspaces"),
+    ("workspaces.write", "Manage workspaces and their versions"),
 ];
 
 /// Built-in roles seeded on startup: (name, description, permission keys).
 pub fn system_roles() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     vec![
         (ADMIN_ROLE, "Full access to everything", vec![WILDCARD]),
-        (MEMBER_ROLE, "Basic access", vec!["users.read"]),
+        (
+            MEMBER_ROLE,
+            "Basic access",
+            vec!["users.read", "workspaces.use"],
+        ),
     ]
 }
 

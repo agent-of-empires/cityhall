@@ -10,6 +10,7 @@ import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { RegisterPage } from "./components/RegisterPage";
 import { VerifyEmailPage } from "./components/VerifyEmailPage";
+import { WorkspacesPage } from "./components/WorkspacesPage";
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -78,6 +79,18 @@ export function App() {
             <Navigate to="/change-password" replace />
           ) : (
             <RolesPage me={me} onLogout={refresh} />
+          )
+        }
+      />
+      <Route
+        path="/workspaces"
+        element={
+          !me ? (
+            <Navigate to="/login" replace />
+          ) : me.must_change_password ? (
+            <Navigate to="/change-password" replace />
+          ) : (
+            <WorkspacesPage me={me} onLogout={refresh} />
           )
         }
       />
