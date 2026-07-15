@@ -21,6 +21,7 @@ const STATUS_LABELS: Record<WorkspaceItem["status"], string> = {
 export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
   const canWrite = can(me, "workspaces.write");
   const [items, setItems] = useState<WorkspaceItem[]>([]);
+  const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [version, setVersion] = useState("");
@@ -37,6 +38,10 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
 
   useEffect(() => {
     void load();
+    api
+      .myWorkspace()
+      .then((w) => setProxyOrigin(w.proxy_origin))
+      .catch(() => {});
   }, [load]);
 
   function toggle(userId: number) {
@@ -97,6 +102,17 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
         </div>
 
         {error && <p className="text-sm text-status-error">{error}</p>}
+
+        {proxyOrigin && (
+          <div className="rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm text-text-secondary">
+            All workspaces are served at{" "}
+            <a href={proxyOrigin} target="_blank" rel="noreferrer" className="text-text-primary underline">
+              {proxyOrigin}
+            </a>
+            ; each signed-in user reaches their own workspace there. Containers listen on internal loopback ports
+            managed automatically.
+          </div>
+        )}
 
         <div className="overflow-hidden rounded-lg border border-surface-700">
           <table className="w-full text-sm">
