@@ -15,6 +15,7 @@ pub struct AppState {
     pub orchestrator: Arc<dyn Orchestrator>,
     pub activity: Arc<ActivityRegistry>,
     pub locks: Arc<WorkspaceLocks>,
+    pub endpoints: Arc<EndpointCache>,
     /// Client for proxied HTTP requests to workspaces (no redirects, HTTP/1.1
     /// so WebSocket upgrades tunnel through).
     pub proxy_client: reqwest::Client,
@@ -76,6 +77,52 @@ impl ActivityRegistry {
     }
 }
 
+/// Per-user cache of the reachable workspace address, keyed by the spec that
+/// produced it. Without it every proxied request (each asset, each API call)
+/// pays a backend round-trip (docker/kubectl shell-outs); with it only the
+/// first request after a start, stop, or failure reconciles. Stop and destroy
+/// invalidate; a failed proxied dial invalidates so the next request heals
+/// out-of-band crashes.
+#[derive(Default)]
+pub struct EndpointCache {
+    entries: Mutex<HashMap<i32, CachedEndpoint>>,
+}
+
+#[derive(Clone)]
+struct CachedEndpoint {
+    addr: String,
+    version: String,
+    image: String,
+}
+
+impl EndpointCache {
+    /// The cached address, if it was produced by a spec with the same version
+    /// and image (a pin or template change must miss and reconcile).
+    pub fn get(&self, user_id: i32, version: &str, image: &str) -> Option<String> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(&user_id)
+            .filter(|e| e.version == version && e.image == image)
+            .map(|e| e.addr.clone())
+    }
+
+    pub fn put(&self, user_id: i32, version: &str, image: &str, addr: String) {
+        self.entries.lock().unwrap().insert(
+            user_id,
+            CachedEndpoint {
+                addr,
+                version: version.to_string(),
+                image: image.to_string(),
+            },
+        );
+    }
+
+    pub fn invalidate(&self, user_id: i32) {
+        self.entries.lock().unwrap().remove(&user_id);
+    }
+}
+
 /// Per-user async locks serializing workspace lifecycle transitions, so a
 /// proxy-triggered start cannot race the idle sweeper's stop (or a concurrent
 /// first-page-load double-start).
@@ -117,5 +164,23 @@ mod tests {
     fn unknown_user_has_no_entry() {
         let reg = ActivityRegistry::default();
         assert!(reg.get(99).is_none());
+    }
+
+    #[test]
+    fn endpoint_cache_hits_only_on_matching_spec() {
+        let cache = EndpointCache::default();
+        assert!(cache.get(1, "v1", "img:v1").is_none());
+
+        cache.put(1, "v1", "img:v1", "127.0.0.1:5000".to_string());
+        assert_eq!(
+            cache.get(1, "v1", "img:v1").as_deref(),
+            Some("127.0.0.1:5000")
+        );
+        // A version pin or template change must miss and reconcile.
+        assert!(cache.get(1, "v2", "img:v2").is_none());
+        assert!(cache.get(1, "v1", "other:v1").is_none());
+
+        cache.invalidate(1);
+        assert!(cache.get(1, "v1", "img:v1").is_none());
     }
 }

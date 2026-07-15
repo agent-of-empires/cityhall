@@ -151,9 +151,23 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, Ap
     let row = get_or_create(&state.db, user_id).await?;
     let spec = build_spec(&cfg, &row)?;
 
+    // Hot path: a cached address means no backend round-trip per request.
+    if let Some(addr) = state.endpoints.get(user_id, &spec.version, &spec.image) {
+        state.activity.touch(user_id);
+        return Ok(addr);
+    }
+
     let lock = state.locks.lock_for(user_id);
     let _guard = lock.lock().await;
+    // Re-check under the lock: a concurrent request may have reconciled.
+    if let Some(addr) = state.endpoints.get(user_id, &spec.version, &spec.image) {
+        state.activity.touch(user_id);
+        return Ok(addr);
+    }
     let addr = state.orchestrator.ensure_started(&spec).await?;
+    state
+        .endpoints
+        .put(user_id, &spec.version, &spec.image, addr.clone());
     state.activity.touch(user_id);
     Ok(addr)
 }
@@ -162,6 +176,7 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, Ap
 pub async fn stop(state: &AppState, user_id: i32) -> Result<(), AppError> {
     let lock = state.locks.lock_for(user_id);
     let _guard = lock.lock().await;
+    state.endpoints.invalidate(user_id);
     state.orchestrator.stop(user_id).await?;
     checkpoint_activity(state, user_id).await
 }
@@ -170,6 +185,7 @@ pub async fn stop(state: &AppState, user_id: i32) -> Result<(), AppError> {
 pub async fn destroy(state: &AppState, user_id: i32) -> Result<(), AppError> {
     let lock = state.locks.lock_for(user_id);
     let _guard = lock.lock().await;
+    state.endpoints.invalidate(user_id);
     state.orchestrator.destroy(user_id).await?;
     workspace::Entity::delete_by_id(user_id)
         .exec(&state.db)
@@ -248,6 +264,7 @@ async fn sweep_once(state: &AppState) -> Result<(), AppError> {
                     state.orchestrator.status(user_id).await
                 {
                     tracing::info!(user_id, "stopping idle workspace");
+                    state.endpoints.invalidate(user_id);
                     if let Err(e) = state.orchestrator.stop(user_id).await {
                         tracing::warn!(user_id, "idle stop failed: {e}");
                         continue;

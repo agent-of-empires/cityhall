@@ -86,11 +86,18 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
         .unwrap_or("/");
     let target = format!("http://{addr}{path_q}");
 
-    if is_websocket_upgrade(&parts.headers) {
+    let result = if is_websocket_upgrade(&parts.headers) {
         websocket_tunnel(&state, &mut parts, &target, user_id).await
     } else {
         http_forward(&state, &parts, body, &target).await
+    };
+    if result.is_err() {
+        // The workspace may have died out-of-band (crashed container, killed
+        // process): drop the cached address so the next request reconciles
+        // with the backend instead of dialing a dead endpoint forever.
+        state.endpoints.invalidate(user_id);
     }
+    result
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {

@@ -101,6 +101,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         orchestrator: crate::orchestrator::from_env()?,
         activity: Arc::default(),
         locks: Arc::default(),
+        endpoints: Arc::default(),
         proxy_client,
     })
 }
