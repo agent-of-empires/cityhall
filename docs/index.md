@@ -32,6 +32,7 @@ control plane builds on:
 ## Next steps
 
 - [Quick start](quick-start.md): run it and sign in.
+- [Workspaces](workspaces.md): per-user aoe instances spawned and proxied by CityHall.
 - [Configuration](configuration.md): database, bind address, logging, and email.
 - [Deployment](deployment.md): Docker, Compose, Kubernetes, VPS, HTTPS, and databases.
 - [CLI reference](cli.md): manage users from the terminal.

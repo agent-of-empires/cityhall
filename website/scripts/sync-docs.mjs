@@ -20,6 +20,8 @@ const PAGES = [
     description: "CityHall: the self-hostable control-plane server for Agent of Empires." },
   { source: "docs/quick-start.md", dest: "docs/quick-start.md", title: "Quick Start",
     description: "Run CityHall, sign in, and manage users." },
+  { source: "docs/workspaces.md", dest: "docs/workspaces.md", title: "Workspaces",
+    description: "Per-user aoe instances spawned, versioned, and proxied by CityHall." },
   { source: "docs/configuration.md", dest: "docs/configuration.md", title: "Configuration",
     description: "Database, bind address, logging, email/SMTP, SSO, and self-signup." },
   { source: "docs/deployment.md", dest: "docs/deployment.md", title: "Deployment",
@@ -36,6 +38,7 @@ const PAGES = [
 const URL_MAP = {
   "docs/index.md": "/docs/",
   "docs/quick-start.md": "/docs/quick-start/",
+  "docs/workspaces.md": "/docs/workspaces/",
   "docs/configuration.md": "/docs/configuration/",
   "docs/deployment.md": "/docs/deployment/",
   "docs/cli.md": "/docs/cli/",

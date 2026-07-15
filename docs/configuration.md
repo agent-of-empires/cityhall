@@ -24,6 +24,9 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `OIDC_CLIENT_SECRET` | _(unset)_                  | OIDC client secret (omit for public clients).       |
 | `OIDC_SCOPES`   | `openid email profile`           | Space-separated scopes to request.                  |
 | `OIDC_ALLOWED_DOMAINS` | _(any)_                   | Comma-separated email domains allowed to auto-provision. |
+| `WORKSPACE_PROXY_BIND_ADDR` | `127.0.0.1:3001`     | Workspace proxy listener (see [Workspaces](workspaces.md)). |
+| `WORKSPACE_PROXY_PUBLIC_ORIGIN` | _(derived)_      | Public origin of the workspace proxy behind a reverse proxy. |
+| `CONTAINER_CLI` | `docker`                         | Container CLI used to manage workspaces (e.g. `podman`). |
 
 ## Database
 
