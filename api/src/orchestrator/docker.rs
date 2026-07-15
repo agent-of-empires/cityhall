@@ -3,9 +3,14 @@
 //! Shells out to the `docker` binary (override with `CONTAINER_CLI`, e.g.
 //! `podman`) rather than a docker API crate: the aoe ecosystem already drives
 //! containers through the CLI, it needs no extra dependencies, and only
-//! structured output (`--format '{{json .}}'`) is parsed. This backend assumes
-//! CityHall runs natively on the docker host and reaches workspaces through
-//! loopback-published ephemeral ports; other topologies are separate backends.
+//! structured output (`--format '{{json .}}'`) is parsed.
+//!
+//! Two addressing modes:
+//! - Published (default): CityHall runs natively on the docker host and
+//!   reaches workspaces through loopback-published ephemeral ports.
+//! - Shared network (`WORKSPACE_DOCKER_NETWORK`): CityHall itself runs in a
+//!   container on the named docker network (socket mounted); workspaces join
+//!   that network with no published ports and are dialed by container DNS.
 
 use std::time::Duration;
 
@@ -32,12 +37,18 @@ pub fn volume_name(user_id: i32) -> String {
 
 pub struct DockerCliOrchestrator {
     cli: String,
+    /// Shared-network addressing mode: workspaces join this docker network
+    /// (no published ports) and are dialed by container DNS name.
+    network: Option<String>,
 }
 
 impl DockerCliOrchestrator {
     pub fn from_env() -> Self {
         DockerCliOrchestrator {
             cli: std::env::var("CONTAINER_CLI").unwrap_or_else(|_| "docker".to_string()),
+            network: std::env::var("WORKSPACE_DOCKER_NETWORK")
+                .ok()
+                .filter(|n| !n.trim().is_empty()),
         }
     }
 
@@ -79,12 +90,11 @@ impl DockerCliOrchestrator {
                 let raw: InspectOutput = serde_json::from_str(json.trim()).map_err(|e| {
                     OrchestratorError::Runtime(format!("unparseable inspect output: {e}"))
                 })?;
+                let labels = raw.config.labels.unwrap_or_default();
                 Ok(Some(ContainerState {
                     running: raw.state.running,
-                    version_label: raw
-                        .config
-                        .labels
-                        .and_then(|l| l.get("cityhall.workspace.version").cloned()),
+                    version_label: labels.get("cityhall.workspace.version").cloned(),
+                    network_label: labels.get("cityhall.workspace.network").cloned(),
                 }))
             }
             None => Ok(None),
@@ -118,6 +128,19 @@ impl DockerCliOrchestrator {
                 spec.image
             )));
         }
+        if let Some(net) = &self.network {
+            // Surface a clear error now instead of `docker run`'s "not found"
+            // (which run() would misread as a missing container).
+            if self
+                .run(&["network", "inspect", "--format", "{{.Id}}", net])
+                .await?
+                .is_none()
+            {
+                return Err(OrchestratorError::Runtime(format!(
+                    "docker network '{net}' (WORKSPACE_DOCKER_NETWORK) does not exist"
+                )));
+            }
+        }
         let volume = volume_name(spec.user_id);
         self.run(&[
             "volume",
@@ -128,43 +151,74 @@ impl DockerCliOrchestrator {
         ])
         .await?;
 
-        let name = container_name(spec.user_id);
-        let user_label = format!("cityhall.user_id={}", spec.user_id);
-        let version_label = format!("cityhall.workspace.version={}", spec.version);
-        let mount = format!("{volume}:{AOE_DATA_DIR}");
-        let publish = format!("127.0.0.1:0:{AOE_PORT}");
-        let port = AOE_PORT.to_string();
-        self.run(&[
-            "run",
-            "-d",
-            "--name",
-            &name,
-            "--label",
-            "cityhall.managed=true",
-            "--label",
-            &user_label,
-            "--label",
-            &version_label,
-            "-v",
-            &mount,
-            "-p",
-            &publish,
+        let args = run_args(spec, self.network.as_deref());
+        self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+            .await?;
+        Ok(())
+    }
+
+    /// The address the proxy dials: container DNS on the shared network, or
+    /// the loopback published port.
+    async fn addr(&self, name: &str) -> Result<String, OrchestratorError> {
+        match &self.network {
+            Some(_) => Ok(format!("{name}:{AOE_PORT}")),
+            None => self.published_addr(name).await,
+        }
+    }
+}
+
+/// The full `docker run` invocation for a workspace container.
+fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
+    let name = container_name(spec.user_id);
+    let volume = volume_name(spec.user_id);
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--name".into(),
+        name,
+        "--label".into(),
+        "cityhall.managed=true".into(),
+        "--label".into(),
+        format!("cityhall.user_id={}", spec.user_id),
+        "--label".into(),
+        format!("cityhall.workspace.version={}", spec.version),
+        "-v".into(),
+        format!("{volume}:{AOE_DATA_DIR}"),
+    ];
+    match network {
+        Some(net) => {
+            // Reachable by container DNS from inside the network only; the
+            // addressing mode is recorded so flipping it recreates the
+            // container.
+            args.push("--label".into());
+            args.push(format!("cityhall.workspace.network={net}"));
+            args.push("--network".into());
+            args.push(net.into());
+        }
+        None => {
+            args.push("-p".into());
+            args.push(format!("127.0.0.1:0:{AOE_PORT}"));
+        }
+    }
+    args.extend(
+        [
             &spec.image,
             "aoe",
             "serve",
             "--host",
             "0.0.0.0",
             "--port",
-            &port,
-            // CityHall's session gates the proxy; the container port is only
-            // published on loopback.
+            &AOE_PORT.to_string(),
+            // CityHall's session gates the proxy; the container port is never
+            // reachable from outside (loopback publish or internal network).
             "--auth",
             "none",
             "--behind-proxy",
-        ])
-        .await?;
-        Ok(())
-    }
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    args
 }
 
 #[async_trait]
@@ -172,13 +226,17 @@ impl Orchestrator for DockerCliOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         let name = container_name(spec.user_id);
         match self.inspect(&name).await? {
-            Some(state) if state.version_label.as_deref() != Some(spec.version.as_str()) => {
-                // Version drift: recreate the container, keeping the volume.
+            Some(state)
+                if state.version_label.as_deref() != Some(spec.version.as_str())
+                    || state.network_label != self.network =>
+            {
+                // Version or addressing drift: recreate the container,
+                // keeping the volume.
                 tracing::info!(
                     user_id = spec.user_id,
                     from = state.version_label.as_deref().unwrap_or("unknown"),
                     to = %spec.version,
-                    "recreating workspace for version change"
+                    "recreating workspace for version or addressing change"
                 );
                 self.run(&["rm", "-f", &name]).await?;
                 self.create_and_start(spec).await?;
@@ -191,7 +249,7 @@ impl Orchestrator for DockerCliOrchestrator {
                 self.create_and_start(spec).await?;
             }
         }
-        let addr = self.published_addr(&name).await?;
+        let addr = self.addr(&name).await?;
         wait_ready(&addr).await?;
         Ok(addr)
     }
@@ -213,7 +271,7 @@ impl Orchestrator for DockerCliOrchestrator {
         match self.inspect(&name).await? {
             None => Ok(WorkspaceStatus::NotCreated),
             Some(state) if state.running => Ok(WorkspaceStatus::Running {
-                addr: self.published_addr(&name).await?,
+                addr: self.addr(&name).await?,
             }),
             Some(_) => Ok(WorkspaceStatus::Stopped),
         }
@@ -223,6 +281,7 @@ impl Orchestrator for DockerCliOrchestrator {
 struct ContainerState {
     running: bool,
     version_label: Option<String>,
+    network_label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -287,5 +346,36 @@ mod tests {
             raw.config.labels.unwrap().get("cityhall.workspace.version"),
             Some(&"v1.0.0".to_string())
         );
+    }
+
+    fn spec() -> WorkspaceSpec {
+        WorkspaceSpec {
+            user_id: 42,
+            image: "cityhall/aoe:v1.0.0".to_string(),
+            version: "v1.0.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn published_mode_publishes_loopback_and_no_network() {
+        let args = run_args(&spec(), None);
+        let publish_at = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(args[publish_at + 1], "127.0.0.1:0:8080");
+        assert!(!args.iter().any(|a| a == "--network"));
+        assert!(!args
+            .iter()
+            .any(|a| a.starts_with("cityhall.workspace.network=")));
+    }
+
+    #[test]
+    fn network_mode_joins_network_and_publishes_nothing() {
+        let args = run_args(&spec(), Some("cityhall-workspaces"));
+        let net_at = args.iter().position(|a| a == "--network").unwrap();
+        assert_eq!(args[net_at + 1], "cityhall-workspaces");
+        assert!(!args.iter().any(|a| a == "-p"));
+        // The mode is recorded so flipping WORKSPACE_DOCKER_NETWORK recreates.
+        assert!(args
+            .iter()
+            .any(|a| a == "cityhall.workspace.network=cityhall-workspaces"));
     }
 }
