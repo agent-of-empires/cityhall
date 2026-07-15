@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use super::{Orchestrator, OrchestratorError, WorkspaceSpec, WorkspaceStatus};
+use super::{wait_ready, Orchestrator, OrchestratorError, WorkspaceSpec, WorkspaceStatus};
 
 /// Port aoe serves on inside the workspace container.
 const AOE_PORT: u16 = 8080;
@@ -21,8 +21,6 @@ const AOE_PORT: u16 = 8080;
 /// as user `aoe`); the per-user volume is mounted here.
 const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long to wait for aoe to accept connections after `docker start`.
-const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn container_name(user_id: i32) -> String {
     format!("cityhall-workspace-u{user_id}")
@@ -114,7 +112,7 @@ impl DockerCliOrchestrator {
 
     async fn create_and_start(&self, spec: &WorkspaceSpec) -> Result<(), OrchestratorError> {
         if !self.image_exists(&spec.image).await? {
-            return Err(OrchestratorError::ImageMissing(format!(
+            return Err(OrchestratorError::ArtifactMissing(format!(
                 "workspace image '{}' not found; build it first (see deploy/aoe-image/) \
                  or fix the image template / version in the workspace settings",
                 spec.image
@@ -167,23 +165,6 @@ impl DockerCliOrchestrator {
         .await?;
         Ok(())
     }
-
-    /// Wait until the workspace answers HTTP so the first proxied request does
-    /// not race aoe's startup.
-    async fn wait_ready(&self, addr: &str) -> Result<(), OrchestratorError> {
-        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
-        loop {
-            if http_probe(addr).await {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(OrchestratorError::Runtime(format!(
-                    "workspace at {addr} did not become ready within {READY_TIMEOUT:?}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
 }
 
 #[async_trait]
@@ -211,7 +192,7 @@ impl Orchestrator for DockerCliOrchestrator {
             }
         }
         let addr = self.published_addr(&name).await?;
-        self.wait_ready(&addr).await?;
+        wait_ready(&addr).await?;
         Ok(addr)
     }
 
@@ -264,31 +245,6 @@ struct InspectConfig {
     labels: Option<std::collections::HashMap<String, String>>,
 }
 
-/// Whether an HTTP server answers at `addr`. A bare TCP connect is not
-/// enough: docker's userland proxy accepts connections on the published port
-/// before the service inside the container listens, so the probe must
-/// actually exchange bytes.
-async fn http_probe(addr: &str) -> bool {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let probe = async {
-        let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
-        stream
-            .write_all(b"GET / HTTP/1.0\r\nHost: workspace\r\n\r\n")
-            .await
-            .ok()?;
-        let mut buf = [0u8; 1];
-        match stream.read(&mut buf).await {
-            Ok(n) if n > 0 => Some(()),
-            _ => None,
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(2), probe)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-}
-
 /// Parse `docker port` output (`127.0.0.1:55000`, possibly multiple lines with
 /// an IPv6 line like `[::1]:55000`) into a dialable loopback address.
 fn parse_published_addr(out: &str) -> Option<String> {
@@ -320,30 +276,6 @@ mod tests {
             Some("127.0.0.1:55000")
         );
         assert_eq!(parse_published_addr(""), None);
-    }
-
-    #[tokio::test]
-    async fn http_probe_requires_a_response_not_just_a_connect() {
-        use tokio::io::AsyncWriteExt;
-
-        // Accepts and answers: ready.
-        let responder = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = responder.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let (mut sock, _) = responder.accept().await.unwrap();
-            let _ = sock.write_all(b"HTTP/1.0 200 OK\r\n\r\n").await;
-        });
-        assert!(http_probe(&addr).await);
-
-        // Accepts but closes without a byte (docker-proxy with no backend
-        // yet): not ready.
-        let closer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = closer.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let (sock, _) = closer.accept().await.unwrap();
-            drop(sock);
-        });
-        assert!(!http_probe(&addr).await);
     }
 
     #[test]

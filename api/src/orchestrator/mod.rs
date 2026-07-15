@@ -7,6 +7,8 @@
 
 pub mod docker;
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 /// Everything a backend needs to materialize a user's workspace.
@@ -32,8 +34,9 @@ pub enum WorkspaceStatus {
 
 #[derive(Debug)]
 pub enum OrchestratorError {
-    /// The workspace image is not available; carries operator guidance.
-    ImageMissing(String),
+    /// The workspace artifact (docker image, aoe binary...) is not available;
+    /// carries operator guidance.
+    ArtifactMissing(String),
     /// Any other backend failure (daemon down, command failed...).
     Runtime(String),
 }
@@ -41,7 +44,7 @@ pub enum OrchestratorError {
 impl std::fmt::Display for OrchestratorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OrchestratorError::ImageMissing(m) | OrchestratorError::Runtime(m) => {
+            OrchestratorError::ArtifactMissing(m) | OrchestratorError::Runtime(m) => {
                 write!(f, "{m}")
             }
         }
@@ -75,6 +78,51 @@ pub fn render_image(template: &str, version: &str) -> String {
     template.replace("{version}", version)
 }
 
+/// How long to wait for aoe to accept connections after a start.
+const READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Wait until the workspace answers HTTP so the first proxied request does
+/// not race aoe's startup.
+pub(crate) async fn wait_ready(addr: &str) -> Result<(), OrchestratorError> {
+    let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+    loop {
+        if http_probe(addr).await {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(OrchestratorError::Runtime(format!(
+                "workspace at {addr} did not become ready within {READY_TIMEOUT:?}"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Whether an HTTP server answers at `addr`. A bare TCP connect is not
+/// enough: docker's userland proxy accepts connections on the published port
+/// before the service inside the container listens, so the probe must
+/// actually exchange bytes.
+pub(crate) async fn http_probe(addr: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let probe = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+        stream
+            .write_all(b"GET / HTTP/1.0\r\nHost: workspace\r\n\r\n")
+            .await
+            .ok()?;
+        let mut buf = [0u8; 1];
+        match stream.read(&mut buf).await {
+            Ok(n) if n > 0 => Some(()),
+            _ => None,
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), probe)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +138,29 @@ mod tests {
             render_image("cityhall/aoe:latest", "v1"),
             "cityhall/aoe:latest"
         );
+    }
+
+    #[tokio::test]
+    async fn http_probe_requires_a_response_not_just_a_connect() {
+        use tokio::io::AsyncWriteExt;
+
+        // Accepts and answers: ready.
+        let responder = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = responder.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut sock, _) = responder.accept().await.unwrap();
+            let _ = sock.write_all(b"HTTP/1.0 200 OK\r\n\r\n").await;
+        });
+        assert!(http_probe(&addr).await);
+
+        // Accepts but closes without a byte (docker-proxy with no backend
+        // yet): not ready.
+        let closer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = closer.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (sock, _) = closer.accept().await.unwrap();
+            drop(sock);
+        });
+        assert!(!http_probe(&addr).await);
     }
 }
