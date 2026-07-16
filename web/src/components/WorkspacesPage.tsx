@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Play, Square, Trash2 } from "lucide-react";
+import { ExternalLink, Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
 import { TopBar } from "./TopBar";
@@ -21,6 +21,7 @@ const STATUS_LABELS: Record<WorkspaceItem["status"], string> = {
 
 export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
   const canWrite = can(me, "workspaces.write");
+  const canImpersonate = can(me, "workspaces.impersonate");
   const [items, setItems] = useState<WorkspaceItem[]>([]);
   const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +100,22 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
 
   function selectOutdated() {
     setSelected(new Set(items.filter(outdated).map((i) => i.user_id)));
+  }
+
+  async function openAsAdmin(item: WorkspaceItem) {
+    if (
+      !confirm(
+        `Open ${item.username}'s workspace? Every workspace tab in this browser will show ` +
+          `their workspace until you exit (via "Open workspace" in the top bar) or 30 minutes pass. ` +
+          `This access is audited.`,
+      )
+    ) {
+      return;
+    }
+    await run(async () => {
+      const { url } = await api.workspaceAccessUrl(item.user_id);
+      window.open(url, "_blank", "noopener");
+    }, "could not open workspace");
   }
 
   async function destroy(item: WorkspaceItem) {
@@ -252,6 +269,16 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                   {canWrite && (
                     <td className="px-4 py-2.5">
                       <div className="flex justify-end gap-1">
+                        {canImpersonate && item.user_id !== me.id && (
+                          <Button
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => openAsAdmin(item)}
+                            title="Open this user's workspace (audited)"
+                          >
+                            <ExternalLink size={14} />
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           disabled={busy || item.status === "running"}

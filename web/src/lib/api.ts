@@ -258,6 +258,8 @@ export const api = {
     }),
   listWorkspaceVersions: () =>
     request<{ latest: string | null; versions: string[]; stale: boolean }>("/workspaces/versions"),
+  workspaceAccessUrl: (userId: number) =>
+    request<{ url: string }>(`/workspaces/${userId}/access-url`, { method: "POST" }),
   getWorkspaceSettings: () => request<WorkspaceSettings>("/settings/workspaces"),
   updateWorkspaceSettings: (patch: WorkspaceSettings) =>
     request<WorkspaceSettings>("/settings/workspaces", {

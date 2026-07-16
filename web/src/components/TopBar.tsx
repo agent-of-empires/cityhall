@@ -60,7 +60,9 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
       <div className="flex items-center gap-3">
         {workspaceOrigin && (
           <a
-            href={workspaceOrigin}
+            // The exit param ends any admin access to another user's
+            // workspace first, so this link always opens YOUR workspace.
+            href={`${workspaceOrigin}/?cityhall_ws_exit=1`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-text-secondary transition-colors hover:text-text-primary"
