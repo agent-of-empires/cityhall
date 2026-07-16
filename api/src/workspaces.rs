@@ -266,6 +266,36 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, Ap
     Ok(addr)
 }
 
+/// Recreate a RUNNING workspace onto its current effective spec (admin
+/// version rollout). Deliberately does not touch activity: a rollout must
+/// not grant idle workspaces a fresh idle-stop lease. Stopped workspaces are
+/// left stopped; they pick the new version up on their next start.
+pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), AppError> {
+    let cfg = settings(&state.db).await?;
+    let Some(row) = workspace::Entity::find_by_id(user_id)
+        .one(&state.db)
+        .await?
+    else {
+        return Ok(());
+    };
+    let spec = build_spec(&cfg, &row)?;
+
+    let lock = state.locks.lock_for(user_id);
+    let _guard = lock.lock().await;
+    if !matches!(
+        state.orchestrator.status(user_id).await,
+        Ok(WorkspaceStatus::Running { .. })
+    ) {
+        return Ok(());
+    }
+    state.endpoints.invalidate(user_id);
+    let addr = state.orchestrator.ensure_started(&spec).await?;
+    state
+        .endpoints
+        .put(user_id, &spec.version, &spec.image, addr);
+    Ok(())
+}
+
 /// Stop the workspace (volume kept), checkpointing the activity time.
 pub async fn stop(state: &AppState, user_id: i32) -> Result<(), AppError> {
     let lock = state.locks.lock_for(user_id);
