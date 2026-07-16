@@ -132,6 +132,27 @@ pub async fn versions(
     })))
 }
 
+/// POST /api/workspaces/{user_id}/access-url: a short-lived link that opens
+/// `user_id`'s workspace through the proxy for a privileged caller. The
+/// actual access grant (and its audit line) happens when the proxy exchanges
+/// the token; this endpoint only mints it and does not start anything.
+pub async fn access_url(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    caller: AuthUser,
+    Path(user_id): Path<i32>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    caller.require("workspaces.impersonate")?;
+    ensure_user_exists(&state, user_id).await?;
+    let token = proxy::mint_exchange_token(caller.user.id, user_id)?;
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair(proxy::ACCESS_PARAM, &token)
+        .finish();
+    Ok(Json(serde_json::json!({
+        "url": format!("{}/?{query}", proxy::public_origin(&headers)),
+    })))
+}
+
 /// POST /api/workspaces/{user_id}/start
 pub async fn start(
     State(state): State<AppState>,

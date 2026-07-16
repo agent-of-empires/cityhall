@@ -54,6 +54,10 @@ pub fn api_router(state: AppState) -> Router {
             patch(workspaces::set_version).delete(workspaces::destroy),
         )
         .route("/workspaces/{user_id}/start", post(workspaces::start))
+        .route(
+            "/workspaces/{user_id}/access-url",
+            post(workspaces::access_url),
+        )
         .route("/workspaces/{user_id}/stop", post(workspaces::stop))
         .route("/settings/smtp", get(settings::get).put(settings::update))
         .route("/settings/smtp/test", post(settings::test))

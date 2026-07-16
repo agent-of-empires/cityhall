@@ -72,8 +72,34 @@ async fn handler(State(state): State<AppState>, req: Request<Body>) -> Response<
 async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, AppError> {
     let (mut parts, body) = req.into_parts();
     let caller = AuthUser::from_request_parts(&mut parts, &state).await?;
-    caller.require("workspaces.use")?;
-    let user_id = caller.user.id;
+
+    if let Some(resp) = admin_access_interception(&parts, &caller)? {
+        return Ok(resp);
+    }
+
+    // Admin access: a valid impersonation cookie routes this browser to the
+    // target user's workspace. Everything downstream (start, activity,
+    // websocket leases) is keyed to the target so their idle accounting
+    // keeps working; the admin's own workspace is untouched.
+    let jar = axum_extra::extract::cookie::CookieJar::from_headers(&parts.headers);
+    let user_id = match jar.get(ADMIN_COOKIE) {
+        Some(cookie) => {
+            let authorized = decode_token(cookie.value(), SESSION_PURPOSE)
+                .filter(|t| t.a == caller.user.id)
+                .filter(|_| caller.require("workspaces.impersonate").is_ok());
+            match authorized {
+                Some(token) => token.t,
+                // Expired, tampered, or revoked: refuse rather than silently
+                // switching this browser back to the admin's own workspace
+                // (the UI would keep looking like the target's).
+                None => return Ok(admin_access_denied()),
+            }
+        }
+        None => {
+            caller.require("workspaces.use")?;
+            caller.user.id
+        }
+    };
 
     // Request-driven start: any hit on the proxy resumes a stopped workspace.
     let addr = workspaces::ensure_started(&state, user_id).await?;
@@ -98,6 +124,170 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
         state.endpoints.invalidate(user_id);
     }
     result
+}
+
+/// Query parameter carrying a freshly minted admin access token.
+pub const ACCESS_PARAM: &str = "cityhall_ws_access";
+/// Query parameter ending admin access (clears the cookie).
+const EXIT_PARAM: &str = "cityhall_ws_exit";
+/// Cookie scoping this browser's proxy requests to another user's workspace.
+const ADMIN_COOKIE: &str = "cityhall_ws_admin";
+const EXCHANGE_PURPOSE: &str = "ws-exchange";
+const SESSION_PURPOSE: &str = "ws-session";
+/// How long a minted access URL stays exchangeable.
+const EXCHANGE_TTL_SECS: i64 = 120;
+/// How long an admin browses the target's workspace before re-opening.
+const SESSION_TTL_SECS: i64 = 30 * 60;
+
+/// Encrypted admin-access token payload (URL and cookie).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AccessToken {
+    v: u8,
+    /// Purpose: exchange (URL) vs session (cookie), so one cannot stand in
+    /// for the other.
+    p: String,
+    /// The admin's user id; only their session can use the token.
+    a: i32,
+    /// The target user whose workspace is opened.
+    t: i32,
+    /// Unix expiry.
+    exp: i64,
+}
+
+/// Mint the URL token `POST /api/workspaces/{id}/access-url` returns.
+pub fn mint_exchange_token(admin_id: i32, target_id: i32) -> Result<String, AppError> {
+    mint_token(admin_id, target_id, EXCHANGE_PURPOSE, EXCHANGE_TTL_SECS)
+}
+
+fn mint_token(admin_id: i32, target_id: i32, purpose: &str, ttl: i64) -> Result<String, AppError> {
+    let payload = serde_json::to_string(&AccessToken {
+        v: 1,
+        p: purpose.to_string(),
+        a: admin_id,
+        t: target_id,
+        exp: chrono::Utc::now().timestamp() + ttl,
+    })
+    .map_err(|_| AppError::Internal("failed to encode access token"))?;
+    crate::crypto::encrypt(&payload)
+}
+
+/// Decrypt and validate a token; `None` for anything tampered, expired, or
+/// of the wrong purpose (callers respond generically, revealing nothing).
+fn decode_token(raw: &str, purpose: &str) -> Option<AccessToken> {
+    validate_payload(&crate::crypto::decrypt(raw).ok()?, purpose)
+}
+
+fn validate_payload(json: &str, purpose: &str) -> Option<AccessToken> {
+    let token: AccessToken = serde_json::from_str(json).ok()?;
+    (token.v == 1 && token.p == purpose && token.exp > chrono::Utc::now().timestamp())
+        .then_some(token)
+}
+
+/// Handle the admin-access control queries (`cityhall_ws_access` exchange,
+/// `cityhall_ws_exit`) if present. Returns the response to short-circuit
+/// with, or `None` for a normal proxied request.
+fn admin_access_interception(
+    parts: &request::Parts,
+    caller: &AuthUser,
+) -> Result<Option<Response<Body>>, AppError> {
+    let query = parts.uri.query().unwrap_or("");
+    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+
+    if pairs.iter().any(|(k, _)| k == EXIT_PARAM) {
+        tracing::info!(
+            event = "workspace_admin_access_ended",
+            admin_user_id = caller.user.id,
+            "admin workspace access ended"
+        );
+        return Ok(Some(redirect_without(
+            parts,
+            &pairs,
+            EXIT_PARAM,
+            clear_cookie(),
+        )?));
+    }
+
+    let Some((_, raw)) = pairs.iter().find(|(k, _)| k == ACCESS_PARAM) else {
+        return Ok(None);
+    };
+    let token = decode_token(raw, EXCHANGE_PURPOSE)
+        .filter(|t| t.a == caller.user.id)
+        .ok_or(AppError::Forbidden("invalid or expired access link"))?;
+    caller.require("workspaces.impersonate")?;
+
+    let peer_ip = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(peer)| peer.ip().to_string());
+    tracing::info!(
+        event = "workspace_admin_access_started",
+        admin_user_id = caller.user.id,
+        admin_username = %caller.user.username,
+        target_user_id = token.t,
+        peer_ip = peer_ip.as_deref().unwrap_or("unknown"),
+        "admin entered another user's workspace"
+    );
+
+    let session = mint_token(token.a, token.t, SESSION_PURPOSE, SESSION_TTL_SECS)?;
+    let secure = parts
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+    let cookie = format!(
+        "{ADMIN_COOKIE}={session}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_TTL_SECS}{}",
+        if secure { "; Secure" } else { "" }
+    );
+    Ok(Some(redirect_without(parts, &pairs, ACCESS_PARAM, cookie)?))
+}
+
+/// A 303 to the same URI minus `param` (other query params preserved),
+/// carrying `set_cookie`. Marked uncacheable and referrer-free so the
+/// token-bearing URL leaks nowhere.
+fn redirect_without(
+    parts: &request::Parts,
+    pairs: &[(String, String)],
+    param: &str,
+    set_cookie: String,
+) -> Result<Response<Body>, AppError> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in pairs.iter().filter(|(k, _)| k != param) {
+        serializer.append_pair(k, v);
+    }
+    let query = serializer.finish();
+    let location = if query.is_empty() {
+        parts.uri.path().to_string()
+    } else {
+        format!("{}?{query}", parts.uri.path())
+    };
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("location", location)
+        .header("set-cookie", set_cookie)
+        .header("cache-control", "no-store")
+        .header("referrer-policy", "no-referrer")
+        .body(Body::empty())
+        .map_err(|_| AppError::Internal("failed to build redirect"))
+}
+
+fn clear_cookie() -> String {
+    format!("{ADMIN_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+}
+
+/// 403 clearing the stale impersonation cookie; the next request is a normal
+/// self-routed one.
+fn admin_access_denied() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header("set-cookie", clear_cookie())
+        .header("cache-control", "no-store")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"error":"workspace admin access expired or revoked; reload to continue"}"#,
+        ))
+        .unwrap_or_else(|_| StatusCode::FORBIDDEN.into_response())
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -285,6 +475,48 @@ mod tests {
         headers.insert(HOST, HeaderValue::from_static("cityhall.local:3000"));
         // No env override in tests; derived from hostname + proxy port.
         assert_eq!(public_origin(&headers), "http://cityhall.local:3001");
+    }
+
+    #[test]
+    fn access_payload_validation() {
+        let fresh = chrono::Utc::now().timestamp() + 60;
+        let ok = format!(r#"{{"v":1,"p":"ws-exchange","a":1,"t":2,"exp":{fresh}}}"#);
+        let token = validate_payload(&ok, EXCHANGE_PURPOSE).unwrap();
+        assert_eq!((token.a, token.t), (1, 2));
+
+        // Purpose confusion: a URL token is not a session cookie.
+        assert!(validate_payload(&ok, SESSION_PURPOSE).is_none());
+        // Expired.
+        let stale = r#"{"v":1,"p":"ws-exchange","a":1,"t":2,"exp":1}"#;
+        assert!(validate_payload(stale, EXCHANGE_PURPOSE).is_none());
+        // Unknown version or garbage.
+        let vnext = format!(r#"{{"v":2,"p":"ws-exchange","a":1,"t":2,"exp":{fresh}}}"#);
+        assert!(validate_payload(&vnext, EXCHANGE_PURPOSE).is_none());
+        assert!(validate_payload("not json", EXCHANGE_PURPOSE).is_none());
+    }
+
+    #[test]
+    fn redirect_strips_only_the_access_param() {
+        let req = Request::builder()
+            .uri("/sessions/abc?cityhall_ws_access=tok&tab=2")
+            .body(Body::empty())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+        let pairs: Vec<(String, String)> =
+            url::form_urlencoded::parse(parts.uri.query().unwrap().as_bytes())
+                .into_owned()
+                .collect();
+        let resp = redirect_without(&parts, &pairs, ACCESS_PARAM, clear_cookie()).unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/sessions/abc?tab=2"
+        );
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        // The stale cookie is cleared on exit.
+        let cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        assert!(cookie.starts_with("cityhall_ws_admin=;"));
+        assert!(cookie.contains("Max-Age=0"));
     }
 
     #[test]
