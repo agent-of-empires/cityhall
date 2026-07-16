@@ -10,7 +10,6 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
 use crate::handlers::{auth, oidc, roles, settings, signup, users, workspaces};
-use crate::orchestrator::docker::DockerCliOrchestrator;
 use crate::proxy;
 use crate::state::AppState;
 
@@ -49,11 +48,16 @@ pub fn api_router(state: AppState) -> Router {
             get(workspaces::list).patch(workspaces::bulk_set_version),
         )
         .route("/workspaces/me", get(workspaces::me))
+        .route("/workspaces/versions", get(workspaces::versions))
         .route(
             "/workspaces/{user_id}",
             patch(workspaces::set_version).delete(workspaces::destroy),
         )
         .route("/workspaces/{user_id}/start", post(workspaces::start))
+        .route(
+            "/workspaces/{user_id}/access-url",
+            post(workspaces::access_url),
+        )
         .route("/workspaces/{user_id}/stop", post(workspaces::stop))
         .route("/settings/smtp", get(settings::get).put(settings::update))
         .route("/settings/smtp/test", post(settings::test))
@@ -97,11 +101,15 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
+    let (orchestrator, provisioning) = crate::orchestrator::from_env()?;
     Ok(AppState {
         db,
-        orchestrator: Arc::new(DockerCliOrchestrator::from_env()),
+        orchestrator,
         activity: Arc::default(),
         locks: Arc::default(),
+        endpoints: Arc::default(),
+        provisioning,
+        versions: Arc::default(),
         proxy_client,
     })
 }

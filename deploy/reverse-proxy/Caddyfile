@@ -10,3 +10,10 @@
 	# Caddy sets X-Forwarded-Proto/-For/Host automatically.
 	reverse_proxy cityhall:3000
 }
+
+# Workspace proxy origin (uncomment when using docker-compose.workspaces.yml).
+# Point WORKSPACE_PROXY_PUBLIC_ORIGIN at this hostname; WebSockets proxy
+# through automatically.
+#ws.{$CITYHALL_DOMAIN} {
+#	reverse_proxy cityhall:3001
+#}

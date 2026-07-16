@@ -1,0 +1,33 @@
+# Overlay enabling per-user aoe workspaces when CityHall itself runs in
+# compose. Combine with the base stack:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.workspaces.yml up -d --build
+#
+# CityHall gets the docker socket and a dedicated network shared with the
+# workspace containers it spawns; workspaces publish no ports and are dialed
+# by container DNS (WORKSPACE_DOCKER_NETWORK).
+#
+# Expose the workspace proxy (port 3001) through your reverse proxy as a
+# second origin and set WORKSPACE_PROXY_PUBLIC_ORIGIN accordingly; see the
+# commented block in reverse-proxy/Caddyfile and docs/workspaces.md.
+
+services:
+  cityhall:
+    environment:
+      WORKSPACE_BACKEND: docker
+      WORKSPACE_DOCKER_NETWORK: cityhall-workspaces
+      WORKSPACE_PROXY_BIND_ADDR: 0.0.0.0:3001
+      # The public origin browsers use for workspaces, e.g. https://ws.example.com
+      WORKSPACE_PROXY_PUBLIC_ORIGIN: "${WORKSPACE_PROXY_PUBLIC_ORIGIN:?set WORKSPACE_PROXY_PUBLIC_ORIGIN in .env}"
+    volumes:
+      # Full control of the host's docker daemon: treat CityHall as root on
+      # this host, or point this at a restricted docker socket proxy.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - cityhall-workspaces
+
+networks:
+  cityhall-workspaces:
+    # Fixed name: CityHall passes this exact name to `docker run --network`.
+    name: cityhall-workspaces

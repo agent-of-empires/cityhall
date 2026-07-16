@@ -28,6 +28,10 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("workspaces.use", "Use your own workspace"),
     ("workspaces.read", "View all workspaces"),
     ("workspaces.write", "Manage workspaces and their versions"),
+    (
+        "workspaces.impersonate",
+        "Open other users' workspaces (audited)",
+    ),
 ];
 
 /// Built-in roles seeded on startup: (name, description, permission keys).

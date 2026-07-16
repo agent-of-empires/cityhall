@@ -507,6 +507,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lettre",
+ "libc",
  "openidconnect",
  "rand 0.10.2",
  "reqwest",
@@ -519,6 +520,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

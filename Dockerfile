@@ -27,12 +27,35 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked \
     && cp target/release/cityhall /usr/local/bin/cityhall
 
+# --- Workspace backend CLIs ------------------------------------------------
+# Static docker and kubectl binaries so the containerized CityHall can drive
+# the docker (socket-mounted compose) and kubernetes workspace backends.
+FROM debian:bookworm-slim AS clis
+ARG TARGETARCH
+ARG DOCKER_VERSION=27.5.1
+ARG KUBECTL_VERSION=v1.32.2
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+         amd64) DOCKER_ARCH=x86_64 ;; \
+         arm64) DOCKER_ARCH=aarch64 ;; \
+         *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
+       esac \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" \
+       | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+    && curl -fsSL -o /usr/local/bin/kubectl \
+       "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH:-$(dpkg --print-architecture)}/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
 # --- Runtime --------------------------------------------------------------
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+COPY --from=clis /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=clis /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY --from=api /usr/local/bin/cityhall /usr/local/bin/cityhall
 COPY --from=web /web/dist ./web/dist
 ENV STATIC_DIR=/app/web/dist \

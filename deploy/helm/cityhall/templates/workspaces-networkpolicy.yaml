@@ -1,0 +1,24 @@
+{{- if .Values.workspaces.enabled }}
+# Workspace pods run `aoe serve --auth none`; CityHall's session-gated proxy
+# is the only auth boundary. This policy keeps every other pod in the cluster
+# away from them. Enforcement requires a CNI with NetworkPolicy support.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-workspaces
+  labels:
+    {{- include "cityhall.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      cityhall.managed: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cityhall.selector" . | nindent 14 }}
+      ports:
+        - port: 8080
+{{- end }}

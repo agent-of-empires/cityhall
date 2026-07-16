@@ -26,7 +26,14 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `OIDC_ALLOWED_DOMAINS` | _(any)_                   | Comma-separated email domains allowed to auto-provision. |
 | `WORKSPACE_PROXY_BIND_ADDR` | `127.0.0.1:3001`     | Workspace proxy listener (see [Workspaces](workspaces.md)). |
 | `WORKSPACE_PROXY_PUBLIC_ORIGIN` | _(derived)_      | Public origin of the workspace proxy behind a reverse proxy. |
-| `CONTAINER_CLI` | `docker`                         | Container CLI used to manage workspaces (e.g. `podman`). |
+| `WORKSPACE_BACKEND` | `docker`                     | Workspace backend: `docker`, `kubernetes`, or `process`. |
+| `CONTAINER_CLI` | `docker`                         | Container CLI used by the docker backend (e.g. `podman`). |
+| `WORKSPACE_DOCKER_NETWORK` | _(unset)_             | Docker network workspaces join (no published ports); for CityHall-in-compose. |
+| `WORKSPACE_K8S_NAMESPACE` | _(pod namespace)_      | Namespace workspace objects are created in. |
+| `WORKSPACE_K8S_VOLUME_SIZE` | `5Gi`                | PVC size per workspace. |
+| `WORKSPACE_K8S_STORAGE_CLASS` | _(cluster default)_ | Storage class for workspace PVCs. |
+| `WORKSPACE_PROCESS_DIR` | `/var/lib/cityhall/workspaces` | Data root of the process backend (per-user HOMEs, version binaries). |
+| `GITHUB_TOKEN`  | _(unset)_                        | Authenticates aoe release discovery (higher GitHub rate limit). |
 
 ## Database
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
-use crate::orchestrator::WorkspaceStatus;
+use crate::orchestrator::{binary_key, render_image, WorkspaceStatus};
 use crate::proxy;
 use crate::state::AppState;
 use crate::workspaces::{self, SETTINGS_ID};
@@ -22,6 +22,15 @@ pub struct WorkspaceItem {
     pub pinned_version: Option<String>,
     pub effective_version: Option<String>,
     pub last_active_at: Option<chrono::DateTime<Utc>>,
+    /// Background artifact provisioning (image pull/build, binary download)
+    /// for this user's effective version, when one is underway or failed.
+    pub provisioning: Option<ProvisioningInfo>,
+}
+
+#[derive(Serialize)]
+pub struct ProvisioningInfo {
+    pub message: String,
+    pub failed: bool,
 }
 
 fn status_str(status: Result<WorkspaceStatus, impl std::fmt::Display>) -> &'static str {
@@ -49,7 +58,21 @@ pub async fn list(
     let mut items = Vec::with_capacity(users.len());
     for user in users {
         let row = rows.iter().find(|r| r.user_id == user.id);
-        let effective = row.and_then(|r| workspaces::effective_version(&cfg, r));
+        let effective = row
+            .and_then(|r| workspaces::effective_version(&cfg, r))
+            .or_else(|| cfg.default_version.clone());
+        // Whichever backend runs, the effective version maps to exactly one
+        // artifact key (image ref or binary); probe both.
+        let provisioning = effective
+            .as_ref()
+            .and_then(|v| {
+                let image = render_image(&cfg.image_template, v);
+                state
+                    .provisioning
+                    .state(&image)
+                    .or_else(|| state.provisioning.state(&binary_key(v)))
+            })
+            .map(|(message, failed)| ProvisioningInfo { message, failed });
         items.push(WorkspaceItem {
             user_id: user.id,
             status: match row {
@@ -58,9 +81,10 @@ pub async fn list(
                 None => "not_created",
             },
             pinned_version: row.and_then(|r| r.pinned_version.clone()),
-            effective_version: effective.or_else(|| cfg.default_version.clone()),
+            effective_version: effective,
             last_active_at: row.and_then(|r| r.last_active_at),
             username: user.username,
+            provisioning,
         });
     }
     Ok(Json(items))
@@ -87,6 +111,45 @@ pub async fn me(
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),
         "effective_version": effective,
         "proxy_origin": proxy::public_origin(&headers),
+    })))
+}
+
+/// GET /api/workspaces/versions: discovered stable aoe releases (cached),
+/// newest first, feeding the version dropdowns. Readable by anyone who can
+/// see the workspaces page or the settings page.
+pub async fn versions(
+    State(state): State<AppState>,
+    caller: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if caller.require("workspaces.read").is_err() {
+        caller.require("settings.read")?;
+    }
+    let (versions, stale) = state.versions.versions().await;
+    Ok(Json(serde_json::json!({
+        "latest": versions.first(),
+        "versions": versions,
+        "stale": stale,
+    })))
+}
+
+/// POST /api/workspaces/{user_id}/access-url: a short-lived link that opens
+/// `user_id`'s workspace through the proxy for a privileged caller. The
+/// actual access grant (and its audit line) happens when the proxy exchanges
+/// the token; this endpoint only mints it and does not start anything.
+pub async fn access_url(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    caller: AuthUser,
+    Path(user_id): Path<i32>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    caller.require("workspaces.impersonate")?;
+    ensure_user_exists(&state, user_id).await?;
+    let token = proxy::mint_exchange_token(caller.user.id, user_id)?;
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair(proxy::ACCESS_PARAM, &token)
+        .finish();
+    Ok(Json(serde_json::json!({
+        "url": format!("{}/?{query}", proxy::public_origin(&headers)),
     })))
 }
 
@@ -128,6 +191,10 @@ pub async fn destroy(
 pub struct SetVersionRequest {
     /// `null` (or empty) unpins, following the default version.
     pub pinned_version: Option<String>,
+    /// Recreate currently-running workspaces onto the new version now
+    /// instead of on their next start (default lazy).
+    #[serde(default)]
+    pub restart: bool,
 }
 
 /// PATCH /api/workspaces/{user_id}: pin or unpin the served aoe version. A
@@ -142,6 +209,9 @@ pub async fn set_version(
     caller.require("workspaces.write")?;
     ensure_user_exists(&state, user_id).await?;
     pin_version(&state, user_id, body.pinned_version.clone()).await?;
+    if body.restart {
+        spawn_restarts(state.clone(), vec![user_id]);
+    }
     Ok(Json(
         serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
     ))
@@ -151,6 +221,10 @@ pub async fn set_version(
 pub struct BulkSetVersionRequest {
     pub user_ids: Vec<i32>,
     pub pinned_version: Option<String>,
+    /// Recreate currently-running workspaces onto the new version now
+    /// instead of on their next start (default lazy).
+    #[serde(default)]
+    pub restart: bool,
 }
 
 /// PATCH /api/workspaces: pin/unpin a group of users in one call (grouped
@@ -167,12 +241,29 @@ pub async fn bulk_set_version(
     for user_id in &body.user_ids {
         ensure_user_exists(&state, *user_id).await?;
     }
-    for user_id in body.user_ids {
-        pin_version(&state, user_id, body.pinned_version.clone()).await?;
+    for user_id in &body.user_ids {
+        pin_version(&state, *user_id, body.pinned_version.clone()).await?;
+    }
+    if body.restart {
+        spawn_restarts(state.clone(), body.user_ids);
     }
     Ok(Json(
         serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
     ))
+}
+
+/// Eager rollout: recreate the listed users' RUNNING workspaces in the
+/// background, one at a time (a recreate can ride a multi-minute image
+/// provisioning; the PATCH must not hang on it). Failures land in the
+/// provisioning tracker / logs and the list keeps showing live status.
+fn spawn_restarts(state: AppState, user_ids: Vec<i32>) {
+    tokio::spawn(async move {
+        for user_id in user_ids {
+            if let Err(e) = workspaces::restart_if_running(&state, user_id).await {
+                tracing::warn!(user_id, "eager workspace restart failed: {e}");
+            }
+        }
+    });
 }
 
 fn normalize(version: Option<String>) -> Option<String> {

@@ -114,6 +114,7 @@ export interface WorkspaceItem {
   pinned_version: string | null;
   effective_version: string | null;
   last_active_at: string | null;
+  provisioning: { message: string; failed: boolean } | null;
 }
 
 export interface MyWorkspace {
@@ -245,16 +246,20 @@ export const api = {
   startWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/start`, { method: "POST" }),
   stopWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/stop`, { method: "POST" }),
   destroyWorkspace: (userId: number) => request<{ destroyed: boolean }>(`/workspaces/${userId}`, { method: "DELETE" }),
-  setWorkspaceVersion: (userId: number, pinnedVersion: string | null) =>
+  setWorkspaceVersion: (userId: number, pinnedVersion: string | null, restart = false) =>
     request<{ pinned_version: string | null }>(`/workspaces/${userId}`, {
       method: "PATCH",
-      body: JSON.stringify({ pinned_version: pinnedVersion }),
+      body: JSON.stringify({ pinned_version: pinnedVersion, restart }),
     }),
-  bulkSetWorkspaceVersion: (userIds: number[], pinnedVersion: string | null) =>
+  bulkSetWorkspaceVersion: (userIds: number[], pinnedVersion: string | null, restart = false) =>
     request<{ pinned_version: string | null }>("/workspaces", {
       method: "PATCH",
-      body: JSON.stringify({ user_ids: userIds, pinned_version: pinnedVersion }),
+      body: JSON.stringify({ user_ids: userIds, pinned_version: pinnedVersion, restart }),
     }),
+  listWorkspaceVersions: () =>
+    request<{ latest: string | null; versions: string[]; stale: boolean }>("/workspaces/versions"),
+  workspaceAccessUrl: (userId: number) =>
+    request<{ url: string }>(`/workspaces/${userId}/access-url`, { method: "POST" }),
   getWorkspaceSettings: () => request<WorkspaceSettings>("/settings/workspaces"),
   updateWorkspaceSettings: (patch: WorkspaceSettings) =>
     request<WorkspaceSettings>("/settings/workspaces", {

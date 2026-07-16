@@ -94,6 +94,11 @@ are exposed.
 Data lives in named volumes (`pgdata`, `caddy_data`); they survive
 `docker compose down`. Use `down -v` only when you intend to wipe everything.
 
+To run per-user aoe workspaces from this stack, add the
+[`deploy/docker-compose.workspaces.yml`](../deploy/docker-compose.workspaces.yml)
+overlay (docker socket mount + shared workspace network) and expose the
+workspace proxy as a second origin; see [Workspaces](workspaces.md#backends).
+
 ## Kubernetes
 
 [`deploy/k8s/`](../deploy/k8s) is a minimal Kustomize bundle: a namespace, a
