@@ -54,6 +54,16 @@ Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
 page and its actions.
 
+`workspaces.impersonate` (never implied by `workspaces.read`) lets an admin
+open another user's workspace for support: the Open action mints a short-lived
+access link, and exchanging it scopes that browser's workspace origin to the
+target user for up to 30 minutes (every workspace tab, not just the new one).
+Each grant and exit is written to the server log as an audit line. The
+top-bar "Open workspace" link always exits admin access first; note that
+WebSocket connections opened during access survive until they disconnect,
+even past expiry or permission revocation. Requires `CITYHALL_SECRET_KEY`.
+The target's idle accounting keeps running while an admin browses.
+
 ## The workspace proxy
 
 Workspaces are served through a dedicated listener (default
