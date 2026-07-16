@@ -65,6 +65,23 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
     return () => clearInterval(timer);
   }, [anyProvisioning, load]);
 
+  // Statuses change outside this tab (the proxy auto-starts workspaces on
+  // access), so refresh when the tab regains focus and poll slowly while
+  // visible.
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    const timer = setInterval(refresh, 10_000);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      clearInterval(timer);
+    };
+  }, [load]);
+
   function toggle(userId: number) {
     setSelected((prev) => {
       const next = new Set(prev);
