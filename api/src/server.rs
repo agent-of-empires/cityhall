@@ -48,6 +48,7 @@ pub fn api_router(state: AppState) -> Router {
             get(workspaces::list).patch(workspaces::bulk_set_version),
         )
         .route("/workspaces/me", get(workspaces::me))
+        .route("/workspaces/versions", get(workspaces::versions))
         .route(
             "/workspaces/{user_id}",
             patch(workspaces::set_version).delete(workspaces::destroy),
@@ -104,6 +105,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         locks: Arc::default(),
         endpoints: Arc::default(),
         provisioning,
+        versions: Arc::default(),
         proxy_client,
     })
 }

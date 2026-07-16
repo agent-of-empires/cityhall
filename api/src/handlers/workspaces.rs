@@ -114,6 +114,24 @@ pub async fn me(
     })))
 }
 
+/// GET /api/workspaces/versions: discovered stable aoe releases (cached),
+/// newest first, feeding the version dropdowns. Readable by anyone who can
+/// see the workspaces page or the settings page.
+pub async fn versions(
+    State(state): State<AppState>,
+    caller: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if caller.require("workspaces.read").is_err() {
+        caller.require("settings.read")?;
+    }
+    let (versions, stale) = state.versions.versions().await;
+    Ok(Json(serde_json::json!({
+        "latest": versions.first(),
+        "versions": versions,
+        "stale": stale,
+    })))
+}
+
 /// POST /api/workspaces/{user_id}/start
 pub async fn start(
     State(state): State<AppState>,

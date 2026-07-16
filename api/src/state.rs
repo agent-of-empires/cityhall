@@ -19,6 +19,8 @@ pub struct AppState {
     /// Read side of background artifact provisioning (pulls, builds,
     /// downloads); the backends write to it.
     pub provisioning: Arc<ProvisioningRegistry>,
+    /// Cached aoe release discovery feeding the version dropdowns.
+    pub versions: Arc<crate::workspaces::VersionCache>,
     /// Client for proxied HTTP requests to workspaces (no redirects, HTTP/1.1
     /// so WebSocket upgrades tunnel through).
     pub proxy_client: reqwest::Client,

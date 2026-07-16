@@ -40,8 +40,12 @@ pub async fn seed_default_version(db: &DatabaseConnection) -> Result<(), AppErro
     {
         return Ok(());
     }
-    let version = match fetch_latest_release().await {
-        Ok(tag) => tag,
+    let version = match fetch_releases().await.map(|v| v.into_iter().next()) {
+        Ok(Some(tag)) => tag,
+        Ok(None) => {
+            tracing::warn!("no aoe releases found to seed the default workspace version");
+            return Ok(());
+        }
         Err(e) => {
             tracing::warn!(
                 "could not resolve the latest aoe release for the default workspace version: {e}"
@@ -67,20 +71,25 @@ async fn apply_seeded_version(db: &DatabaseConnection, version: String) -> Resul
     Ok(())
 }
 
-/// The `tag_name` of the latest agent-of-empires GitHub release.
-async fn fetch_latest_release() -> Result<String, String> {
-    #[derive(serde::Deserialize)]
-    struct Release {
-        tag_name: String,
-    }
+/// Stable (non-draft, non-prerelease) agent-of-empires release tags, newest
+/// first by version.
+async fn fetch_releases() -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let body = client
-        .get("https://api.github.com/repos/agent-of-empires/agent-of-empires/releases/latest")
+    let mut req = client
+        .get("https://api.github.com/repos/agent-of-empires/agent-of-empires/releases?per_page=100")
         // GitHub's API rejects requests without a User-Agent.
-        .header("User-Agent", "cityhall")
+        .header("User-Agent", "cityhall");
+    // Optional: authenticated requests get a much higher rate limit (the
+    // unauthenticated 60/h is shared per source IP).
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if !token.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", token.trim()));
+        }
+    }
+    let body = req
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -89,8 +98,90 @@ async fn fetch_latest_release() -> Result<String, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let release: Release = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    Ok(release.tag_name)
+    parse_releases(&body).map_err(|e| e.to_string())
+}
+
+/// Parse the GitHub releases payload into stable tags, newest version first.
+/// GitHub orders by creation date, which misplaces backported patches
+/// (v1.0.1 released after v2.0.0 would come first).
+fn parse_releases(body: &str) -> Result<Vec<String>, serde_json::Error> {
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+        draft: bool,
+        prerelease: bool,
+    }
+    let releases: Vec<Release> = serde_json::from_str(body)?;
+    let mut tags: Vec<String> = releases
+        .into_iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .map(|r| r.tag_name)
+        .collect();
+    tags.sort_by_key(|t| std::cmp::Reverse(version_key(t)));
+    Ok(tags)
+}
+
+/// Numeric components of a version tag ("v1.10.2" -> [1, 10, 2]) for
+/// ordering; tags without digits compare as empty (never "outdated").
+pub fn version_key(tag: &str) -> Vec<u64> {
+    tag.split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse().unwrap_or(u64::MAX))
+        .collect()
+}
+
+/// Cached release discovery: single-flight refresh, 1h TTL, and
+/// stale-on-error so a GitHub outage degrades to the last known list
+/// instead of an empty dropdown.
+#[derive(Default)]
+pub struct VersionCache {
+    /// Serializes refreshes so concurrent cache misses produce one request.
+    refresh: tokio::sync::Mutex<()>,
+    state: std::sync::Mutex<VersionCacheState>,
+}
+
+#[derive(Default)]
+struct VersionCacheState {
+    fetched_at: Option<tokio::time::Instant>,
+    versions: Vec<String>,
+}
+
+const VERSION_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+impl VersionCache {
+    /// The cached (or freshly fetched) release tags and whether they are
+    /// stale (a refresh failed and an older list is being served).
+    pub async fn versions(&self) -> (Vec<String>, bool) {
+        if let Some(fresh) = self.fresh() {
+            return (fresh, false);
+        }
+        let _refresh = self.refresh.lock().await;
+        // Another caller may have refreshed while this one waited.
+        if let Some(fresh) = self.fresh() {
+            return (fresh, false);
+        }
+        match fetch_releases().await {
+            Ok(versions) => {
+                let mut state = self.state.lock().unwrap();
+                state.fetched_at = Some(tokio::time::Instant::now());
+                state.versions = versions.clone();
+                (versions, false)
+            }
+            Err(e) => {
+                tracing::warn!("release discovery failed, serving the last known list: {e}");
+                let state = self.state.lock().unwrap();
+                (state.versions.clone(), true)
+            }
+        }
+    }
+
+    fn fresh(&self) -> Option<Vec<String>> {
+        let state = self.state.lock().unwrap();
+        state
+            .fetched_at
+            .filter(|at| at.elapsed() < VERSION_CACHE_TTL)
+            .map(|_| state.versions.clone())
+    }
 }
 
 /// The user's workspace intent row, created on first use.
@@ -334,6 +425,28 @@ mod tests {
 
         seed_default_version(&db).await.unwrap();
         assert_eq!(settings(&db).await.unwrap().default_version, None);
+    }
+
+    #[test]
+    fn version_keys_order_numerically() {
+        assert!(version_key("v1.10.0") > version_key("v1.9.9"));
+        assert!(version_key("v2.0.0") > version_key("v1.99.99"));
+        assert_eq!(version_key("1.2.3"), version_key("v1.2.3"));
+        // Non-numeric tags compare as empty: never flagged outdated.
+        assert!(version_key("custom-build").is_empty());
+    }
+
+    #[test]
+    fn release_parsing_filters_and_sorts() {
+        let body = r#"[
+            {"tag_name": "v1.9.0", "draft": false, "prerelease": false},
+            {"tag_name": "v2.0.0-rc.1", "draft": false, "prerelease": true},
+            {"tag_name": "v1.10.0", "draft": false, "prerelease": false},
+            {"tag_name": "v3.0.0", "draft": true, "prerelease": false}
+        ]"#;
+        // Drafts and prereleases are dropped; order is by version, not the
+        // API's creation-date order.
+        assert_eq!(parse_releases(body).unwrap(), vec!["v1.10.0", "v1.9.0"]);
     }
 
     #[tokio::test]
