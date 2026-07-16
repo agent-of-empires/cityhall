@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type WorkspaceSettings } from "../lib/api";
-import { Button, ErrorText, Field, Input } from "./ui";
+import { isOlderVersion } from "../lib/versions";
+import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -8,6 +9,8 @@ export function WorkspaceSettingsSection() {
   const [imageTemplate, setImageTemplate] = useState("");
   const [defaultVersion, setDefaultVersion] = useState("");
   const [idleStopMinutes, setIdleStopMinutes] = useState(30);
+  const [versions, setVersions] = useState<string[]>([]);
+  const [latest, setLatest] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -30,6 +33,13 @@ export function WorkspaceSettingsSection() {
 
   useEffect(() => {
     void load();
+    api
+      .listWorkspaceVersions()
+      .then((v) => {
+        setVersions(v.versions);
+        setLatest(v.latest);
+      })
+      .catch(() => {});
   }, [load]);
 
   async function save(e: React.FormEvent) {
@@ -69,7 +79,23 @@ export function WorkspaceSettingsSection() {
             />
           </Field>
           <Field label="Default version">
-            <Input value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)} placeholder="v0.1.0" />
+            {versions.length > 0 ? (
+              <Select value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)}>
+                <option value="">none</option>
+                {/* A previously saved version can predate the discovered list. */}
+                {defaultVersion && !versions.includes(defaultVersion) && (
+                  <option value={defaultVersion}>{defaultVersion}</option>
+                )}
+                {versions.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                    {v === latest ? " (latest)" : ""}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <Input value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)} placeholder="v0.1.0" />
+            )}
           </Field>
           <Field label="Idle stop (minutes)">
             <Input
@@ -85,6 +111,15 @@ export function WorkspaceSettingsSection() {
           The image for a user is the template with <code className="text-text-primary">{"{version}"}</code> replaced by
           their pinned version (or the default). Idle workspaces are stopped automatically; their data volume is kept.
         </p>
+
+        {latest && defaultVersion && isOlderVersion(defaultVersion, latest) && (
+          <p className="text-sm text-status-waiting">
+            The default version {defaultVersion} is behind the latest release {latest}.{" "}
+            <button type="button" className="underline" onClick={() => setDefaultVersion(latest)}>
+              Use {latest}
+            </button>
+          </p>
+        )}
 
         {saveError && <ErrorText>{saveError}</ErrorText>}
         {saved && <p className="text-sm text-status-running">Settings saved.</p>}

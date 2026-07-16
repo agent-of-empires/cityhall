@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
+import { isOlderVersion } from "../lib/versions";
 import { TopBar } from "./TopBar";
-import { Button, Input } from "./ui";
+import { Button, Input, Select } from "./ui";
 
 const STATUS_STYLES: Record<WorkspaceItem["status"], string> = {
   running: "text-status-running",
@@ -25,7 +26,10 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [version, setVersion] = useState("");
+  const [restart, setRestart] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [versions, setVersions] = useState<string[]>([]);
+  const [latest, setLatest] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -41,6 +45,13 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
     api
       .myWorkspace()
       .then((w) => setProxyOrigin(w.proxy_origin))
+      .catch(() => {});
+    api
+      .listWorkspaceVersions()
+      .then((v) => {
+        setVersions(v.versions);
+        setLatest(v.latest);
+      })
       .catch(() => {});
   }, [load]);
 
@@ -77,9 +88,17 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
 
   async function applyVersion() {
     const ids = [...selected];
-    await run(() => api.bulkSetWorkspaceVersion(ids, version.trim() || null), "could not set version");
+    await run(() => api.bulkSetWorkspaceVersion(ids, version.trim() || null, restart), "could not set version");
     setSelected(new Set());
     setVersion("");
+  }
+
+  function outdated(item: WorkspaceItem): boolean {
+    return latest !== null && item.effective_version !== null && isOlderVersion(item.effective_version, latest);
+  }
+
+  function selectOutdated() {
+    setSelected(new Set(items.filter(outdated).map((i) => i.user_id)));
   }
 
   async function destroy(item: WorkspaceItem) {
@@ -97,12 +116,38 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
           <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">Workspaces</h2>
           {canWrite && (
             <div className="flex items-end gap-2">
-              <Input
-                value={version}
-                onChange={(e) => setVersion(e.target.value)}
-                placeholder="version, empty = default"
-                className="w-52"
-              />
+              {items.some(outdated) && (
+                <Button variant="ghost" disabled={busy} onClick={selectOutdated}>
+                  Select outdated
+                </Button>
+              )}
+              <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={restart}
+                  onChange={(e) => setRestart(e.target.checked)}
+                  className="h-4 w-4 accent-brand-500"
+                />
+                restart running now
+              </label>
+              {versions.length > 0 ? (
+                <Select value={version} onChange={(e) => setVersion(e.target.value)} className="w-52">
+                  <option value="">follow default</option>
+                  {versions.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                      {v === latest ? " (latest)" : ""}
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  value={version}
+                  onChange={(e) => setVersion(e.target.value)}
+                  placeholder="version, empty = default"
+                  className="w-52"
+                />
+              )}
               <Button variant="primary" disabled={busy || selected.size === 0} onClick={applyVersion}>
                 Set version ({selected.size})
               </Button>
@@ -165,7 +210,41 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-text-secondary">
-                    {item.pinned_version ?? (item.effective_version ? `default (${item.effective_version})` : "-")}
+                    <div className="flex items-center gap-2">
+                      {canWrite && versions.length > 0 ? (
+                        <Select
+                          value={item.pinned_version ?? ""}
+                          disabled={busy}
+                          onChange={(e) =>
+                            run(
+                              () => api.setWorkspaceVersion(item.user_id, e.target.value || null, restart),
+                              "could not set version",
+                            )
+                          }
+                          className="w-44"
+                        >
+                          <option value="">
+                            {item.effective_version ? `default (${item.effective_version})` : "default"}
+                          </option>
+                          {versions.map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                              {v === latest ? " (latest)" : ""}
+                            </option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <span>
+                          {item.pinned_version ??
+                            (item.effective_version ? `default (${item.effective_version})` : "-")}
+                        </span>
+                      )}
+                      {outdated(item) && (
+                        <span className="text-xs font-medium text-status-waiting" title={`latest is ${latest}`}>
+                          outdated
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2.5 text-text-secondary">
                     {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
