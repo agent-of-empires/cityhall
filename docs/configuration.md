@@ -33,6 +33,7 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `WORKSPACE_K8S_VOLUME_SIZE` | `5Gi`                | PVC size per workspace. |
 | `WORKSPACE_K8S_STORAGE_CLASS` | _(cluster default)_ | Storage class for workspace PVCs. |
 | `WORKSPACE_PROCESS_DIR` | `/var/lib/cityhall/workspaces` | Data root of the process backend (per-user HOMEs, version binaries). |
+| `GITHUB_TOKEN`  | _(unset)_                        | Authenticates aoe release discovery (higher GitHub rate limit). |
 
 ## Database
 

@@ -42,10 +42,13 @@ registry:
 docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 ```
 
-On a first startup the default version is pre-filled with the latest aoe
-release (skipped when offline); adjust it under **Settings → Workspaces** if
-needed. Starting a workspace with no default version set fails with a
-descriptive error.
+Version fields offer the discovered stable aoe releases, fetched from the
+GitHub API and cached for an hour (the last known list is served when GitHub
+is unreachable; set `GITHUB_TOKEN` if the unauthenticated per-IP rate limit
+is a problem). On a first startup the default version is pre-filled with the
+latest release (skipped when offline); adjust it under **Settings →
+Workspaces** if needed. Starting a workspace with no default version set
+fails with a descriptive error.
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
