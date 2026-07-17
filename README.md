@@ -1,4 +1,7 @@
-# CityHall
+<div align="center">
+  <img src="assets/logo.png" alt="CityHall" width="128">
+  <h1>CityHall</h1>
+</div>
 
 CityHall is the distributed server for [Agent of Empires](https://github.com/agent-of-empires/agent-of-empires):
 a self-hostable control-plane service that lets teams run and coordinate AoE
