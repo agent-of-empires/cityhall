@@ -101,17 +101,34 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="Host">
-                  <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="https://github.com" />
+                  <Input
+                    value={host}
+                    onChange={(e) => {
+                      setHost(e.target.value);
+                      setSaved(false);
+                    }}
+                    placeholder="https://github.com"
+                  />
                 </Field>
                 <Field label="Username">
-                  <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="your-username" />
+                  <Input
+                    value={username}
+                    onChange={(e) => {
+                      setUsername(e.target.value);
+                      setSaved(false);
+                    }}
+                    placeholder="your-username"
+                  />
                 </Field>
               </div>
               <Field label={cred?.token_set ? "Token (leave blank to keep the stored one)" : "Token"}>
                 <Input
                   type="password"
                   value={token}
-                  onChange={(e) => setToken(e.target.value)}
+                  onChange={(e) => {
+                    setToken(e.target.value);
+                    setSaved(false);
+                  }}
                   autoComplete="new-password"
                   placeholder={cred?.token_set ? "unchanged" : "ghp_..."}
                 />

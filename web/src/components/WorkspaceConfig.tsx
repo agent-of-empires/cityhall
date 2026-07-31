@@ -51,9 +51,17 @@ export function WorkspaceConfigSection() {
   }
 
   async function upload(file: File) {
-    setBundle(await file.text());
     setSaved(false);
     setSaveError(null);
+    try {
+      setBundle(await file.text());
+    } catch {
+      // The picker hands back a handle, not bytes, so a file that moved or
+      // became unreadable between selection and read rejects here. The caller
+      // fires this without awaiting, so an unhandled rejection is the
+      // alternative to reporting it.
+      setSaveError("could not read the selected file");
+    }
   }
 
   const summary = config?.summary;
@@ -73,12 +81,15 @@ export function WorkspaceConfigSection() {
         </p>
 
         <div className="flex flex-wrap items-center gap-3">
-          <label className="cursor-pointer text-sm text-text-secondary underline hover:text-text-primary">
+          {/* sr-only, not hidden: display:none takes the input out of the tab
+              order, and the label is not focusable, so the control would be
+              pointer-only. */}
+          <label className="cursor-pointer rounded-sm text-sm text-text-secondary underline hover:text-text-primary focus-within:outline-none focus-within:ring-2 focus-within:ring-brand-500">
             Upload cityhall.toml
             <input
               type="file"
               accept=".toml,text/plain"
-              className="hidden"
+              className="sr-only"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 // Clear the input so re-picking the same file still fires.
@@ -93,6 +104,7 @@ export function WorkspaceConfigSection() {
         </div>
 
         <textarea
+          aria-label="Workspace config bundle"
           value={bundle}
           onChange={(e) => {
             setBundle(e.target.value);

@@ -119,10 +119,16 @@ automatically, because that would interrupt every user's in-flight agent turn at
 once.
 
 CityHall shape-checks a submitted bundle (valid TOML, a known `schema_version`,
-every project with a name and a remote) but deliberately does **not** validate
-setting keys against aoe's schema: it does not have that schema, and duplicating
-it would drift with every aoe release. aoe rejects an unknown key when it applies
-the document, which surfaces as a workspace that will not start.
+`projects` an array, every project with a name and a remote) but deliberately
+does **not** validate setting keys against aoe's schema: it does not have that
+schema, and duplicating it would drift with every aoe release. aoe rejects an
+unknown key when it applies the document, which surfaces as a workspace that will
+not start.
+
+A bundle carrying a `[git]` section is rejected outright. That section is
+CityHall's to compose, per user, at the moment a workspace fetches its document:
+an admin-supplied one would put one person's git identity and token into
+everybody's bundle.
 
 ### Git credentials
 
