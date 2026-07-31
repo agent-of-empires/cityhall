@@ -199,6 +199,43 @@ pub fn render_image(template: &str, version: &str) -> String {
     template.replace("{version}", version)
 }
 
+/// The `Host` value browsers reach workspaces on, for aoe's DNS-rebinding
+/// gate: `aoe serve --behind-proxy` refuses to start without at least one
+/// `--allowed-host`, and the proxy forwards the public host it was called on.
+/// A port in the value is harmless (aoe strips it before matching).
+pub fn proxy_allowed_host() -> String {
+    allowed_host_from_origin(&proxy_allowed_origin())
+}
+
+/// Default public origin: the proxy's own default bind, reached on loopback.
+const DEFAULT_PROXY_ORIGIN: &str = "http://localhost:3001";
+
+/// The browser `Origin` the proxy forwards to workspaces. aoe derives allowed
+/// origins from `--allowed-host` only for the standard ports, so a proxy on
+/// `:3001` (or any nonstandard port) has to be spelled out or every fetch and
+/// WebSocket from the dashboard is refused.
+pub fn proxy_allowed_origin() -> String {
+    let origin = std::env::var("WORKSPACE_PROXY_PUBLIC_ORIGIN").unwrap_or_default();
+    let origin = origin.trim().trim_end_matches('/');
+    if origin.is_empty() {
+        DEFAULT_PROXY_ORIGIN.to_string()
+    } else {
+        origin.to_string()
+    }
+}
+
+/// The host part of a proxy origin.
+fn allowed_host_from_origin(origin: &str) -> String {
+    origin
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(origin)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// How long to wait for aoe to accept connections after a start.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -247,6 +284,19 @@ pub(crate) async fn http_probe(addr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowed_host_comes_from_the_proxy_origin() {
+        assert_eq!(
+            allowed_host_from_origin("https://ws.example.com"),
+            "ws.example.com"
+        );
+        // A port is kept: aoe strips it before matching the Host header.
+        assert_eq!(
+            allowed_host_from_origin("http://localhost:3001"),
+            "localhost:3001"
+        );
+    }
 
     #[test]
     fn render_image_substitutes_version() {

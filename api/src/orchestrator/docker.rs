@@ -20,8 +20,8 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{
-    wait_ready, Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec,
-    WorkspaceStatus,
+    proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
+    ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -360,6 +360,14 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
             "--auth",
             "none",
             "--behind-proxy",
+            // The proxy forwards the public Host and Origin, both of which
+            // aoe's DNS-rebinding gate requires on the allowlist.
+            "--allowed-host",
+            &proxy_allowed_host(),
+            "--allowed-origin",
+            &proxy_allowed_origin(),
+            // Locked-down end-user client: composer + structured view only.
+            "--cityhall",
         ]
         .iter()
         .map(|s| s.to_string()),
@@ -511,6 +519,15 @@ mod tests {
         assert!(!args
             .iter()
             .any(|a| a.starts_with("cityhall.workspace.network=")));
+    }
+
+    #[test]
+    fn workspaces_run_in_cityhall_client_mode() {
+        let args = run_args(&spec(), None);
+        // Locked-down end-user client, never the full aoe dashboard.
+        assert!(args.iter().any(|a| a == "--cityhall"));
+        // --behind-proxy without this makes `aoe serve` refuse to start.
+        assert!(args.iter().any(|a| a == "--allowed-host"));
     }
 
     #[test]

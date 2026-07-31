@@ -9,13 +9,19 @@ COPY web/ ./
 RUN npm run build
 
 # --- Backend build --------------------------------------------------------
-FROM rust:1-slim AS api
+# Pinned to bookworm to match the runtime stage's glibc: the floating
+# `rust:1-slim` tag moved to trixie (glibc 2.39), which the bookworm runtime
+# (2.36) cannot load.
+FROM rust:1-slim-bookworm AS api
 WORKDIR /app
 # Deliberately do NOT copy rust-toolchain.toml: it pins channel = "stable",
 # which makes rustup re-resolve and re-download the stable toolchain on every
 # build. The base image already ships a stable toolchain, which is fine here.
 COPY Cargo.toml Cargo.lock ./
 COPY api/ api/
+# The docker workspace backend embeds this at compile time (include_str!) to
+# build workspace images when the registry has none.
+COPY deploy/aoe-image/Dockerfile deploy/aoe-image/Dockerfile
 # The frontend is built in its own stage and copied into the runtime image,
 # so skip build.rs's npm invocation here.
 ENV SKIP_FRONTEND_BUILD=1

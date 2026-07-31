@@ -16,7 +16,10 @@ use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use super::{http_probe, Orchestrator, OrchestratorError, WorkspaceSpec, WorkspaceStatus};
+use super::{
+    http_probe, proxy_allowed_host, proxy_allowed_origin, Orchestrator, OrchestratorError,
+    WorkspaceSpec, WorkspaceStatus,
+};
 
 /// Port aoe serves on inside the workspace pod.
 const AOE_PORT: u16 = 8080;
@@ -312,6 +315,14 @@ fn render_manifests(
                                     // shipped NetworkPolicy keeps other pods out.
                                     "--auth", "none",
                                     "--behind-proxy",
+                                    // The proxy forwards the public Host and
+                                    // Origin, both of which aoe's DNS-rebinding
+                                    // gate requires on the allowlist.
+                                    "--allowed-host", proxy_allowed_host(),
+                                    "--allowed-origin", proxy_allowed_origin(),
+                                    // Locked-down end-user client: composer +
+                                    // structured view only.
+                                    "--cityhall",
                                 ],
                                 "ports": [{ "containerPort": AOE_PORT }],
                                 "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
@@ -418,6 +429,11 @@ mod tests {
             container["volumeMounts"][0]["mountPath"],
             "/home/aoe/.config/agent-of-empires"
         );
+        // Workspaces are locked-down end-user clients, never full dashboards.
+        let args = container["args"].as_array().unwrap();
+        assert!(args.iter().any(|a| a == "--cityhall"));
+        // --behind-proxy without this makes `aoe serve` refuse to start.
+        assert!(args.iter().any(|a| a == "--allowed-host"));
     }
 
     #[test]
