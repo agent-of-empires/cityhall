@@ -28,6 +28,7 @@ Thumbs.db
 # Local config
 .env
 .env.local
+docker-compose.override.yml
 
 # SQLite databases (default DATABASE_URL creates cityhall.db in the cwd)
 *.db
