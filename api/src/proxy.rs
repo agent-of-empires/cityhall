@@ -10,7 +10,8 @@
 //!
 //! Every request is gated on the CityHall session (`workspaces.use`), request-
 //! starts the caller's workspace, and is forwarded to it. The workspace itself
-//! runs `aoe serve --auth=none --behind-proxy` and is only reachable through
+//! runs `aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall`
+//! and is only reachable through
 //! loopback, so CityHall is the sole auth boundary.
 
 use std::net::SocketAddr;
@@ -326,6 +327,10 @@ fn forward_headers(parts: &request::Parts) -> HeaderMap {
     }
     if let Some(host) = parts.headers.get(HOST) {
         headers.insert("x-forwarded-host", host.clone());
+        // aoe's DNS-rebinding gate reads the real Host, not X-Forwarded-Host,
+        // so pass the public one through: without it the workspace sees the
+        // internal container/service authority and 403s every request.
+        headers.insert(HOST, host.clone());
     }
     headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
     if let Some(ConnectInfo(peer)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
