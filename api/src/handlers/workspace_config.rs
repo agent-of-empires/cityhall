@@ -20,7 +20,8 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
@@ -38,7 +39,12 @@ const SCHEMA_VERSION: i64 = 1;
 /// A bundle with nothing configured. Served when no admin document is stored
 /// yet, so a workspace still gets its git identity rather than failing its boot
 /// fetch outright.
-const EMPTY_BUNDLE: &str = "schema_version = 1\n";
+///
+/// Built from `SCHEMA_VERSION` rather than spelled out, so bumping the version
+/// cannot leave this declaring the old one and serving a document aoe rejects.
+fn empty_bundle() -> String {
+    format!("schema_version = {SCHEMA_VERSION}\n")
+}
 
 // --- Admin: the stored document -------------------------------------------
 
@@ -102,20 +108,24 @@ pub async fn update_config(
     };
 
     let now = Utc::now();
-    let model = workspace_config::ActiveModel {
+    // One statement rather than find-then-insert-or-update: two concurrent saves
+    // could otherwise both see no row and race to insert, and the loser fails on
+    // the primary key.
+    workspace_config::Entity::insert(workspace_config::ActiveModel {
         id: Set(CONFIG_ID),
         bundle: Set(bundle.clone()),
         updated_at: Set(now),
-    };
-    if workspace_config::Entity::find_by_id(CONFIG_ID)
-        .one(&state.db)
-        .await?
-        .is_some()
-    {
-        model.update(&state.db).await?;
-    } else {
-        model.insert(&state.db).await?;
-    }
+    })
+    .on_conflict(
+        OnConflict::column(workspace_config::Column::Id)
+            .update_columns([
+                workspace_config::Column::Bundle,
+                workspace_config::Column::UpdatedAt,
+            ])
+            .to_owned(),
+    )
+    .exec(&state.db)
+    .await?;
 
     Ok(Json(WorkspaceConfigResponse {
         bundle,
@@ -200,18 +210,28 @@ pub async fn update_git_credential(
             .ok_or(AppError::BadRequest("a token is required"))?,
     };
 
-    let model = git_credential::ActiveModel {
+    // The `existing` lookup above stays: it is what lets a save omit the token and
+    // keep the stored one. The write itself is a single upsert, so two concurrent
+    // saves cannot both decide to insert.
+    git_credential::Entity::insert(git_credential::ActiveModel {
         user_id: Set(caller.user.id),
         host: Set(host),
         username: Set(username),
         token_encrypted: Set(token),
         updated_at: Set(Utc::now()),
-    };
-    if existing.is_some() {
-        model.update(&state.db).await?;
-    } else {
-        model.insert(&state.db).await?;
-    }
+    })
+    .on_conflict(
+        OnConflict::column(git_credential::Column::UserId)
+            .update_columns([
+                git_credential::Column::Host,
+                git_credential::Column::Username,
+                git_credential::Column::TokenEncrypted,
+                git_credential::Column::UpdatedAt,
+            ])
+            .to_owned(),
+    )
+    .exec(&state.db)
+    .await?;
 
     get_git_credential(State(state), caller).await
 }
@@ -252,7 +272,12 @@ pub async fn serve_bundle(
 
     let composed = compose(&state.db, &owner).await?;
     Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/toml")],
+        [
+            (axum::http::header::CONTENT_TYPE, "application/toml"),
+            // The body carries the user's decrypted git token, so no proxy or
+            // client cache may keep a copy of it on disk.
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
         composed,
     )
         .into_response())
@@ -275,7 +300,7 @@ async fn compose(db: &DatabaseConnection, owner: &user::Model) -> Result<String,
         .await?
         .map(|r| r.bundle)
         .filter(|b| !b.trim().is_empty())
-        .unwrap_or_else(|| EMPTY_BUNDLE.to_string());
+        .unwrap_or_else(empty_bundle);
 
     let mut table = parse_bundle(&stored)?;
     table.insert("git".to_string(), git_table(db, owner).await?);
@@ -302,18 +327,28 @@ async fn git_table(db: &DatabaseConnection, owner: &user::Model) -> Result<toml:
     }
 
     if let Some(cred) = git_credential::Entity::find_by_id(owner.id).one(db).await? {
-        git.insert(
-            "credential_host".to_string(),
-            toml::Value::String(cred.host),
-        );
-        git.insert(
-            "credential_username".to_string(),
-            toml::Value::String(cred.username),
-        );
-        git.insert(
-            "credential_token".to_string(),
-            toml::Value::String(crypto::decrypt(&cred.token_encrypted)?),
-        );
+        // A token that no longer decrypts (after a CITYHALL_SECRET_KEY rotation,
+        // say) must not cost this user their whole bundle: without it the
+        // workspace would boot with no settings and no projects either. Serve the
+        // rest and drop the secret, loudly enough that an operator can tell the
+        // user to re-enter it.
+        match crypto::decrypt(&cred.token_encrypted) {
+            Ok(token) => {
+                git.insert(
+                    "credential_host".to_string(),
+                    toml::Value::String(cred.host),
+                );
+                git.insert(
+                    "credential_username".to_string(),
+                    toml::Value::String(cred.username),
+                );
+                git.insert("credential_token".to_string(), toml::Value::String(token));
+            }
+            Err(e) => tracing::warn!(
+                user_id = owner.id,
+                "git credential could not be decrypted, serving the bundle without it: {e}"
+            ),
+        }
     }
 
     Ok(toml::Value::Table(git))
@@ -364,6 +399,15 @@ fn validate_bundle(raw: &str) -> Result<toml::Table, AppError> {
     if let Some(settings) = table.get("settings") {
         if !settings.is_table() {
             return Err(AppError::BadRequest("[settings] must be a table"));
+        }
+    }
+
+    // `projects()` treats any non-array as absent, so without this a
+    // `projects = "oops"` would store cleanly and then fail aoe's parse at boot,
+    // which is the failure this shape check exists to catch.
+    if let Some(projects) = table.get("projects") {
+        if !projects.is_array() {
+            return Err(AppError::BadRequest("[[projects]] must be an array"));
         }
     }
 
@@ -469,6 +513,20 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
         let err = validate_bundle(raw).unwrap_err().to_string();
         assert!(err.contains("remote"), "{err}");
         assert!(err.contains("#1"), "must say which entry: {err}");
+    }
+
+    /// `projects` of the wrong type used to be read as "no projects" and stored
+    /// happily, then failed aoe's parse at boot, which is the failure this
+    /// shape check exists to catch.
+    #[test]
+    fn rejects_a_projects_key_that_is_not_an_array() {
+        for raw in [
+            "schema_version = 1\nprojects = \"oops\"\n",
+            "schema_version = 1\nprojects = 3\n",
+        ] {
+            let err = validate_bundle(raw).unwrap_err().to_string();
+            assert!(err.contains("array"), "{raw}: {err}");
+        }
     }
 
     /// An unknown settings key is aoe's to reject, not CityHall's: duplicating

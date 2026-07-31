@@ -63,6 +63,24 @@ impl MigrationTrait for Migration {
                     .add_column(string_null(Workspaces::BundleToken))
                     .to_owned(),
             )
+            .await?;
+
+        // The bundle endpoint authenticates every workspace boot by this column,
+        // so the lookup has to be a point read, and two rows must never share a
+        // token. A separate index rather than a table constraint because SQLite
+        // cannot add UNIQUE through ALTER TABLE. NULLs do not conflict in a
+        // unique index, so rows still awaiting their backfill stay valid, and
+        // dropping the column in `down` takes the index with it on both backends.
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_workspaces_bundle_token")
+                    .table(Workspaces::Table)
+                    .col(Workspaces::BundleToken)
+                    .unique()
+                    .to_owned(),
+            )
             .await
     }
 
