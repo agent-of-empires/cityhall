@@ -6,6 +6,13 @@ default; kubernetes and bare-process backends are available, see
 [Backends](#backends)). Each workspace has a persistent data volume, so aoe
 sessions and configuration survive stops, restarts, and version changes.
 
+Every workspace runs with `--cityhall`, aoe's locked-down client mode: users
+get the message composer and the structured (chat) view only, with terminal
+and diff panes, project management, and advanced settings hidden in the UI and
+refused server-side. The flag requires an aoe version that supports it;
+starting a workspace on an older version fails with an unknown-argument error
+from `aoe serve`.
+
 ## How it works
 
 - **Request-driven start.** Opening the workspace (the "Open workspace" link,
@@ -70,10 +77,17 @@ Workspaces are served through a dedicated listener (default
 `127.0.0.1:3001`), separate from the main CityHall origin, because the aoe
 dashboard owns root-absolute paths. Every proxied request is authenticated
 with the regular CityHall session cookie; the container itself runs
-`aoe serve --auth=none --behind-proxy` and is only reachable through a
+`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall`
+and is only reachable through a
 loopback-published port, so CityHall is the sole auth boundary. In development
 nothing needs configuring: the cookie set by `127.0.0.1:3000` is also sent to
 `127.0.0.1:3001` (cookies ignore ports).
+
+The allowed host is the host part of `WORKSPACE_PROXY_PUBLIC_ORIGIN` (defaulting
+to `localhost`), because the proxy forwards the public `Host` it was called on
+and aoe's DNS-rebinding gate refuses `--behind-proxy` without an allowlist
+entry. Set that variable to the origin browsers actually use, or workspaces
+answer 403 to every proxied request.
 
 For production, expose the proxy listener through your reverse proxy as either
 a subdomain or a second external port, and set `WORKSPACE_PROXY_PUBLIC_ORIGIN`

@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    binary_key, http_probe, wait_ready, Begin, Orchestrator, OrchestratorError,
-    ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    binary_key, http_probe, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin,
+    Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -157,6 +157,14 @@ impl ProcessOrchestrator {
             "--auth",
             "none",
             "--behind-proxy",
+            // The proxy forwards the public Host and Origin, both of which
+            // aoe's DNS-rebinding gate requires on the allowlist.
+            "--allowed-host",
+            &proxy_allowed_host(),
+            "--allowed-origin",
+            &proxy_allowed_origin(),
+            // Locked-down end-user client: composer + structured view only.
+            "--cityhall",
         ])
         .env("HOME", home)
         .current_dir(home)
