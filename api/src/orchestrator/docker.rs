@@ -20,8 +20,8 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{
-    proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, BundleAccess, Orchestrator,
-    OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
+    ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -523,7 +523,7 @@ mod tests {
 
     fn spec_with_bundle() -> WorkspaceSpec {
         WorkspaceSpec {
-            bundle: Some(BundleAccess {
+            bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall:3000/api/workspace-bundle".to_string(),
                 token: "tok".to_string(),
             }),

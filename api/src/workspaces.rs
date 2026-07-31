@@ -448,6 +448,16 @@ mod tests {
         db
     }
 
+    /// Create a user to hang a workspace row off. The password is generated
+    /// rather than written inline: these tests never authenticate, and a literal
+    /// here is a hard-coded-credential finding for no benefit.
+    async fn make_user(db: &DatabaseConnection) -> i32 {
+        crate::service::create(db, "u", None, &crate::auth::random_token(24), false, None)
+            .await
+            .unwrap()
+            .id
+    }
+
     fn cfg(default_version: Option<&str>) -> workspace_settings::Model {
         workspace_settings::Model {
             id: SETTINGS_ID,
@@ -521,10 +531,7 @@ mod tests {
     #[tokio::test]
     async fn get_or_create_is_idempotent() {
         let db = setup().await;
-        let uid = crate::service::create(&db, "u", None, "password123", false, None)
-            .await
-            .unwrap()
-            .id;
+        let uid = make_user(&db).await;
         let a = get_or_create(&db, uid).await.unwrap();
         let b = get_or_create(&db, uid).await.unwrap();
         assert_eq!(a.user_id, b.user_id);
@@ -536,10 +543,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_row_gets_a_bundle_token() {
         let db = setup().await;
-        let uid = crate::service::create(&db, "u", None, "password123", false, None)
-            .await
-            .unwrap()
-            .id;
+        let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
         assert!(row.bundle_token.is_some());
     }
@@ -549,10 +553,7 @@ mod tests {
     #[tokio::test]
     async fn a_pre_bundle_row_is_backfilled() {
         let db = setup().await;
-        let uid = crate::service::create(&db, "u", None, "password123", false, None)
-            .await
-            .unwrap()
-            .id;
+        let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
         let mut active: workspace::ActiveModel = row.into();
         active.bundle_token = Set(None);
@@ -571,10 +572,7 @@ mod tests {
     #[tokio::test]
     async fn spec_uses_pin_over_default() {
         let db = setup().await;
-        let uid = crate::service::create(&db, "u", None, "password123", false, None)
-            .await
-            .unwrap()
-            .id;
+        let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
         let spec = build_spec(&cfg(Some("v1.0.0")), &row).unwrap();
         assert_eq!(spec.image, "cityhall/aoe:v1.0.0");
@@ -590,10 +588,7 @@ mod tests {
     #[tokio::test]
     async fn spec_requires_some_version() {
         let db = setup().await;
-        let uid = crate::service::create(&db, "u", None, "password123", false, None)
-            .await
-            .unwrap()
-            .id;
+        let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
         assert!(build_spec(&cfg(None), &row).is_err());
     }
