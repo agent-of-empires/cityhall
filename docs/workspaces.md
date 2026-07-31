@@ -71,6 +71,77 @@ WebSocket connections opened during access survive until they disconnect,
 even past expiry or permission revocation. Requires `CITYHALL_SECRET_KEY`.
 The target's idle accounting keeps running while an admin browses.
 
+## Workspace configuration
+
+A locked-down workspace cannot configure itself. In CityHall client mode aoe
+closes `PATCH /api/settings`, the project CRUD routes, and `POST /api/git/clone`,
+and the project registry starts empty, so a fresh workspace has no project for
+the user to launch a session against. CityHall fills that gap with a **config
+bundle**: one TOML document holding the aoe settings and the project list every
+workspace should have.
+
+Produce one from a configured aoe install (`aoe cityhall export --out
+cityhall.toml`, or its dashboard under **Settings → CityHall**) and paste or
+upload it under **Settings → Workspace config**. It looks like this:
+
+```toml
+schema_version = 1
+
+[settings.acp]
+default_agent = "claude-code"
+
+[[projects]]
+name = "cityhall"
+remote = "https://github.com/agent-of-empires/cityhall.git"
+default_base_branch = "main"
+```
+
+Projects carry a **git remote**, not a path: the admin's local checkout path
+means nothing inside a container, so aoe clones each remote into the workspace's
+data volume and registers it. Settings are a sparse patch, so only the fields
+the admin actually changed are carried.
+
+To deliver it, set `WORKSPACE_BUNDLE_ORIGIN` to the origin a *workspace* uses to
+reach CityHall. That is not the public origin: on the docker backend it is the
+compose service name on the shared network (`http://cityhall:3000`), on
+kubernetes the in-cluster Service. There is no safe default, because CityHall's
+own container hostname is not resolvable by its peers, so leaving it unset simply
+turns config provisioning off and workspaces start unconfigured. CityHall then
+passes each workspace `AOE_CITYHALL_BUNDLE_URL` and a per-workspace
+`AOE_CITYHALL_BUNDLE_TOKEN`, and aoe fetches and applies the document at startup.
+
+Applying is idempotent, because it happens on every start: an existing checkout
+is left untouched so a user's uncommitted work survives a restart, and a repo
+that fails to clone is reported without taking the other projects down. Editing
+the bundle takes effect the next time a workspace starts; restart one from the
+admin Workspaces page to apply it immediately. Nothing is restarted
+automatically, because that would interrupt every user's in-flight agent turn at
+once.
+
+CityHall shape-checks a submitted bundle (valid TOML, a known `schema_version`,
+every project with a name and a remote) but deliberately does **not** validate
+setting keys against aoe's schema: it does not have that schema, and duplicating
+it would drift with every aoe release. aoe rejects an unknown key when it applies
+the document, which surfaces as a workspace that will not start.
+
+### Git credentials
+
+The stored bundle never holds a secret. Each user sets their own git credential
+under **Account**, and CityHall composes it into the document per user when a
+workspace fetches it, along with that user's name and email so commits made
+inside a workspace are attributed correctly. Tokens are encrypted with
+`CITYHALL_SECRET_KEY`, are never returned to a client once stored, and are
+removed with the user's account.
+
+Per user rather than one shared deployment credential: attribution is correct at
+the push level, and deleting an account revokes exactly that person's access. A
+user who has not set one can still work with public repos; a private clone fails
+with git's own error in the workspace.
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `WORKSPACE_BUNDLE_ORIGIN` | _(unset)_ | Origin a workspace uses to reach CityHall. Unset disables config provisioning. |
+
 ## The workspace proxy
 
 Workspaces are served through a dedicated listener (default

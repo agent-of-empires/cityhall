@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Boxes, ExternalLink, LogOut, Settings, Shield, Users } from "lucide-react";
+import { Boxes, ExternalLink, LogOut, Settings, Shield, User, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api, can, type Me } from "../lib/api";
@@ -71,7 +71,10 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
             Open workspace
           </a>
         )}
-        <span className="text-sm text-text-secondary">{me.username}</span>
+        <NavLink to="/account" className={navLinkClass}>
+          <User size={14} />
+          {me.username}
+        </NavLink>
         <Button variant="ghost" onClick={logout} className="flex items-center gap-1.5">
           <LogOut size={14} />
           Logout

@@ -14,6 +14,9 @@ pub struct Model {
     pub last_active_at: Option<DateTimeUtc>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
+    /// Bearer token this workspace presents to fetch its config bundle. `None`
+    /// on rows predating the feature; filled in on their next start.
+    pub bundle_token: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

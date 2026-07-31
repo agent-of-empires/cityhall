@@ -4,4 +4,5 @@ pub mod roles;
 pub mod settings;
 pub mod signup;
 pub mod users;
+pub mod workspace_config;
 pub mod workspaces;
