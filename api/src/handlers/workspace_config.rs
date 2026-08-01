@@ -385,7 +385,7 @@ fn validate_bundle(raw: &str) -> Result<toml::Table, AppError> {
         }
         None => {
             return Err(AppError::BadRequest(
-                "missing schema_version; export a bundle with `aoe cityhall export`",
+                "missing `schema_version = 1`; add it, or start from the blank template, or export a bundle with `aoe cityhall export`",
             ))
         }
     }
@@ -527,6 +527,17 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
             let err = validate_bundle(raw).unwrap_err().to_string();
             assert!(err.contains("array"), "{raw}: {err}");
         }
+    }
+
+    /// The "start from scratch" template in the UI is `schema_version` plus
+    /// commented-out examples, so an admin with no aoe install to export from can
+    /// still save a valid document and add to it.
+    #[test]
+    fn a_bundle_that_only_declares_its_version_is_valid() {
+        let raw = "schema_version = 1\n\n# [[projects]]\n# name = \"my-repo\"\n";
+        let summary = summarize(validate_bundle(raw).unwrap());
+        assert_eq!(summary.settings_count, 0);
+        assert!(summary.projects.is_empty());
     }
 
     /// An unknown settings key is aoe's to reject, not CityHall's: duplicating

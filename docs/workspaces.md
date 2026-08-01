@@ -101,6 +101,13 @@ means nothing inside a container, so aoe clones each remote into the workspace's
 data volume and registers it. Settings are a sparse patch, so only the fields
 the admin actually changed are carried.
 
+An aoe install is a convenience here, not a prerequisite. The document is plain
+TOML and CityHall shape-checks whatever you save, so **Start from scratch** on
+that page seeds a valid skeleton to fill in by hand. Take that route when you are
+standing CityHall up before anyone has an install to export from, or when all you
+want is a project list. `schema_version = 1` on its own is a valid document; it
+just provisions nothing.
+
 To deliver it, set `WORKSPACE_BUNDLE_ORIGIN` to the origin a *workspace* uses to
 reach CityHall. That is not the public origin: on the docker backend it is the
 compose service name on the shared network (`http://cityhall:3000`), on

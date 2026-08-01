@@ -8,6 +8,28 @@ import { Button, ErrorText } from "./ui";
 /// owns the format, and rendering real widgets would mean reimplementing aoe's
 /// generic field renderer here. The document is already human-editable, and the
 /// server shape-checks it on save.
+/// Seed for an admin who has no aoe install to export from.
+///
+/// Everything past `schema_version` is commented out on purpose: this saves as a
+/// valid document that provisions nothing, so someone can start here and add one
+/// project without a half-filled example cloning `org/my-repo` into every
+/// workspace on the next start.
+const BLANK_BUNDLE = `schema_version = 1
+
+# Settings every workspace starts with. These are aoe's own setting names, so the
+# easiest way to get real ones is Settings -> CityHall in an aoe install, which
+# generates this file for you. Uncomment to use.
+# [settings.acp]
+# default_agent = "claude-code"
+
+# Repos cloned into every workspace on its next start. Addressed by git remote,
+# not by path, because an admin's local checkout means nothing in a container.
+# [[projects]]
+# name = "my-repo"
+# remote = "https://github.com/org/my-repo.git"
+# default_base_branch = "main"
+`;
+
 export function WorkspaceConfigSection() {
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [bundle, setBundle] = useState("");
@@ -76,8 +98,8 @@ export function WorkspaceConfigSection() {
         <p className="text-sm text-text-secondary">
           The aoe settings and projects every workspace is provisioned with. Generate one from a configured aoe install
           with <code className="text-text-primary">aoe cityhall export</code>, or from its dashboard under Settings
-          &rarr; CityHall, then paste it here. Projects are cloned into each workspace on its next start, so a user has
-          something to launch a session against.
+          &rarr; CityHall, then paste it here. You do not need an aoe install to start: write one here instead. Projects
+          are cloned into each workspace on its next start, so a user has something to launch a session against.
         </p>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -98,6 +120,21 @@ export function WorkspaceConfigSection() {
               }}
             />
           </label>
+          {/* Only offered while there is nothing to lose: seeding over a real
+              document would discard an admin's work to a stray click. */}
+          {!bundle.trim() && (
+            <button
+              type="button"
+              className="cursor-pointer rounded-sm text-sm text-text-secondary underline hover:text-text-primary"
+              onClick={() => {
+                setBundle(BLANK_BUNDLE);
+                setSaved(false);
+                setSaveError(null);
+              }}
+            >
+              Start from scratch
+            </button>
+          )}
           {config?.updated_at && (
             <span className="text-sm text-text-muted">Last saved {new Date(config.updated_at).toLocaleString()}</span>
           )}
