@@ -458,11 +458,20 @@ async fn sweep_once(state: &AppState) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use crate::migration::Migrator;
-    use sea_orm::Database;
+    use sea_orm::{ConnectOptions, Database};
     use sea_orm_migration::MigratorTrait;
 
+    /// Capped at one connection on purpose. Every connection to
+    /// `sqlite::memory:` gets its own empty database, so a pool that opened a
+    /// second one would hand a concurrent test an unmigrated schema. Today's
+    /// driver already serializes on a single connection (8 tasks holding
+    /// transactions for 120ms each take 960ms, not 120ms), but that is behavior
+    /// observed rather than promised, and `a_concurrent_backfill_agrees_on_one_token`
+    /// depends on it.
     async fn setup() -> DatabaseConnection {
-        let db = Database::connect("sqlite::memory:").await.unwrap();
+        let mut opts = ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1);
+        let db = Database::connect(opts).await.unwrap();
         Migrator::up(&db, None).await.unwrap();
         db
     }

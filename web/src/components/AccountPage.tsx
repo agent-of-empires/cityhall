@@ -44,6 +44,11 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
     void load();
   }, [load]);
 
+  // Editing while a request is in flight would lose the edit: every response
+  // reseeds these fields, so a reply that lands after a keystroke overwrites it
+  // and then reports the stale value as saved.
+  const busy = saving || cred === null;
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -108,6 +113,7 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
                       setSaved(false);
                     }}
                     placeholder="https://github.com"
+                    disabled={busy}
                   />
                 </Field>
                 <Field label="Username">
@@ -118,6 +124,7 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
                       setSaved(false);
                     }}
                     placeholder="your-username"
+                    disabled={busy}
                   />
                 </Field>
               </div>
@@ -131,6 +138,7 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
                   }}
                   autoComplete="new-password"
                   placeholder={cred?.token_set ? "unchanged" : "ghp_..."}
+                  disabled={busy}
                 />
               </Field>
 
@@ -141,13 +149,13 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
 
               <div className="flex justify-between">
                 {cred?.token_set ? (
-                  <Button type="button" variant="danger" onClick={() => void remove()}>
+                  <Button type="button" variant="danger" disabled={busy} onClick={() => void remove()}>
                     Remove
                   </Button>
                 ) : (
                   <span />
                 )}
-                <Button type="submit" variant="primary" disabled={saving || !cred?.secret_key_available}>
+                <Button type="submit" variant="primary" disabled={busy || !cred?.secret_key_available}>
                   {saving ? "Saving..." : "Save credential"}
                 </Button>
               </div>

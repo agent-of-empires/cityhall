@@ -2,12 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type WorkspaceConfig } from "../lib/api";
 import { Button, ErrorText } from "./ui";
 
-/// The aoe config bundle every workspace is provisioned with (#9).
-///
-/// A text editor rather than a form: aoe defines the settings schema, so aoe
-/// owns the format, and rendering real widgets would mean reimplementing aoe's
-/// generic field renderer here. The document is already human-editable, and the
-/// server shape-checks it on save.
 /// Seed for an admin who has no aoe install to export from.
 ///
 /// Everything past `schema_version` is commented out on purpose: this saves as a
@@ -30,6 +24,12 @@ const BLANK_BUNDLE = `schema_version = 1
 # default_base_branch = "main"
 `;
 
+/// The aoe config bundle every workspace is provisioned with (#9).
+///
+/// A text editor rather than a form: aoe defines the settings schema, so aoe
+/// owns the format, and rendering real widgets would mean reimplementing aoe's
+/// generic field renderer here. The document is already human-editable, and the
+/// server shape-checks it on save.
 export function WorkspaceConfigSection() {
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [bundle, setBundle] = useState("");
@@ -72,6 +72,11 @@ export function WorkspaceConfigSection() {
     }
   }
 
+  // Editing while a request is in flight would lose the edit: load and save both
+  // reseed the editor from the response, so a reply that lands after a keystroke
+  // overwrites it and then reports the stale document as saved.
+  const busy = saving || config === null;
+
   async function upload(file: File) {
     setSaved(false);
     setSaveError(null);
@@ -112,6 +117,7 @@ export function WorkspaceConfigSection() {
               type="file"
               accept=".toml,text/plain"
               className="sr-only"
+              disabled={busy}
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 // Clear the input so re-picking the same file still fires.
@@ -125,7 +131,8 @@ export function WorkspaceConfigSection() {
           {!bundle.trim() && (
             <button
               type="button"
-              className="cursor-pointer rounded-sm text-sm text-text-secondary underline hover:text-text-primary"
+              disabled={busy}
+              className="cursor-pointer rounded-sm text-sm text-text-secondary underline hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => {
                 setBundle(BLANK_BUNDLE);
                 setSaved(false);
@@ -142,6 +149,7 @@ export function WorkspaceConfigSection() {
 
         <textarea
           aria-label="Workspace config bundle"
+          disabled={busy}
           value={bundle}
           onChange={(e) => {
             setBundle(e.target.value);
@@ -152,7 +160,7 @@ export function WorkspaceConfigSection() {
           placeholder={
             'schema_version = 1\n\n[[projects]]\nname = "my-repo"\nremote = "https://github.com/org/my-repo.git"'
           }
-          className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          className="w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
         />
 
         {summary && (summary.settings_count > 0 || summary.projects.length > 0) && (
@@ -172,7 +180,7 @@ export function WorkspaceConfigSection() {
         {saved && <p className="text-sm text-status-running">Workspace config saved.</p>}
 
         <div className="flex justify-end">
-          <Button type="submit" variant="primary" disabled={saving}>
+          <Button type="submit" variant="primary" disabled={busy}>
             {saving ? "Saving..." : "Save config"}
           </Button>
         </div>
