@@ -9,7 +9,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::handlers::{auth, oidc, roles, settings, signup, users, workspaces};
+use crate::handlers::{auth, oidc, roles, settings, signup, users, workspace_config, workspaces};
 use crate::proxy;
 use crate::state::AppState;
 
@@ -73,6 +73,19 @@ pub fn api_router(state: AppState) -> Router {
             "/settings/workspaces",
             get(workspaces::get_settings).put(workspaces::update_settings),
         )
+        .route(
+            "/settings/workspace-config",
+            get(workspace_config::get_config).put(workspace_config::update_config),
+        )
+        .route(
+            "/me/git-credential",
+            get(workspace_config::get_git_credential)
+                .put(workspace_config::update_git_credential)
+                .delete(workspace_config::delete_git_credential),
+        )
+        // Fetched by a workspace container, authenticated by its own bearer
+        // token rather than a session cookie.
+        .route("/workspace-bundle", get(workspace_config::serve_bundle))
         // Unknown /api/* paths return a JSON 404 instead of falling through to
         // the SPA index (which the outer fallback_service would otherwise serve).
         .fallback(|| async { AppError::NotFound("not found") })

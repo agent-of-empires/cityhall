@@ -10,6 +10,9 @@ pub enum AppError {
     NotFound(&'static str),
     Conflict(&'static str),
     BadRequest(&'static str),
+    /// A rejected request whose message is computed, e.g. one that names the
+    /// offending key in a submitted document.
+    BadRequestOwned(String),
     Internal(&'static str),
     /// A workspace could not be reached or materialized; the message carries
     /// operator guidance (image missing, runtime down...).
@@ -34,6 +37,7 @@ impl std::fmt::Display for AppError {
                 write!(f, "{m}")
             }
             AppError::BadRequest(m) | AppError::Internal(m) => write!(f, "{m}"),
+            AppError::BadRequestOwned(m) => write!(f, "{m}"),
             AppError::WorkspaceUnavailable(m) | AppError::WorkspaceProvisioning(m) => {
                 write!(f, "{m}")
             }
@@ -52,6 +56,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, m.to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m.to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.to_string()),
+            AppError::BadRequestOwned(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Internal(m) => {
                 tracing::error!("internal error: {m}");
                 (StatusCode::INTERNAL_SERVER_ERROR, m.to_string())

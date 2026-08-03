@@ -6,6 +6,7 @@ import { ChangePasswordPage } from "./components/ChangePasswordPage";
 import { UsersPage } from "./components/UsersPage";
 import { RolesPage } from "./components/RolesPage";
 import { SettingsPage } from "./components/SettingsPage";
+import { AccountPage } from "./components/AccountPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { RegisterPage } from "./components/RegisterPage";
@@ -91,6 +92,18 @@ export function App() {
             <Navigate to="/change-password" replace />
           ) : (
             <WorkspacesPage me={me} onLogout={refresh} />
+          )
+        }
+      />
+      <Route
+        path="/account"
+        element={
+          !me ? (
+            <Navigate to="/login" replace />
+          ) : me.must_change_password ? (
+            <Navigate to="/change-password" replace />
+          ) : (
+            <AccountPage me={me} onLogout={refresh} />
           )
         }
       />

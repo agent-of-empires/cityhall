@@ -167,12 +167,17 @@ impl ProcessOrchestrator {
             "--cityhall",
         ])
         .env("HOME", home)
-        .current_dir(home)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
-            OrchestratorError::Runtime(format!("failed to clone workspace log: {e}"))
-        })?))
-        .stderr(std::process::Stdio::from(log));
+        .current_dir(home);
+        // Where the workspace fetches its config bundle at boot.
+        if let Some(bundle) = &spec.bundle {
+            cmd.env("AOE_CITYHALL_BUNDLE_URL", &bundle.url)
+                .env("AOE_CITYHALL_BUNDLE_TOKEN", &bundle.token);
+        }
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
+                OrchestratorError::Runtime(format!("failed to clone workspace log: {e}"))
+            })?))
+            .stderr(std::process::Stdio::from(log));
         // Detach into its own session so the workspace survives CityHall
         // restarts and group signals target only this workspace.
         unsafe {
@@ -543,6 +548,7 @@ mod tests {
             user_id: 9,
             image: "unused".to_string(),
             version: "v9.9.9".to_string(),
+            bundle: None,
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.

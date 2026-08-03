@@ -130,6 +130,27 @@ export interface WorkspaceSettings {
   idle_stop_minutes: number;
 }
 
+/// The aoe config bundle every workspace is provisioned with. Opaque TOML:
+/// aoe owns the format, CityHall stores and serves it.
+export interface WorkspaceConfig {
+  bundle: string;
+  updated_at: string | null;
+  summary: {
+    schema_version: number | null;
+    settings_count: number;
+    projects: string[];
+  };
+}
+
+/// A user's own git credential. The token is never returned, only whether one
+/// is stored.
+export interface GitCredential {
+  host: string;
+  username: string;
+  token_set: boolean;
+  secret_key_available: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -266,4 +287,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(patch),
     }),
+  getWorkspaceConfig: () => request<WorkspaceConfig>("/settings/workspace-config"),
+  updateWorkspaceConfig: (bundle: string) =>
+    request<WorkspaceConfig>("/settings/workspace-config", {
+      method: "PUT",
+      body: JSON.stringify({ bundle }),
+    }),
+  getGitCredential: () => request<GitCredential>("/me/git-credential"),
+  updateGitCredential: (patch: { host: string; username: string; token: string | null }) =>
+    request<GitCredential>("/me/git-credential", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteGitCredential: () => request<GitCredential>("/me/git-credential", { method: "DELETE" }),
 };

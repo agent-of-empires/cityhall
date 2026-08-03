@@ -67,6 +67,8 @@ pub enum Workspaces {
     LastActiveAt,
     CreatedAt,
     UpdatedAt,
+    /// Added by m0012; declared here so the iden stays with its table.
+    BundleToken,
 }
 
 #[derive(DeriveIden)]

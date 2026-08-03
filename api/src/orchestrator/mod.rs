@@ -23,6 +23,23 @@ pub struct WorkspaceSpec {
     pub image: String,
     /// The aoe version the image serves; used to detect version drift.
     pub version: String,
+    /// Where the workspace fetches its config bundle, when one is configured.
+    pub bundle: Option<BundleAccess>,
+}
+
+/// How a workspace reaches its own config bundle.
+///
+/// Delivered as two environment variables rather than a file written into the
+/// workspace, so one implementation covers every backend (each already builds
+/// its own env list) and editing the bundle in CityHall plus a restart is enough
+/// to roll it out, with no container recreation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleAccess {
+    /// Absolute URL of CityHall's bundle endpoint, reachable from inside the
+    /// workspace.
+    pub url: String,
+    /// Bearer token identifying which user's bundle to serve.
+    pub token: String,
 }
 
 /// Runtime state of a workspace as reported by the backend.
@@ -222,6 +239,24 @@ pub fn proxy_allowed_origin() -> String {
     } else {
         origin.to_string()
     }
+}
+
+/// Path CityHall serves a workspace's own config bundle on.
+const BUNDLE_PATH: &str = "/api/workspace-bundle";
+
+/// The bundle URL to hand a workspace, or `None` when no internal origin is
+/// configured.
+///
+/// `WORKSPACE_BUNDLE_ORIGIN` is the origin a *workspace* uses to reach CityHall,
+/// which is not the public one: on the docker backend it is the compose service
+/// name on the shared network (`http://cityhall:3000`), and on kubernetes the
+/// in-cluster Service. There is no safe default, because CityHall's own
+/// container hostname is not resolvable by its peers, so an unset value simply
+/// turns the feature off and workspaces start unconfigured as before.
+pub fn bundle_url() -> Option<String> {
+    let origin = std::env::var("WORKSPACE_BUNDLE_ORIGIN").unwrap_or_default();
+    let origin = origin.trim().trim_end_matches('/');
+    (!origin.is_empty()).then(|| format!("{origin}{BUNDLE_PATH}"))
 }
 
 /// The host part of a proxy origin.

@@ -19,6 +19,11 @@ services:
       WORKSPACE_PROXY_BIND_ADDR: 0.0.0.0:3001
       # The public origin browsers use for workspaces, e.g. https://ws.example.com
       WORKSPACE_PROXY_PUBLIC_ORIGIN: "${WORKSPACE_PROXY_PUBLIC_ORIGIN:?set WORKSPACE_PROXY_PUBLIC_ORIGIN in .env}"
+      # Origin a WORKSPACE uses to reach CityHall, for fetching its config
+      # bundle. Not the public origin: this is the compose service name on the
+      # shared network. Unset would disable config provisioning, so workspaces
+      # would start with no settings and no projects.
+      WORKSPACE_BUNDLE_ORIGIN: http://cityhall:3000
     volumes:
       # Full control of the host's docker daemon: treat CityHall as root on
       # this host, or point this at a restricted docker socket proxy.

@@ -346,6 +346,16 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
             args.push(format!("127.0.0.1:0:{AOE_PORT}"));
         }
     }
+    // Where the workspace fetches its config bundle at boot. The token is
+    // visible in `docker inspect`, which is not an additional exposure: it only
+    // reads this one user's bundle, whose contents are written into the
+    // container's own volume anyway, and reading either needs host docker access.
+    if let Some(bundle) = &spec.bundle {
+        args.push("-e".into());
+        args.push(format!("AOE_CITYHALL_BUNDLE_URL={}", bundle.url));
+        args.push("-e".into());
+        args.push(format!("AOE_CITYHALL_BUNDLE_TOKEN={}", bundle.token));
+    }
     args.extend(
         [
             &spec.image,
@@ -507,7 +517,47 @@ mod tests {
             user_id: 42,
             image: "cityhall/aoe:v1.0.0".to_string(),
             version: "v1.0.0".to_string(),
+            bundle: None,
         }
+    }
+
+    fn spec_with_bundle() -> WorkspaceSpec {
+        WorkspaceSpec {
+            bundle: Some(super::super::BundleAccess {
+                url: "http://cityhall:3000/api/workspace-bundle".to_string(),
+                token: "tok".to_string(),
+            }),
+            ..spec()
+        }
+    }
+
+    /// The workspace needs both variables before the image argument, or docker
+    /// treats them as arguments to aoe instead of container env.
+    #[test]
+    fn bundle_env_is_passed_before_the_image() {
+        let args = run_args(&spec_with_bundle(), None);
+        let image_at = args
+            .iter()
+            .position(|a| a == "cityhall/aoe:v1.0.0")
+            .unwrap();
+        for expected in [
+            "AOE_CITYHALL_BUNDLE_URL=http://cityhall:3000/api/workspace-bundle",
+            "AOE_CITYHALL_BUNDLE_TOKEN=tok",
+        ] {
+            let at = args
+                .iter()
+                .position(|a| a == expected)
+                .unwrap_or_else(|| panic!("{expected} missing from {args:?}"));
+            assert_eq!(args[at - 1], "-e");
+            assert!(at < image_at, "{expected} must precede the image");
+        }
+    }
+
+    /// No bundle configured must leave the command line exactly as it was.
+    #[test]
+    fn no_bundle_adds_no_env() {
+        let args = run_args(&spec(), None);
+        assert!(!args.iter().any(|a| a == "-e"), "{args:?}");
     }
 
     #[test]

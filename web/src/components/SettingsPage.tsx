@@ -5,6 +5,7 @@ import { TopBar } from "./TopBar";
 import { OidcSettingsSection } from "./OidcSettings";
 import { SignupSettingsSection } from "./SignupSettings";
 import { WorkspaceSettingsSection } from "./WorkspaceSettings";
+import { WorkspaceConfigSection } from "./WorkspaceConfig";
 import { Button, ErrorText, Field, Input, Select } from "./ui";
 
 export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
@@ -248,6 +249,8 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
         <SignupSettingsSection />
 
         <WorkspaceSettingsSection />
+
+        <WorkspaceConfigSection />
       </main>
     </div>
   );

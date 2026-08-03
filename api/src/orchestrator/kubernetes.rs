@@ -247,6 +247,22 @@ impl Orchestrator for KubectlOrchestrator {
     }
 }
 
+/// Container env telling the workspace where to fetch its config bundle, or an
+/// empty list when no bundle is configured.
+///
+/// Plain env rather than a Secret: the value it protects is fetched into the
+/// pod's own volume anyway, and a Secret would add a second object to reconcile
+/// and garbage-collect per user for no real gain.
+fn bundle_env(spec: &WorkspaceSpec) -> serde_json::Value {
+    match &spec.bundle {
+        Some(bundle) => json!([
+            { "name": "AOE_CITYHALL_BUNDLE_URL", "value": bundle.url },
+            { "name": "AOE_CITYHALL_BUNDLE_TOKEN", "value": bundle.token },
+        ]),
+        None => json!([]),
+    }
+}
+
 /// The desired-state manifests for one workspace: PVC + Service + Deployment,
 /// as a `kind: List` JSON document `kubectl apply` consumes from stdin.
 fn render_manifests(
@@ -324,6 +340,7 @@ fn render_manifests(
                                     // structured view only.
                                     "--cityhall",
                                 ],
+                                "env": bundle_env(spec),
                                 "ports": [{ "containerPort": AOE_PORT }],
                                 "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
                             }],
@@ -390,7 +407,27 @@ mod tests {
             user_id: 42,
             image: "registry.example.com/aoe:v1.0.0".to_string(),
             version: "v1.0.0".to_string(),
+            bundle: None,
         }
+    }
+
+    #[test]
+    fn bundle_access_becomes_container_env() {
+        let spec = WorkspaceSpec {
+            bundle: Some(super::super::BundleAccess {
+                url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
+                token: "tok".to_string(),
+            }),
+            ..spec()
+        };
+        let env = bundle_env(&spec);
+        assert_eq!(env[0]["name"], "AOE_CITYHALL_BUNDLE_URL");
+        assert_eq!(
+            env[0]["value"],
+            "http://cityhall.cityhall.svc:3000/api/workspace-bundle"
+        );
+        assert_eq!(env[1]["name"], "AOE_CITYHALL_BUNDLE_TOKEN");
+        assert_eq!(env[1]["value"], "tok");
     }
 
     #[test]
@@ -425,6 +462,9 @@ mod tests {
         );
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
+        // No bundle configured: an empty env list, not a missing key, so the
+        // rendered manifest shape stays stable.
+        assert_eq!(container["env"], json!([]));
         assert_eq!(
             container["volumeMounts"][0]["mountPath"],
             "/home/aoe/.config/agent-of-empires"

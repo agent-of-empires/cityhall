@@ -1,4 +1,5 @@
 pub mod auth_settings;
+pub mod git_credential;
 pub mod oidc_settings;
 pub mod password_reset_token;
 pub mod role;
@@ -6,4 +7,5 @@ pub mod session;
 pub mod smtp_settings;
 pub mod user;
 pub mod workspace;
+pub mod workspace_config;
 pub mod workspace_settings;
