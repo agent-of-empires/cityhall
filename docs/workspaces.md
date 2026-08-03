@@ -101,12 +101,22 @@ means nothing inside a container, so aoe clones each remote into the workspace's
 data volume and registers it. Settings are a sparse patch, so only the fields
 the admin actually changed are carried.
 
-An aoe install is a convenience here, not a prerequisite. The document is plain
-TOML and CityHall shape-checks whatever you save, so **Start from scratch** on
-that page seeds a valid skeleton to fill in by hand. Take that route when you are
-standing CityHall up before anyone has an install to export from, or when all you
-want is a project list. `schema_version = 1` on its own is a valid document; it
-just provisions nothing.
+An aoe install is a convenience here, not a prerequisite. The page offers two
+views of the same document, and switching between them carries unsaved edits:
+
+- **Form** edits the project list and a curated set of settings with labels and
+  descriptions, so no TOML has to be written. It is deliberately not every aoe
+  setting: CityHall has no aoe process to ask for the schema, and the aoe version
+  a workspace runs is per-user, so any field list it claimed to be complete could
+  describe a version nobody runs. Editing here rewrites the document from its
+  values, which drops comments; the page warns when there are any.
+- **TOML** is the whole document. It is how an uploaded export gets in, how a
+  field the form does not render gets set, and where comments survive. **Start
+  from scratch** seeds a commented skeleton to fill in by hand.
+
+Either way, `schema_version = 1` on its own is a valid document; it just
+provisions nothing. Nothing the form does not render is dropped on save: unknown
+sections, `[meta]`, and extra keys on a project are all preserved.
 
 To deliver it, set `WORKSPACE_BUNDLE_ORIGIN` to the origin a *workspace* uses to
 reach CityHall. That is not the public origin: on the docker backend it is the
