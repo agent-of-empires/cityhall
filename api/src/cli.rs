@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::auth::random_token;
 use crate::error::AppError;
-use crate::{db, rbac, seed, server, service};
+use crate::{crypto, db, rbac, seed, server, service};
 
 #[derive(Parser)]
 #[command(
@@ -63,6 +63,11 @@ pub enum UserAction {
 }
 
 pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Before anything else: a malformed CITYHALL_SECRET_KEY_PREVIOUS is a
+    // configuration error, and refusing to start beats discovering it whenever
+    // some unrelated request happens to decrypt a secret.
+    crypto::validate_keyring()?;
+
     let db = db::connect().await?;
     seed::ensure_roles(&db).await?;
 

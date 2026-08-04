@@ -160,7 +160,12 @@ pub fn mint_exchange_token(admin_id: i32, target_id: i32) -> Result<String, AppE
     mint_token(admin_id, target_id, EXCHANGE_PURPOSE, EXCHANGE_TTL_SECS)
 }
 
-fn mint_token(admin_id: i32, target_id: i32, purpose: &str, ttl: i64) -> Result<String, AppError> {
+fn mint_token(
+    admin_id: i32,
+    target_id: i32,
+    purpose: &'static str,
+    ttl: i64,
+) -> Result<String, AppError> {
     let payload = serde_json::to_string(&AccessToken {
         v: 1,
         p: purpose.to_string(),
@@ -169,13 +174,24 @@ fn mint_token(admin_id: i32, target_id: i32, purpose: &str, ttl: i64) -> Result<
         exp: chrono::Utc::now().timestamp() + ttl,
     })
     .map_err(|_| AppError::Internal("failed to encode access token"))?;
-    crate::crypto::encrypt(&payload)
+    crate::crypto::encrypt(
+        &payload,
+        &crate::crypto::Aad::WorkspaceAccessToken { purpose },
+    )
 }
 
 /// Decrypt and validate a token; `None` for anything tampered, expired, or
 /// of the wrong purpose (callers respond generically, revealing nothing).
-fn decode_token(raw: &str, purpose: &str) -> Option<AccessToken> {
-    validate_payload(&crate::crypto::decrypt(raw).ok()?, purpose)
+///
+/// The purpose is bound cryptographically as well as checked inside the payload.
+/// Not circular: the expected purpose comes from which surface is being read (an
+/// access URL versus a session cookie), never from the token being decrypted.
+/// Tokens minted before the envelope existed have no binding, so they keep
+/// working on the payload check alone until their own TTL expires.
+fn decode_token(raw: &str, purpose: &'static str) -> Option<AccessToken> {
+    let plaintext =
+        crate::crypto::decrypt(raw, &crate::crypto::Aad::WorkspaceAccessToken { purpose }).ok()?;
+    validate_payload(&plaintext, purpose)
 }
 
 fn validate_payload(json: &str, purpose: &str) -> Option<AccessToken> {

@@ -203,7 +203,12 @@ pub async fn update_git_credential(
         .map(str::trim)
         .filter(|t| !t.is_empty())
     {
-        Some(token) => crypto::encrypt(token)?,
+        Some(token) => crypto::encrypt(
+            token,
+            &crypto::Aad::GitCredential {
+                user_id: caller.user.id,
+            },
+        )?,
         None => existing
             .as_ref()
             .map(|r| r.token_encrypted.clone())
@@ -332,7 +337,10 @@ async fn git_table(db: &DatabaseConnection, owner: &user::Model) -> Result<toml:
         // workspace would boot with no settings and no projects either. Serve the
         // rest and drop the secret, loudly enough that an operator can tell the
         // user to re-enter it.
-        match crypto::decrypt(&cred.token_encrypted) {
+        match crypto::decrypt(
+            &cred.token_encrypted,
+            &crypto::Aad::GitCredential { user_id: owner.id },
+        ) {
             Ok(token) => {
                 git.insert(
                     "credential_host".to_string(),

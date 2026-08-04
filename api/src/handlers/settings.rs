@@ -138,7 +138,7 @@ pub async fn update(
     // A provided password is encrypted and stored; otherwise keep the existing
     // ciphertext.
     let password_encrypted = match body.password.filter(|p| !p.is_empty()) {
-        Some(pw) => Some(crypto::encrypt(&pw)?),
+        Some(pw) => Some(crypto::encrypt(&pw, &crypto::Aad::SmtpPassword)?),
         None => existing.as_ref().and_then(|r| r.password_encrypted.clone()),
     };
 

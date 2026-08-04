@@ -132,7 +132,7 @@ pub async fn resolve(db: &DatabaseConnection) -> Result<Option<(SmtpConfig, Sour
         return Ok(None);
     }
     let password = match &row.password_encrypted {
-        Some(enc) => Some(crypto::decrypt(enc)?),
+        Some(enc) => Some(crypto::decrypt(enc, &crypto::Aad::SmtpPassword)?),
         None => None,
     };
     let cfg = SmtpConfig {

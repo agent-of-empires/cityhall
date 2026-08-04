@@ -103,7 +103,7 @@ pub async fn resolve(db: &DatabaseConnection) -> Result<Option<(OidcConfig, Sour
         return Ok(None);
     }
     let client_secret = match &row.client_secret_encrypted {
-        Some(enc) => Some(crypto::decrypt(enc)?),
+        Some(enc) => Some(crypto::decrypt(enc, &crypto::Aad::OidcClientSecret)?),
         None => None,
     };
     let cfg = OidcConfig {
