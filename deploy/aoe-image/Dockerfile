@@ -87,20 +87,33 @@ COPY --from=aoe-web /src /src
 COPY --from=aoe-web /src/web/dist /web-dist
 ENV AOE_WEB_DIST=/web-dist
 
-# The checkout's own .cargo/config.toml asks for 8 parallel rustc jobs, which
-# is what exhausts memory in a small Docker VM rather than the optimization
-# level on its own. Both are build args because the right values depend on how
-# much the build host has to spare, and a cargo env var beats config.toml.
+# Both defaults are set by what fits a stock 4 GB Docker VM, measured rather
+# than guessed, and are args because a bigger builder can afford more.
+#
+# Two separate memory problems, which is why it takes two knobs. The checkout's
+# own .cargo/config.toml asks for 8 parallel rustc jobs, so the dependency graph
+# alone can run 8 at once. That one is the job count. The `agent-of-empires` lib
+# crate is then a single rustc that no job count can shrink, and at any
+# optimization level above 0 it gets OOM-killed on its own; that one is the
+# optimization level. aoe's `dev-release` profile does not set opt-level, so it
+# inherits release's 3, and a cargo env var is what overrides the checkout's
+# config.toml.
 ARG CARGO_BUILD_JOBS=2
-ARG CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=1
+ARG CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=0
 ENV CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS
 ENV CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=$CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL
 
-# `dev-release` is aoe's own profile for an optimized build without LTO, which
-# is the cheapest one that still produces a usable binary. `serve` is the
+# `dev-release` is aoe's own profile for a build without LTO. `serve` is the
 # feature that ships the dashboard CityHall proxies to.
+#
+# An OOM kill arrives as a bare "cannot allocate memory" at the end of a
+# truncated log tail, which tells an admin nothing, so name the likely cause
+# here where it is still attached to the failure.
 RUN cd /src \
-    && cargo build --profile dev-release --features serve \
+    && { cargo build --profile dev-release --features serve \
+         || { echo "aoe build failed. If a rustc process was killed (signal 9)," \
+                   "the builder ran out of memory: give the docker VM more RAM," \
+                   "or lower CARGO_BUILD_JOBS." >&2; exit 1; }; } \
     && mkdir -p /out \
     && cp target/dev-release/aoe /out/aoe
 

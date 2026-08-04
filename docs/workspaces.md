@@ -84,17 +84,26 @@ Consequences worth knowing:
 
 The build runs in the same background provisioning flow as an image pull, so it
 survives a closed browser tab, runs once per image no matter how many requests
-arrive, and reports progress on the admin Workspaces page. It compiles at
-`opt-level=1` without LTO and with two parallel rustc jobs, because aoe's own
-`.cargo/config.toml` asks for eight and that exhausts memory in a small Docker
-VM. The binary is slower than a release build; this is for testing, not for a
-deployment to settle on. Both knobs are build args if you pre-build by hand:
+arrive, and reports progress on the admin Workspaces page. Expect roughly four
+minutes on a 12 core, 4 GB Docker VM.
+
+It compiles unoptimized (`opt-level=0`, no LTO) with two parallel rustc jobs,
+which is what fits a stock 4 GB VM. Both are needed and for different reasons:
+aoe's own `.cargo/config.toml` asks for eight parallel jobs, and separately the
+`agent-of-empires` lib crate is one rustc process that no job count can shrink
+and that gets OOM-killed at any optimization level above 0. The resulting binary
+is slower than a release build, so this is for testing a change, not for a
+deployment to settle on. Raise either knob if the builder has memory to spare:
 
 ```sh
 SHA=$(git -C ../agent-of-empires rev-parse main)
 docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
-  --build-arg CARGO_BUILD_JOBS=8 -t "cityhall/aoe:git-$SHA" deploy/aoe-image/
+  --build-arg CARGO_BUILD_JOBS=8 --build-arg CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=1 \
+  -t "cityhall/aoe:git-$SHA" deploy/aoe-image/
 ```
+
+If a build fails with `cannot allocate memory`, or a log tail ending in
+`signal: 9`, the builder ran out of memory rather than hitting a compile error.
 
 The other backends do not build. The process backend refuses a `git-` version,
 since a commit has no release tarball to download. The kubernetes backend can
