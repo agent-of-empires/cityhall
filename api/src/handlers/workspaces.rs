@@ -418,6 +418,10 @@ pub async fn update_settings(
         &body.telemetry_policy,
         existing.as_ref().map(|r| r.telemetry_policy.as_str()),
     )?;
+    let agents = existing
+        .as_ref()
+        .map(|e| e.agents.clone())
+        .unwrap_or_default();
     let model = workspace_settings::ActiveModel {
         id: Set(SETTINGS_ID),
         image_template: Set(body.image_template.trim().to_string()),
@@ -425,6 +429,7 @@ pub async fn update_settings(
         idle_stop_minutes: Set(body.idle_stop_minutes),
         telemetry_policy: Set(telemetry_policy),
         updated_at: Set(Utc::now()),
+        agents: Set(agents),
     };
     if existing.is_some() {
         model.update(&state.db).await?;

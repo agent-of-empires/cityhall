@@ -490,6 +490,7 @@ mod tests {
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
+            agents: String::new(),
         }
     }
 
