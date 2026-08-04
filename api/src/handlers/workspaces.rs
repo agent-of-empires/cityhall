@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::Utc;
 use sea_orm::{ActiveModelTrait, EntityTrait, Set};
@@ -174,6 +174,25 @@ pub async fn stop(
     caller.require("workspaces.write")?;
     workspaces::stop(&state, user_id).await?;
     Ok(Json(serde_json::json!({ "status": "stopped" })))
+}
+
+/// POST /api/workspaces/me/restart: recreate the caller's own workspace now,
+/// if it is running.
+///
+/// Agent credentials are baked into a container's environment at create time,
+/// not injected live, so a credential saved after a workspace was created
+/// only takes effect the next time that container is created. Without this, a
+/// user who just added a key would have to wait for an idle stop or ask an
+/// admin to restart them; this lets them apply it themselves instead of a
+/// credential save silently leaving their running session on the old
+/// environment.
+pub async fn restart_mine(
+    State(state): State<AppState>,
+    caller: AuthUser,
+) -> Result<StatusCode, AppError> {
+    caller.require("workspaces.use")?;
+    crate::workspaces::restart_if_running(&state, caller.user.id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// DELETE /api/workspaces/{user_id}: destroys the workspace AND its volume.

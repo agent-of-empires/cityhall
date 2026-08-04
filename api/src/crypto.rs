@@ -90,6 +90,23 @@ pub fn decrypt(encoded: &str) -> Result<String, AppError> {
     String::from_utf8(plaintext).map_err(|_| AppError::Internal("decrypted secret is not UTF-8"))
 }
 
+/// Serializes tests that mutate `CITYHALL_SECRET_KEY`.
+///
+/// The key is read from the process environment, so a test that sets it and one
+/// that clears it will otherwise see each other's value when `cargo test` runs
+/// them on different threads. Any test anywhere in the crate that touches the
+/// variable takes this lock for its whole body.
+#[cfg(test)]
+pub(crate) static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The lock, ignoring poisoning: a panicking test leaves the env var in an
+/// unknown state, but every holder sets what it needs before reading, so the
+/// next test is unaffected and should run rather than fail on the poison.
+#[cfg(test)]
+pub(crate) fn lock_key_env() -> std::sync::MutexGuard<'static, ()> {
+    KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +115,8 @@ mod tests {
     // running them as separate parallel tests would race on the key.
     #[test]
     fn encrypt_decrypt_and_missing_key() {
+        let _guard = lock_key_env();
+
         // Missing key: no encryption possible.
         std::env::remove_var(KEY_ENV);
         assert!(!key_available());

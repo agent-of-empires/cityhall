@@ -2,14 +2,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 use sea_orm::DatabaseConnection;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
-use crate::handlers::{auth, oidc, roles, settings, signup, users, workspace_config, workspaces};
+use crate::handlers::{
+    agent_credentials, auth, oidc, roles, settings, signup, users, workspace_config, workspaces,
+};
 use crate::proxy;
 use crate::state::AppState;
 
@@ -48,6 +50,7 @@ pub fn api_router(state: AppState) -> Router {
             get(workspaces::list).patch(workspaces::bulk_set_version),
         )
         .route("/workspaces/me", get(workspaces::me))
+        .route("/workspaces/me/restart", post(workspaces::restart_mine))
         .route("/workspaces/versions", get(workspaces::versions))
         .route(
             "/workspaces/{user_id}",
@@ -82,6 +85,19 @@ pub fn api_router(state: AppState) -> Router {
             get(workspace_config::get_git_credential)
                 .put(workspace_config::update_git_credential)
                 .delete(workspace_config::delete_git_credential),
+        )
+        .route("/me/agent-credentials", get(agent_credentials::get_mine))
+        .route(
+            "/me/agent-credentials/{env_var}",
+            put(agent_credentials::put_mine).delete(agent_credentials::delete_mine),
+        )
+        .route(
+            "/users/{user_id}/agent-credentials",
+            get(agent_credentials::get_for_user),
+        )
+        .route(
+            "/users/{user_id}/agent-credentials/{env_var}",
+            put(agent_credentials::put_for_user).delete(agent_credentials::delete_for_user),
         )
         // Fetched by a workspace container, authenticated by its own bearer
         // token rather than a session cookie.
