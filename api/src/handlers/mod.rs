@@ -1,3 +1,4 @@
+pub mod agent_credentials;
 pub mod auth;
 pub mod oidc;
 pub mod roles;

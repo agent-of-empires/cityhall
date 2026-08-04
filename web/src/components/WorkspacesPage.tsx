@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, Play, Square, Trash2 } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { ExternalLink, KeyRound, Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
+import { AgentCredentialsEditor } from "./AgentCredentials";
 import { TopBar } from "./TopBar";
 import { Button, Input, Select } from "./ui";
 
@@ -31,6 +32,7 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
   const [busy, setBusy] = useState(false);
   const [versions, setVersions] = useState<string[]>([]);
   const [latest, setLatest] = useState<string | null>(null);
+  const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -216,114 +218,139 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.user_id} className="border-b border-surface-800 last:border-0">
-                  {canWrite && (
-                    <td className="px-4 py-2.5">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(item.user_id)}
-                        onChange={() => toggle(item.user_id)}
-                        className="h-4 w-4 accent-brand-500"
-                      />
-                    </td>
-                  )}
-                  <td className="px-4 py-2.5 text-text-primary">{item.username}</td>
-                  <td className="px-4 py-2.5">
-                    {item.provisioning ? (
-                      <span
-                        className={item.provisioning.failed ? "text-status-error" : "text-status-waiting"}
-                        title={item.provisioning.message}
-                      >
-                        {item.provisioning.failed ? "provisioning failed" : "provisioning"}
-                        <span className="block max-w-56 truncate text-xs text-text-muted">
-                          {item.provisioning.message}
-                        </span>
-                      </span>
-                    ) : (
-                      <span className={STATUS_STYLES[item.status]}>{STATUS_LABELS[item.status]}</span>
+                <Fragment key={item.user_id}>
+                  <tr className="border-b border-surface-800 last:border-0">
+                    {canWrite && (
+                      <td className="px-4 py-2.5">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(item.user_id)}
+                          onChange={() => toggle(item.user_id)}
+                          className="h-4 w-4 accent-brand-500"
+                        />
+                      </td>
                     )}
-                  </td>
-                  <td className="px-4 py-2.5 text-text-secondary">
-                    <div className="flex items-center gap-2">
-                      {canWrite && versions.length > 0 ? (
-                        <Select
-                          value={item.pinned_version ?? ""}
-                          disabled={busy}
-                          onChange={(e) =>
-                            run(
-                              () => api.setWorkspaceVersion(item.user_id, e.target.value || null, restart),
-                              "could not set version",
-                            )
-                          }
-                          className="w-44"
-                        >
-                          <option value="">
-                            {item.effective_version ? `default (${item.effective_version})` : "default"}
-                          </option>
-                          {versions.map((v) => (
-                            <option key={v} value={v}>
-                              {v}
-                              {v === latest ? " (latest)" : ""}
-                            </option>
-                          ))}
-                        </Select>
-                      ) : (
-                        <span>
-                          {item.pinned_version ??
-                            (item.effective_version ? `default (${item.effective_version})` : "-")}
-                        </span>
-                      )}
-                      {outdated(item) && (
-                        <span className="text-xs font-medium text-status-waiting" title={`latest is ${latest}`}>
-                          outdated
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5 text-text-secondary">
-                    {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
-                  </td>
-                  {canWrite && (
+                    <td className="px-4 py-2.5 text-text-primary">{item.username}</td>
                     <td className="px-4 py-2.5">
-                      <div className="flex justify-end gap-1">
-                        {canImpersonate && item.user_id !== me.id && (
-                          <Button
-                            variant="ghost"
+                      {item.provisioning ? (
+                        <span
+                          className={item.provisioning.failed ? "text-status-error" : "text-status-waiting"}
+                          title={item.provisioning.message}
+                        >
+                          {item.provisioning.failed ? "provisioning failed" : "provisioning"}
+                          <span className="block max-w-56 truncate text-xs text-text-muted">
+                            {item.provisioning.message}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className={STATUS_STYLES[item.status]}>{STATUS_LABELS[item.status]}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-text-secondary">
+                      <div className="flex items-center gap-2">
+                        {canWrite && versions.length > 0 ? (
+                          <Select
+                            value={item.pinned_version ?? ""}
                             disabled={busy}
-                            onClick={() => openAsAdmin(item)}
-                            title="Open this user's workspace (audited)"
+                            onChange={(e) =>
+                              run(
+                                () => api.setWorkspaceVersion(item.user_id, e.target.value || null, restart),
+                                "could not set version",
+                              )
+                            }
+                            className="w-44"
                           >
-                            <ExternalLink size={14} />
-                          </Button>
+                            <option value="">
+                              {item.effective_version ? `default (${item.effective_version})` : "default"}
+                            </option>
+                            {versions.map((v) => (
+                              <option key={v} value={v}>
+                                {v}
+                                {v === latest ? " (latest)" : ""}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : (
+                          <span>
+                            {item.pinned_version ??
+                              (item.effective_version ? `default (${item.effective_version})` : "-")}
+                          </span>
                         )}
-                        <Button
-                          variant="ghost"
-                          disabled={busy || item.status === "running"}
-                          onClick={() => run(() => api.startWorkspace(item.user_id), "could not start workspace")}
-                          title="Start"
-                        >
-                          <Play size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || item.status !== "running"}
-                          onClick={() => run(() => api.stopWorkspace(item.user_id), "could not stop workspace")}
-                          title="Stop (keeps data)"
-                        >
-                          <Square size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={busy || item.status === "not_created"}
-                          onClick={() => destroy(item)}
-                          title="Destroy (deletes data)"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
+                        {outdated(item) && (
+                          <span className="text-xs font-medium text-status-waiting" title={`latest is ${latest}`}>
+                            outdated
+                          </span>
+                        )}
                       </div>
                     </td>
+                    <td className="px-4 py-2.5 text-text-secondary">
+                      {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
+                    </td>
+                    {canWrite && (
+                      <td className="px-4 py-2.5">
+                        <div className="flex justify-end gap-1">
+                          {canImpersonate && item.user_id !== me.id && (
+                            <Button
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() => openAsAdmin(item)}
+                              title="Open this user's workspace (audited)"
+                            >
+                              <ExternalLink size={14} />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            disabled={busy || item.status === "running"}
+                            onClick={() => run(() => api.startWorkspace(item.user_id), "could not start workspace")}
+                            title="Start"
+                          >
+                            <Play size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={busy || item.status !== "running"}
+                            onClick={() => run(() => api.stopWorkspace(item.user_id), "could not stop workspace")}
+                            title="Stop (keeps data)"
+                          >
+                            <Square size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={busy || item.status === "not_created"}
+                            onClick={() => destroy(item)}
+                            title="Destroy (deletes data)"
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            className={item.user_id === expandedUserId ? "text-brand-500" : undefined}
+                            onClick={() => setExpandedUserId(item.user_id === expandedUserId ? null : item.user_id)}
+                            title="Agent credentials"
+                          >
+                            <KeyRound size={14} />
+                          </Button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                  {canWrite && item.user_id === expandedUserId && (
+                    <tr className="border-b border-surface-800 last:border-0">
+                      <td colSpan={6} className="bg-surface-850 px-4 py-4">
+                        {/* Status is already visible in the row above: an admin seeding or
+                          rotating a credential can see whether that user's workspace is
+                          currently running before using the existing start/stop controls
+                          to apply it. */}
+                        <AgentCredentialsEditor
+                          load={() => api.getUserAgentCredentials(item.user_id)}
+                          update={(envVar, value) => api.updateUserAgentCredential(item.user_id, envVar, value)}
+                          remove={(envVar) => api.deleteUserAgentCredential(item.user_id, envVar)}
+                        />
+                      </td>
+                    </tr>
                   )}
-                </tr>
+                </Fragment>
               ))}
               {items.length === 0 && (
                 <tr>

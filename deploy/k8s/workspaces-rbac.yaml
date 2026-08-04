@@ -1,5 +1,5 @@
-# Lets CityHall manage per-user workspace objects (Deployment + Service +
-# PVC, plus reading pod status) in its namespace via the kubernetes workspace
+# Lets CityHall manage per-user workspace objects (Deployment + Service + PVC +
+# Secret, plus reading pod status) in its namespace via the kubernetes workspace
 # backend (WORKSPACE_BACKEND=kubernetes).
 apiVersion: v1
 kind: ServiceAccount
@@ -21,6 +21,13 @@ rules:
     verbs: ["get", "patch", "update"]
   - apiGroups: [""]
     resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "patch", "update", "delete"]
+  # A per-user Secret carries the workspace's bundle token and agent
+  # credentials, so those values stay out of the Deployment manifest. "get" is
+  # needed as well as the writes: `kubectl apply` is client-side and reads the
+  # live object to compute its merge patch.
+  - apiGroups: [""]
+    resources: ["secrets"]
     verbs: ["get", "list", "create", "patch", "update", "delete"]
   - apiGroups: [""]
     resources: ["pods"]

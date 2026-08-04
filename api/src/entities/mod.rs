@@ -1,3 +1,4 @@
+pub mod agent_credential;
 pub mod auth_settings;
 pub mod git_credential;
 pub mod oidc_settings;

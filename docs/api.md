@@ -459,6 +459,15 @@ Requires `workspaces.write`. Starts (or resumes) the user's workspace. Returns
 
 Requires `workspaces.write`. Stops the workspace, keeping its data volume.
 
+### `POST /api/workspaces/me/restart`
+
+Requires `workspaces.use`. Recreates the caller's own workspace if it is
+running, keeping its data volume, and returns `204`. This is how a user applies
+an agent credential they just saved: credentials are part of a container's
+environment, so a change only takes effect when the container is next created.
+A stopped workspace is left stopped and picks the change up on its next start.
+Any agent session running inside the workspace ends.
+
 ### `DELETE /api/workspaces/{user_id}`
 
 Requires `workspaces.write`. Destroys the workspace AND its data volume.
@@ -499,3 +508,76 @@ Requires `settings.read`.
 
 Requires `settings.write`. Same shape as `GET`. `image_template` is required;
 `idle_stop_minutes` must be at least 1.
+
+### `GET /api/me/agent-credentials`
+
+Requires `workspaces.use`. The provider credentials forwarded into the caller's
+workspace. Always the whole supported set, whether or not a value is stored, so
+a client renders this list rather than hardcoding one. A stored value is never
+returned.
+
+```json
+{
+  "secret_key_available": true,
+  "credentials": [
+    {
+      "env_var": "ANTHROPIC_API_KEY",
+      "label": "Anthropic API key (Claude)",
+      "structured_view": true,
+      "limitation": null,
+      "value_set": true,
+      "usable": true
+    },
+    {
+      "env_var": "OPENAI_API_KEY",
+      "label": "OpenAI API key (Codex)",
+      "structured_view": false,
+      "limitation": "Available in terminal sessions only. Structured-view agents do not receive this variable yet.",
+      "value_set": false,
+      "usable": false
+    }
+  ]
+}
+```
+
+`value_set` is whether a value is stored; `usable` is whether it still decrypts,
+so `value_set` true with `usable` false means a `CITYHALL_SECRET_KEY` change left
+that credential unreadable and it has to be entered again. `limitation` is
+non-null for variables that reach terminal sessions but not structured-view
+agents. `secret_key_available` false means nothing can be stored at all.
+
+### `PUT /api/me/agent-credentials/{env_var}`
+
+Requires `workspaces.use`. Stores or replaces one value and returns the same
+shape as `GET`. `env_var` must be one of the supported variables, otherwise
+`400`. An empty value is rejected rather than treated as "keep the existing
+one"; delete the credential to remove it.
+
+```json
+{ "value": "sk-..." }
+```
+
+The change takes effect when the workspace is next created, not immediately. See
+`POST /api/workspaces/me/restart`.
+
+### `DELETE /api/me/agent-credentials/{env_var}`
+
+Requires `workspaces.use`. Removes the credential and returns the same shape as
+`GET`. Idempotent: deleting one that was never stored succeeds.
+
+### `GET /api/users/{user_id}/agent-credentials`
+
+Requires `workspaces.write`. Same shape as `GET /api/me/agent-credentials`, for
+another user, so an admin can see which credentials a user has before handing
+their workspace over. Values are not returned here either.
+
+### `PUT /api/users/{user_id}/agent-credentials/{env_var}`
+
+Requires `workspaces.write`. Sets a credential on another user's behalf, which is
+how a workspace can be provisioned ready to use. Same body and rules as the `me`
+route. Returns `404` for an unknown user. Every write is recorded in the server
+log with the acting and target user.
+
+### `DELETE /api/users/{user_id}/agent-credentials/{env_var}`
+
+Requires `workspaces.write`. Removes another user's credential.

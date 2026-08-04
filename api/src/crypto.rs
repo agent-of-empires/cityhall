@@ -1,7 +1,7 @@
-//! Symmetric encryption for secrets stored in the database (currently the SMTP
-//! password). Uses AES-256-GCM with a key supplied via `CITYHALL_SECRET_KEY`
-//! (base64-encoded, 32 bytes). Ciphertext is stored as base64 of
-//! `nonce (12 bytes) || ciphertext`.
+//! Symmetric encryption for secrets stored in the database: the SMTP password,
+//! the OIDC client secret, git credentials, and agent credentials. Uses
+//! AES-256-GCM with a key supplied via `CITYHALL_SECRET_KEY` (base64-encoded,
+//! 32 bytes). Ciphertext is stored as base64 of `nonce (12 bytes) || ciphertext`.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -16,9 +16,7 @@ const NONCE_LEN: usize = 12;
 /// Load and validate the 32-byte key from the environment.
 fn cipher() -> Result<Aes256Gcm, AppError> {
     let raw = std::env::var(KEY_ENV).map_err(|_| {
-        AppError::BadRequest(
-            "CITYHALL_SECRET_KEY is not set; it is required to store SMTP credentials",
-        )
+        AppError::BadRequest("CITYHALL_SECRET_KEY is not set; it is required to store secrets")
     })?;
     let bytes = B64
         .decode(raw.trim())
@@ -32,6 +30,32 @@ fn cipher() -> Result<Aes256Gcm, AppError> {
 /// read or write encrypted secrets before attempting them.
 pub fn key_available() -> bool {
     cipher().is_ok()
+}
+
+/// A decrypted secret, wrapped so it cannot be printed by accident.
+///
+/// Plaintext secrets travel through `WorkspaceSpec`, which derives `Debug` and
+/// is a natural thing for a future `tracing` call to log. A bare `String` there
+/// would make that a credential leak; this type renders as `[REDACTED]` and has
+/// no `Display`, so reaching the value takes an explicit [`Secret::expose`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// The plaintext. Named to make a review notice every call site.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
 }
 
 pub fn encrypt(plaintext: &str) -> Result<String, AppError> {
@@ -66,6 +90,23 @@ pub fn decrypt(encoded: &str) -> Result<String, AppError> {
     String::from_utf8(plaintext).map_err(|_| AppError::Internal("decrypted secret is not UTF-8"))
 }
 
+/// Serializes tests that mutate `CITYHALL_SECRET_KEY`.
+///
+/// The key is read from the process environment, so a test that sets it and one
+/// that clears it will otherwise see each other's value when `cargo test` runs
+/// them on different threads. Any test anywhere in the crate that touches the
+/// variable takes this lock for its whole body.
+#[cfg(test)]
+pub(crate) static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The lock, ignoring poisoning: a panicking test leaves the env var in an
+/// unknown state, but every holder sets what it needs before reading, so the
+/// next test is unaffected and should run rather than fail on the poison.
+#[cfg(test)]
+pub(crate) fn lock_key_env() -> std::sync::MutexGuard<'static, ()> {
+    KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +115,8 @@ mod tests {
     // running them as separate parallel tests would race on the key.
     #[test]
     fn encrypt_decrypt_and_missing_key() {
+        let _guard = lock_key_env();
+
         // Missing key: no encryption possible.
         std::env::remove_var(KEY_ENV);
         assert!(!key_available());
@@ -88,5 +131,13 @@ mod tests {
         assert_ne!(encrypt("same").unwrap(), encrypt("same").unwrap());
 
         std::env::remove_var(KEY_ENV);
+    }
+
+    #[test]
+    fn secret_never_prints_its_value() {
+        let s = Secret::new("sk-do-not-log-me".to_string());
+        assert_eq!(format!("{s:?}"), "[REDACTED]");
+        assert!(!format!("{:?}", vec![("K".to_string(), s.clone())]).contains("sk-"));
+        assert_eq!(s.expose(), "sk-do-not-log-me");
     }
 }

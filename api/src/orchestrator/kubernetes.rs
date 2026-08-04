@@ -42,6 +42,12 @@ pub fn pvc_name(user_id: i32) -> String {
     format!("cityhall-workspace-u{user_id}-data")
 }
 
+/// Name of the per-user Secret carrying the bundle token and agent
+/// credentials, when there is anything to inject.
+pub fn secret_name(user_id: i32) -> String {
+    format!("cityhall-workspace-u{user_id}-env")
+}
+
 pub struct KubectlOrchestrator {
     namespace: String,
     /// PVC size request, e.g. `5Gi`.
@@ -212,7 +218,7 @@ impl Orchestrator for KubectlOrchestrator {
         self.run(
             &[
                 "delete",
-                "deployment,service,pvc",
+                "deployment,service,pvc,secret",
                 "-l",
                 &selector,
                 "--ignore-not-found=true",
@@ -247,20 +253,27 @@ impl Orchestrator for KubectlOrchestrator {
     }
 }
 
-/// Container env telling the workspace where to fetch its config bundle, or an
-/// empty list when no bundle is configured.
+/// Every environment value the workspace needs: the bundle location and
+/// token (when configured), plus every agent credential. Empty when there is
+/// nothing to inject, in which case the caller emits neither a Secret nor an
+/// `envFrom` referencing one.
 ///
-/// Plain env rather than a Secret: the value it protects is fetched into the
-/// pod's own volume anyway, and a Secret would add a second object to reconcile
-/// and garbage-collect per user for no real gain.
-fn bundle_env(spec: &WorkspaceSpec) -> serde_json::Value {
-    match &spec.bundle {
-        Some(bundle) => json!([
-            { "name": "AOE_CITYHALL_BUNDLE_URL", "value": bundle.url },
-            { "name": "AOE_CITYHALL_BUNDLE_TOKEN", "value": bundle.token },
-        ]),
-        None => json!([]),
+/// `BTreeMap` rather than `Vec` because this becomes a Secret's `stringData`
+/// object, which has no order to preserve, and a stable key order keeps the
+/// rendered manifest deterministic for tests and diffs.
+fn env_values(spec: &WorkspaceSpec) -> std::collections::BTreeMap<String, String> {
+    let mut values = std::collections::BTreeMap::new();
+    if let Some(bundle) = &spec.bundle {
+        values.insert("AOE_CITYHALL_BUNDLE_URL".to_string(), bundle.url.clone());
+        values.insert(
+            "AOE_CITYHALL_BUNDLE_TOKEN".to_string(),
+            bundle.token.clone(),
+        );
     }
+    for (name, value) in &spec.agent_env.pairs {
+        values.insert(name.clone(), value.expose().to_string());
+    }
+    values
 }
 
 /// The desired-state manifests for one workspace: PVC + Service + Deployment,
@@ -284,75 +297,111 @@ fn render_manifests(
     if let Some(class) = storage_class {
         pvc_spec["storageClassName"] = json!(class);
     }
+
+    let mut container = json!({
+        "name": "aoe",
+        "image": spec.image,
+        // No `command`: that would override the image's entrypoint, which is
+        // where the reference image relocates each agent's config directory
+        // onto the volume. Passing the whole command as `args` instead matches
+        // what the docker backend does, and an image with no entrypoint runs
+        // these as the command anyway.
+        "args": [
+            "aoe",
+            "serve",
+            "--host", "0.0.0.0",
+            "--port", AOE_PORT.to_string(),
+            // CityHall's session gates the proxy; the
+            // shipped NetworkPolicy keeps other pods out.
+            "--auth", "none",
+            "--behind-proxy",
+            // The proxy forwards the public Host and
+            // Origin, both of which aoe's DNS-rebinding
+            // gate requires on the allowlist.
+            "--allowed-host", proxy_allowed_host(),
+            "--allowed-origin", proxy_allowed_origin(),
+            // Locked-down end-user client: composer +
+            // structured view only.
+            "--cityhall",
+        ],
+        "ports": [{ "containerPort": AOE_PORT }],
+        "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
+    });
+
+    let env_values = env_values(spec);
+    let mut items = vec![
+        json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": { "name": pvc_name(spec.user_id), "namespace": namespace, "labels": labels },
+            "spec": pvc_spec,
+        }),
+        json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": { "name": name, "namespace": namespace, "labels": labels },
+            "spec": {
+                "selector": { "cityhall.workspace": name },
+                "ports": [{ "port": AOE_PORT, "targetPort": AOE_PORT }],
+            },
+        }),
+    ];
+
+    // A literal `env` array on the Deployment would put the bundle token and
+    // every agent credential in plaintext anywhere `kubectl get deployment -o
+    // yaml` reaches. Routing them through a dedicated Secret and `envFrom`
+    // keeps the Deployment manifest itself free of the values; note that a
+    // Kubernetes Secret is not encrypted at rest unless the cluster enables
+    // that (e.g. a KMS-backed EncryptionConfiguration), so this is about
+    // keeping literals out of the Deployment, not strong secrecy on its own.
+    if !env_values.is_empty() {
+        container["envFrom"] = json!([{ "secretRef": { "name": secret_name(spec.user_id) } }]);
+        items.push(json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": { "name": secret_name(spec.user_id), "namespace": namespace, "labels": labels },
+            "type": "Opaque",
+            "stringData": env_values,
+        }));
+    }
+
+    items.push(json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": name, "namespace": namespace, "labels": labels },
+        "spec": {
+            "replicas": 1,
+            // Never two pods on one RWO volume during a version change.
+            "strategy": { "type": "Recreate" },
+            "selector": { "matchLabels": { "cityhall.workspace": name } },
+            "template": {
+                "metadata": {
+                    "labels": labels,
+                    "annotations": {
+                        // Version drives pod recreation on apply.
+                        "cityhall.workspace.version": spec.version,
+                        // Editing the Secret alone does not restart running
+                        // pods; changing this annotation changes the pod
+                        // template, which is what makes the Deployment roll
+                        // to pick up a new credential set.
+                        "cityhall.workspace/env-fingerprint": spec.agent_env.fingerprint,
+                    },
+                },
+                "spec": {
+                    "containers": [container],
+                    "volumes": [{
+                        "name": "data",
+                        "persistentVolumeClaim": { "claimName": pvc_name(spec.user_id) },
+                    }],
+                },
+            },
+        },
+    }));
+
     json!({
         "apiVersion": "v1",
         "kind": "List",
-        "items": [
-            {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": { "name": pvc_name(spec.user_id), "namespace": namespace, "labels": labels },
-                "spec": pvc_spec,
-            },
-            {
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": { "name": name, "namespace": namespace, "labels": labels },
-                "spec": {
-                    "selector": { "cityhall.workspace": name },
-                    "ports": [{ "port": AOE_PORT, "targetPort": AOE_PORT }],
-                },
-            },
-            {
-                "apiVersion": "apps/v1",
-                "kind": "Deployment",
-                "metadata": { "name": name, "namespace": namespace, "labels": labels },
-                "spec": {
-                    "replicas": 1,
-                    // Never two pods on one RWO volume during a version change.
-                    "strategy": { "type": "Recreate" },
-                    "selector": { "matchLabels": { "cityhall.workspace": name } },
-                    "template": {
-                        "metadata": {
-                            "labels": labels,
-                            // Version drives pod recreation on apply.
-                            "annotations": { "cityhall.workspace.version": spec.version },
-                        },
-                        "spec": {
-                            "containers": [{
-                                "name": "aoe",
-                                "image": spec.image,
-                                "command": ["aoe"],
-                                "args": [
-                                    "serve",
-                                    "--host", "0.0.0.0",
-                                    "--port", AOE_PORT.to_string(),
-                                    // CityHall's session gates the proxy; the
-                                    // shipped NetworkPolicy keeps other pods out.
-                                    "--auth", "none",
-                                    "--behind-proxy",
-                                    // The proxy forwards the public Host and
-                                    // Origin, both of which aoe's DNS-rebinding
-                                    // gate requires on the allowlist.
-                                    "--allowed-host", proxy_allowed_host(),
-                                    "--allowed-origin", proxy_allowed_origin(),
-                                    // Locked-down end-user client: composer +
-                                    // structured view only.
-                                    "--cityhall",
-                                ],
-                                "env": bundle_env(spec),
-                                "ports": [{ "containerPort": AOE_PORT }],
-                                "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
-                            }],
-                            "volumes": [{
-                                "name": "data",
-                                "persistentVolumeClaim": { "claimName": pvc_name(spec.user_id) },
-                            }],
-                        },
-                    },
-                },
-            },
-        ],
+        "items": items,
     })
 }
 
@@ -408,38 +457,66 @@ mod tests {
             image: "registry.example.com/aoe:v1.0.0".to_string(),
             version: "v1.0.0".to_string(),
             bundle: None,
+            agent_env: crate::agent_credentials::AgentEnv::default(),
         }
     }
 
-    #[test]
-    fn bundle_access_becomes_container_env() {
-        let spec = WorkspaceSpec {
+    /// A distinctive credential value: any assertion below that finds this
+    /// substring outside the Secret item has found a leak into the
+    /// Deployment.
+    const SECRET_VALUE: &str = "sk-super-secret-value";
+
+    fn spec_with_bundle_and_agent_env() -> WorkspaceSpec {
+        WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
                 token: "tok".to_string(),
             }),
+            agent_env: crate::agent_credentials::AgentEnv {
+                pairs: vec![(
+                    "ANTHROPIC_API_KEY".to_string(),
+                    crate::crypto::Secret::new(SECRET_VALUE.to_string()),
+                )],
+                fingerprint: "abc123fingerprint".to_string(),
+            },
             ..spec()
-        };
-        let env = bundle_env(&spec);
-        assert_eq!(env[0]["name"], "AOE_CITYHALL_BUNDLE_URL");
+        }
+    }
+
+    #[test]
+    fn env_values_collects_bundle_and_agent_pairs() {
+        let values = env_values(&spec_with_bundle_and_agent_env());
         assert_eq!(
-            env[0]["value"],
-            "http://cityhall.cityhall.svc:3000/api/workspace-bundle"
+            values.get("AOE_CITYHALL_BUNDLE_URL").map(String::as_str),
+            Some("http://cityhall.cityhall.svc:3000/api/workspace-bundle")
         );
-        assert_eq!(env[1]["name"], "AOE_CITYHALL_BUNDLE_TOKEN");
-        assert_eq!(env[1]["value"], "tok");
+        assert_eq!(
+            values.get("AOE_CITYHALL_BUNDLE_TOKEN").map(String::as_str),
+            Some("tok")
+        );
+        assert_eq!(
+            values.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some(SECRET_VALUE)
+        );
+    }
+
+    #[test]
+    fn env_values_is_empty_with_nothing_to_inject() {
+        assert!(env_values(&spec()).is_empty());
     }
 
     #[test]
     fn names_are_deterministic() {
         assert_eq!(object_name(42), "cityhall-workspace-u42");
         assert_eq!(pvc_name(42), "cityhall-workspace-u42-data");
+        assert_eq!(secret_name(42), "cityhall-workspace-u42-env");
     }
 
     #[test]
     fn manifests_render_pvc_service_and_recreate_deployment() {
         let m = render_manifests(&spec(), "cityhall", "5Gi", None);
         let items = m["items"].as_array().unwrap();
+        // No credentials configured: PVC + Service + Deployment only, no Secret.
         assert_eq!(items.len(), 3);
         let (pvc, svc, dep) = (&items[0], &items[1], &items[2]);
 
@@ -460,11 +537,25 @@ mod tests {
             dep["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace.version"],
             "v1.0.0"
         );
+        // No credentials: an empty fingerprint annotation, not a missing key,
+        // so the rendered manifest shape stays stable.
+        assert_eq!(
+            dep["spec"]["template"]["metadata"]["annotations"]
+                ["cityhall.workspace/env-fingerprint"],
+            ""
+        );
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
-        // No bundle configured: an empty env list, not a missing key, so the
-        // rendered manifest shape stays stable.
-        assert_eq!(container["env"], json!([]));
+        // The whole command travels in `args`, and `command` stays absent so the
+        // image entrypoint still runs. Setting `command` would override it, and
+        // the reference image relocates each agent's config directory onto the
+        // volume from there, so a workspace would silently stop persisting an
+        // installed agent and its login.
+        assert!(container.get("command").is_none());
+        assert_eq!(container["args"][0], "aoe");
+        assert_eq!(container["args"][1], "serve");
+        // Nothing to inject: no envFrom referencing a Secret that does not exist.
+        assert!(container.get("envFrom").is_none());
         assert_eq!(
             container["volumeMounts"][0]["mountPath"],
             "/home/aoe/.config/agent-of-empires"
@@ -474,6 +565,54 @@ mod tests {
         assert!(args.iter().any(|a| a == "--cityhall"));
         // --behind-proxy without this makes `aoe serve` refuse to start.
         assert!(args.iter().any(|a| a == "--allowed-host"));
+    }
+
+    /// The Secret carries the values; the Deployment references it through
+    /// `envFrom` and must not contain any literal secret value itself.
+    #[test]
+    fn manifests_route_credentials_through_a_secret_not_the_deployment() {
+        let spec = spec_with_bundle_and_agent_env();
+        let m = render_manifests(&spec, "cityhall", "5Gi", None);
+        let items = m["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4, "expected PVC, Service, Secret, Deployment");
+
+        let secret = items
+            .iter()
+            .find(|i| i["kind"] == "Secret")
+            .expect("a Secret must be emitted when there is something to inject");
+        assert_eq!(secret["metadata"]["name"], "cityhall-workspace-u42-env");
+        assert_eq!(secret["metadata"]["labels"]["cityhall.user_id"], "42");
+        assert_eq!(secret["stringData"]["ANTHROPIC_API_KEY"], SECRET_VALUE);
+        assert_eq!(secret["stringData"]["AOE_CITYHALL_BUNDLE_TOKEN"], "tok");
+
+        let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
+        let container = &dep["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(
+            container["envFrom"][0]["secretRef"]["name"],
+            "cityhall-workspace-u42-env"
+        );
+        assert!(container.get("env").is_none());
+
+        // The Deployment's own JSON must never carry the literal value, only
+        // the Secret does.
+        let dep_text = dep.to_string();
+        assert!(
+            !dep_text.contains(SECRET_VALUE),
+            "credential value leaked into the Deployment: {dep_text}"
+        );
+        assert!(
+            !dep_text.contains("tok"),
+            "bundle token leaked into the Deployment: {dep_text}"
+        );
+
+        // Changing the fingerprint changes the pod template, which is what
+        // makes the Deployment roll on apply (editing the Secret alone
+        // does not restart running pods).
+        assert_eq!(
+            dep["spec"]["template"]["metadata"]["annotations"]
+                ["cityhall.workspace/env-fingerprint"],
+            "abc123fingerprint"
+        );
     }
 
     #[test]

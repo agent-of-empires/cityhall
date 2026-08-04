@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, can, type GitCredential, type Me } from "../lib/api";
+import { AgentCredentialsEditor } from "./AgentCredentials";
 import { TopBar } from "./TopBar";
 import { Button, ErrorText, Field, Input } from "./ui";
 
@@ -72,6 +73,25 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
       apply(await api.deleteGitCredential());
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : "could not remove your git credential");
+    }
+  }
+
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const [restarted, setRestarted] = useState(false);
+
+  async function restart() {
+    if (!confirm("Restart your workspace? Any running agent sessions inside it will end.")) return;
+    setRestarting(true);
+    setRestartError(null);
+    setRestarted(false);
+    try {
+      await api.restartMyWorkspace();
+      setRestarted(true);
+    } catch (err) {
+      setRestartError(err instanceof ApiError ? err.message : "could not restart your workspace");
+    } finally {
+      setRestarting(false);
     }
   }
 
@@ -160,6 +180,23 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
                 </Button>
               </div>
             </form>
+
+            <AgentCredentialsEditor
+              load={api.getAgentCredentials}
+              update={api.updateAgentCredential}
+              remove={api.deleteAgentCredential}
+            />
+
+            <div className="space-y-3 rounded-lg border border-surface-700 p-5">
+              <div className="flex items-center gap-3">
+                <Button variant="default" disabled={restarting} onClick={() => void restart()}>
+                  {restarting ? "Restarting..." : "Restart workspace"}
+                </Button>
+                <p className="text-sm text-text-secondary">Restarting is what applies any credential changes above.</p>
+              </div>
+              {restartError && <ErrorText>{restartError}</ErrorText>}
+              {restarted && <p className="text-sm text-status-running">Workspace restarted.</p>}
+            </div>
           </>
         )}
       </main>
