@@ -124,15 +124,20 @@ export interface MyWorkspace {
   proxy_origin: string;
 }
 
-/// Who decides whether a workspace sends aoe telemetry.
+/// Who decides whether a workspace sends aoe telemetry. The three values this
+/// CityHall knows and can select; a stored policy is a plain string because a
+/// newer CityHall may have written one that is none of these.
 export type TelemetryPolicy = "user_choice" | "force_on" | "force_off";
 
 export interface WorkspaceSettings {
   image_template: string;
   default_version: string | null;
   idle_stop_minutes: number;
-  /// The stored policy, which is what a save writes.
-  telemetry_policy: TelemetryPolicy;
+  /// The stored policy, verbatim. Usually a `TelemetryPolicy`, but an opaque
+  /// value written by a newer CityHall is returned as-is so a save can echo it
+  /// back rather than flattening it; `effective_telemetry_policy` is where such
+  /// a value reads as `user_choice`.
+  telemetry_policy: string;
   /// Set when WORKSPACE_TELEMETRY_POLICY pins the policy for the deployment, in
   /// which case it wins over the stored one.
   telemetry_policy_override: TelemetryPolicy | null;
@@ -146,7 +151,9 @@ export interface WorkspaceSettingsUpdate {
   image_template: string;
   default_version: string | null;
   idle_stop_minutes: number;
-  telemetry_policy: TelemetryPolicy;
+  /// A `TelemetryPolicy`, or the stored value echoed back unchanged to keep an
+  /// opaque one. The server rejects any other string.
+  telemetry_policy: string;
   /// Recreate every running workspace so a saved policy applies now, which ends
   /// whatever their users are running. Stopped workspaces never need it.
   restart_running: boolean;

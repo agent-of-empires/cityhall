@@ -18,6 +18,10 @@ export function telemetryOverrideNote(override: TelemetryPolicy | null): string 
   return `Pinned to "${TELEMETRY_LABELS[override]}" by WORKSPACE_TELEMETRY_POLICY in this deployment's environment. A saved choice is stored for when that variable is removed, and does not apply while it is set.`;
 }
 
+export function isKnownTelemetryPolicy(value: string): value is TelemetryPolicy {
+  return value in TELEMETRY_LABELS;
+}
+
 /// The policy workspaces would run under: the environment override when there is
 /// one, otherwise whatever is currently selected.
 ///
@@ -25,8 +29,13 @@ export function telemetryOverrideNote(override: TelemetryPolicy | null): string 
 /// choosing it rather than only after the fact. The server computes the same
 /// thing from the stored value; reading its answer here instead would be a
 /// save behind whatever the form shows.
-export function effectiveTelemetryPolicy(selected: TelemetryPolicy, override: TelemetryPolicy | null): TelemetryPolicy {
-  return override ?? selected;
+///
+/// A selection this build does not know is a policy written by a newer CityHall,
+/// which the server also reads as `user_choice`, so neither forced-state notice
+/// claims something that is not being enforced here.
+export function effectiveTelemetryPolicy(selected: string, override: TelemetryPolicy | null): TelemetryPolicy {
+  if (override) return override;
+  return isKnownTelemetryPolicy(selected) ? selected : "user_choice";
 }
 
 export function WorkspaceSettingsSection() {
@@ -35,7 +44,9 @@ export function WorkspaceSettingsSection() {
   const [imageTemplate, setImageTemplate] = useState("");
   const [defaultVersion, setDefaultVersion] = useState("");
   const [idleStopMinutes, setIdleStopMinutes] = useState(30);
-  const [telemetryPolicy, setTelemetryPolicy] = useState<TelemetryPolicy>("user_choice");
+  // A plain string, not a TelemetryPolicy: a policy stored by a newer CityHall
+  // has to round-trip through this form untouched.
+  const [telemetryPolicy, setTelemetryPolicy] = useState<string>("user_choice");
   const [telemetryOverride, setTelemetryOverride] = useState<TelemetryPolicy | null>(null);
   const [restartRunning, setRestartRunning] = useState(false);
   const [versions, setVersions] = useState<string[]>([]);
@@ -133,7 +144,13 @@ export function WorkspaceSettingsSection() {
             />
           </Field>
           <Field label="aoe telemetry">
-            <Select value={telemetryPolicy} onChange={(e) => setTelemetryPolicy(e.target.value as TelemetryPolicy)}>
+            <Select value={telemetryPolicy} onChange={(e) => setTelemetryPolicy(e.target.value)}>
+              {/* Keeps an unrecognized stored policy selectable, so leaving the
+                  control alone saves it back verbatim instead of the browser
+                  silently falling back to the first option. */}
+              {!isKnownTelemetryPolicy(telemetryPolicy) && (
+                <option value={telemetryPolicy}>Set by a newer CityHall ({telemetryPolicy})</option>
+              )}
               {(Object.keys(TELEMETRY_LABELS) as TelemetryPolicy[]).map((policy) => (
                 <option key={policy} value={policy}>
                   {TELEMETRY_LABELS[policy]}

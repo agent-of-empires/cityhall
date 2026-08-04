@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectiveTelemetryPolicy, telemetryOverrideNote } from "./WorkspaceSettings";
+import { effectiveTelemetryPolicy, isKnownTelemetryPolicy, telemetryOverrideNote } from "./WorkspaceSettings";
 
 // There is no @testing-library/react in this repo, so this covers the one
 // non-obvious predicate behind the settings form: an environment-pinned policy
@@ -32,5 +32,13 @@ describe("effectiveTelemetryPolicy", () => {
   it("lets the override win", () => {
     expect(effectiveTelemetryPolicy("user_choice", "force_on")).toBe("force_on");
     expect(effectiveTelemetryPolicy("force_on", "force_off")).toBe("force_off");
+  });
+
+  // A policy stored by a newer CityHall round-trips through the form untouched,
+  // but this build enforces nothing for it, exactly as the server reads it.
+  it("treats a policy it does not know as user_choice", () => {
+    expect(effectiveTelemetryPolicy("force_maybe", null)).toBe("user_choice");
+    expect(isKnownTelemetryPolicy("force_maybe")).toBe(false);
+    expect(isKnownTelemetryPolicy("force_off")).toBe(true);
   });
 });
