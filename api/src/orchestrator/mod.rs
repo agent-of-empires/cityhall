@@ -482,6 +482,64 @@ mod tests {
         }
     }
 
+    /// The two behaviors layered on top of `parse`, and what the rest of the
+    /// feature leans on: an unset or blank variable means "no override" so the
+    /// stored setting decides, and a bad value is an error naming itself so
+    /// `from_env` can refuse to start rather than quietly serving `user_choice`
+    /// to a deployment that meant to force telemetry off.
+    #[test]
+    fn the_telemetry_override_is_optional_and_strict() {
+        let _guard = TelemetryEnvGuard::acquire();
+
+        for unset in ["", "   "] {
+            std::env::set_var(TELEMETRY_POLICY_ENV, unset);
+            assert_eq!(telemetry_policy_override(), Ok(None), "{unset:?}");
+        }
+        std::env::remove_var(TELEMETRY_POLICY_ENV);
+        assert_eq!(telemetry_policy_override(), Ok(None));
+
+        std::env::set_var(TELEMETRY_POLICY_ENV, " force_off ");
+        assert_eq!(
+            telemetry_policy_override(),
+            Ok(Some(TelemetryPolicy::ForceOff))
+        );
+
+        std::env::set_var(TELEMETRY_POLICY_ENV, "off");
+        let err = telemetry_policy_override().unwrap_err();
+        assert!(err.contains("off"), "must name the value: {err}");
+        assert!(err.contains(TELEMETRY_POLICY_ENV), "{err}");
+    }
+
+    /// Serializes the tests that write `WORKSPACE_TELEMETRY_POLICY` and restores
+    /// what was there, the same shape as `crypto::guard_key_env`. Restoring on
+    /// drop rather than at the end of a test body, because a panic unwinds past
+    /// cleanup written after it and the next test would read the leftovers.
+    struct TelemetryEnvGuard {
+        #[allow(dead_code)]
+        lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TelemetryEnvGuard {
+        fn acquire() -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            TelemetryEnvGuard {
+                lock,
+                previous: std::env::var_os(TELEMETRY_POLICY_ENV),
+            }
+        }
+    }
+
+    impl Drop for TelemetryEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(TELEMETRY_POLICY_ENV, value),
+                None => std::env::remove_var(TELEMETRY_POLICY_ENV),
+            }
+        }
+    }
+
     /// A stored value is read leniently in the one safe direction: a policy this
     /// build does not know cannot start forcing anything on users.
     #[test]
