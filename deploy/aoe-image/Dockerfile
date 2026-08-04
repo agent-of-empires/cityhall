@@ -4,6 +4,11 @@
 #
 #   docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 #
+# An unreleased aoe is compiled from source instead of downloaded:
+#
+#   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<sha> \
+#     -t cityhall/aoe:git-<sha> deploy/aoe-image/
+#
 # The tag must match the workspace settings image template (default
 # `cityhall/aoe:{version}`) rendered with the version users are pinned to.
 # CityHall starts containers from this image with:
@@ -16,17 +21,21 @@
 # agent's login on the volume so both survive a container recreate. An operator
 # who wants a fixed set builds a derived image; see docs/workspaces.md.
 
-# Node is the runtime for the agents aoe launches through npm (claude, codex,
-# gemini, pi). aoe's floor is Node 20 and its own container image uses 22.
-FROM node:22-bookworm-slim
+# Which stage supplies /out/aoe: `release` downloads a published tarball,
+# `git` compiles a commit from source. Declared before the first FROM so a
+# stage name can interpolate it. BuildKit builds only the stage that is
+# actually reached, so a release build never pays for the toolchain stages and
+# a source build never runs the download.
+ARG AOE_SOURCE=release
 
 # TARGETARCH is set automatically by buildx; plain `docker build` falls back
 # to the build host's architecture.
+FROM debian:bookworm-slim AS aoe-release
 ARG AOE_VERSION
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tmux \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 1) \
@@ -35,11 +44,80 @@ RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 
          arm64) AOE_ARCH=arm64 ;; \
          *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
        esac \
+    && mkdir -p /out \
     # The tarball contains a single arch-suffixed binary (aoe-linux-<arch>).
     && curl -fsSL "https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}/aoe-linux-${AOE_ARCH}.tar.gz" \
-       | tar -xz -C /usr/local/bin \
-    && mv "/usr/local/bin/aoe-linux-${AOE_ARCH}" /usr/local/bin/aoe \
-    && chmod +x /usr/local/bin/aoe
+       | tar -xz -C /out \
+    && mv "/out/aoe-linux-${AOE_ARCH}" /out/aoe
+
+# Source builds happen in two stages so neither toolchain has to carry the
+# other: this one produces the dashboard bundle, the next compiles the binary
+# against it. Node, not Rust, because aoe's build.rs shells out to npm.
+FROM node:22-bookworm-slim AS aoe-web
+ARG AOE_GIT_SHA
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# A commit, not a ref: CityHall resolves the ref before it ever gets here, so
+# the image tag and the version drift label name one immutable build.
+# --filter=blob:none fetches every commit (any sha stays checkout-able) while
+# leaving the history's file contents on the server.
+RUN test -n "$AOE_GIT_SHA" || (echo "AOE_GIT_SHA build arg is required when AOE_SOURCE=git" && exit 1) \
+    && git clone --filter=blob:none --no-checkout \
+       https://github.com/agent-of-empires/agent-of-empires.git /src \
+    && git -C /src checkout --detach "$AOE_GIT_SHA"
+
+RUN cd /src/web && npm ci && npm run build
+
+FROM rust:1-bookworm AS aoe-git
+
+# git2 vendors OpenSSL, which builds with perl; aws-lc-sys builds with cmake;
+# the vendored libgit2 links zlib.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake perl pkg-config zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=aoe-web /src /src
+
+# AOE_WEB_DIST makes aoe's build.rs copy a prebuilt bundle and return before it
+# looks for npm, so this stage needs no Node. It must not point at
+# /src/web/dist: build.rs deletes that directory before copying into it.
+COPY --from=aoe-web /src/web/dist /web-dist
+ENV AOE_WEB_DIST=/web-dist
+
+# The checkout's own .cargo/config.toml asks for 8 parallel rustc jobs, which
+# is what exhausts memory in a small Docker VM rather than the optimization
+# level on its own. Both are build args because the right values depend on how
+# much the build host has to spare, and a cargo env var beats config.toml.
+ARG CARGO_BUILD_JOBS=2
+ARG CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=1
+ENV CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS
+ENV CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=$CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL
+
+# `dev-release` is aoe's own profile for an optimized build without LTO, which
+# is the cheapest one that still produces a usable binary. `serve` is the
+# feature that ships the dashboard CityHall proxies to.
+RUN cd /src \
+    && cargo build --profile dev-release --features serve \
+    && mkdir -p /out \
+    && cp target/dev-release/aoe /out/aoe
+
+# Resolves to aoe-release or aoe-git. An unknown AOE_SOURCE fails the build
+# here, naming the stage it could not find.
+FROM aoe-${AOE_SOURCE} AS aoe-binary
+
+# Node is the runtime for the agents aoe launches through npm (claude, codex,
+# gemini, pi). aoe's floor is Node 20 and its own container image uses 22.
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=aoe-binary /out/aoe /usr/local/bin/aoe
+RUN chmod +x /usr/local/bin/aoe
 
 # The node base image already owns uid 1000. `aoe` has to keep that uid: it is
 # what every volume written by an earlier build of this image is owned by, and a
