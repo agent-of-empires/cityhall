@@ -309,6 +309,12 @@ async fn provision_run(
 
     let mut cmd = Command::new(cli);
     cmd.args(args)
+        // The reference image needs BuildKit: it writes its entrypoint with a
+        // COPY heredoc and selects a build stage by argument, and the classic
+        // builder supports neither, silently building every stage instead.
+        // Asking for it explicitly turns a missing buildx plugin into a clear
+        // error here rather than a confusing failure inside the wrong stage.
+        .env("DOCKER_BUILDKIT", "1")
         // kill_on_drop reaps the CLI when the timeout fires; the docker
         // daemon may still finish server-side, which the next existence
         // check picks up.
@@ -346,19 +352,28 @@ async fn provision_run(
     }
 }
 
-/// The last ~500 bytes of a provisioning log, for error messages.
+/// The tail of a provisioning log, for error messages. Whole lines only: a
+/// byte-counted tail cuts mid-word, and the result reads as corruption rather
+/// than as the end of a build log.
 fn log_tail(path: &std::path::Path) -> String {
+    const MAX_LINES: usize = 12;
+    const MAX_BYTES: usize = 2000;
     match std::fs::read_to_string(path) {
         Ok(s) => {
-            let tail: String = s
-                .chars()
-                .rev()
-                .take(500)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            tail.trim().to_string()
+            let mut tail = String::new();
+            for line in s.lines().rev().take(MAX_LINES) {
+                if tail.len() + line.len() > MAX_BYTES {
+                    break;
+                }
+                tail.insert_str(0, line);
+                tail.insert(0, '\n');
+            }
+            let tail = tail.trim();
+            if tail.is_empty() {
+                "command failed (no output)".to_string()
+            } else {
+                tail.to_string()
+            }
         }
         Err(_) => "command failed (no log available)".to_string(),
     }
@@ -845,6 +860,32 @@ mod tests {
 
         let wrong_network = container_state("v1.0.0", Some("net-a"), None);
         assert!(needs_recreate(&wrong_network, &spec, Some("net-b")));
+    }
+
+    #[test]
+    fn a_log_tail_keeps_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("cityhall-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log");
+
+        // Long enough that a byte-counted tail would land mid-line, which is
+        // what made a real failure read as "SION build arg is required".
+        let body: String = (0..80)
+            .map(|i| format!("step {i}: AOE_VERSION build arg is required, and then some\n"))
+            .collect();
+        std::fs::write(&path, &body).unwrap();
+        let tail = log_tail(&path);
+        assert!(tail.lines().count() <= 12);
+        assert!(tail.starts_with("step "), "cut mid-line: {tail}");
+        assert!(tail.ends_with("some"));
+
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(log_tail(&path), "command failed (no output)");
+        assert_eq!(
+            log_tail(&dir.join("absent")),
+            "command failed (no log available)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

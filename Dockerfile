@@ -39,6 +39,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim AS clis
 ARG TARGETARCH
 ARG DOCKER_VERSION=27.5.1
+ARG BUILDX_VERSION=v0.20.1
 ARG KUBECTL_VERSION=v1.32.2
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -50,6 +51,17 @@ RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
        esac \
     && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" \
        | tar -xz --strip-components=1 -C /usr/local/bin docker/docker \
+    # The reference workspace image needs BuildKit: it writes the entrypoint
+    # with a COPY heredoc, and it selects a build stage by argument so an
+    # unreachable stage is skipped. The static docker tarball ships no CLI
+    # plugins, and this CLI has no built-in BuildKit client, so without buildx
+    # `docker build` silently falls back to the classic builder, which supports
+    # neither. Nothing else in CityHall builds an image, so this is the only
+    # reason it is here.
+    && mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+       "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx \
     && curl -fsSL -o /usr/local/bin/kubectl \
        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH:-$(dpkg --print-architecture)}/kubectl" \
     && chmod +x /usr/local/bin/kubectl
@@ -61,6 +73,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=clis /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=clis /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
 COPY --from=clis /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY --from=api /usr/local/bin/cityhall /usr/local/bin/cityhall
 COPY --from=web /web/dist ./web/dist
