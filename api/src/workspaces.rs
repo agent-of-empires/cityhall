@@ -255,6 +255,13 @@ pub fn effective_version(
         .or_else(|| settings.default_version.clone())
 }
 
+/// Stays synchronous and never loads credentials. `ensure_started` returns
+/// from `state.endpoints` on almost every proxied request (the proxy calls it
+/// per request), so loading and decrypting credentials during spec
+/// construction would run a query plus several AES-GCM decryptions on every
+/// request for a value used only when a container is actually created.
+/// Callers that actually reconcile populate `agent_env` themselves just
+/// before invoking the orchestrator.
 pub fn build_spec(
     settings: &workspace_settings::Model,
     row: &workspace::Model,
@@ -272,6 +279,7 @@ pub fn build_spec(
         image: render_image(&settings.image_template, &version),
         version,
         bundle,
+        agent_env: crate::agent_credentials::AgentEnv::default(),
     })
 }
 
@@ -287,10 +295,16 @@ impl From<OrchestratorError> for AppError {
 /// Start (or resume) `user_id`'s workspace and return its address. This is the
 /// request-driven start path: the proxy calls it on every request, the admin
 /// start endpoint calls it explicitly. Serialized per user against the sweeper.
+///
+/// The endpoint cache key deliberately does NOT include the credential
+/// fingerprint: a saved credential must not make the next proxied request
+/// recreate the container and kill a session the user is actively running.
+/// Credentials apply on the next create, which happens via the explicit
+/// restart route, an idle stop, or first launch.
 pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, AppError> {
     let cfg = settings(&state.db).await?;
     let row = get_or_create(&state.db, user_id).await?;
-    let spec = build_spec(&cfg, &row)?;
+    let mut spec = build_spec(&cfg, &row)?;
 
     // Hot path: a cached address means no backend round-trip per request.
     if let Some(addr) = state.endpoints.get(user_id, &spec.version, &spec.image) {
@@ -305,6 +319,9 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, Ap
         state.activity.touch(user_id);
         return Ok(addr);
     }
+    // Only materialize credentials once a container is actually about to be
+    // created or reconciled, not on the cache-hit path above.
+    spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
     let addr = state.orchestrator.ensure_started(&spec).await?;
     state
         .endpoints
@@ -328,7 +345,7 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
     // A pre-bundle row would otherwise be recreated without a token, and so
     // without its configuration.
     let row = ensure_bundle_token(&state.db, row).await?;
-    let spec = build_spec(&cfg, &row)?;
+    let mut spec = build_spec(&cfg, &row)?;
 
     let lock = state.locks.lock_for(user_id);
     let _guard = lock.lock().await;
@@ -338,6 +355,7 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
     ) {
         return Ok(());
     }
+    spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
     state.endpoints.invalidate(user_id);
     let addr = state.orchestrator.ensure_started(&spec).await?;
     state
@@ -650,5 +668,23 @@ mod tests {
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
         assert!(build_spec(&cfg(None), &row).is_err());
+    }
+
+    /// `build_spec` must stay synchronous and must never load credentials:
+    /// `ensure_started` calls it on the hot cache-hit path taken by almost
+    /// every proxied request, so a query here would run per request for a
+    /// value only needed when a container is actually created.
+    #[tokio::test]
+    async fn build_spec_does_not_hit_the_db_for_credentials() {
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        let spec = build_spec(&cfg(Some("v1.0.0")), &row).unwrap();
+        assert_eq!(
+            spec.agent_env,
+            crate::agent_credentials::AgentEnv::default()
+        );
+        assert_eq!(spec.agent_env.fingerprint, "");
+        assert!(spec.agent_env.pairs.is_empty());
     }
 }

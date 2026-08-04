@@ -25,6 +25,12 @@ pub struct WorkspaceSpec {
     pub version: String,
     /// Where the workspace fetches its config bundle, when one is configured.
     pub bundle: Option<BundleAccess>,
+    /// Agent credentials to inject, and a fingerprint identifying this exact set
+    /// so a backend can detect a credential change as drift. `AgentEnv`'s
+    /// `Debug` redacts every value, so `WorkspaceSpec`'s derived `Debug` stays
+    /// safe; a bare `Vec<(String, String)>` here would be a leak waiting for a
+    /// future tracing call.
+    pub agent_env: crate::agent_credentials::AgentEnv,
 }
 
 /// How a workspace reaches its own config bundle.
@@ -86,7 +92,8 @@ impl std::error::Error for OrchestratorError {}
 pub trait Orchestrator: Send + Sync {
     /// Reconcile the user's workspace to "running with `spec`" and return its
     /// reachable address. Recreates the runtime object (keeping the volume)
-    /// when the running version differs from `spec.version`.
+    /// when the running version, OR the agent-credential fingerprint, differs
+    /// from what is currently running.
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError>;
 
     /// Stop the workspace, keeping its data volume.

@@ -12,6 +12,7 @@
 //!   container on the named docker network (socket mounted); workspaces join
 //!   that network with no published ports and are dialed by container DNS.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,6 +110,7 @@ impl DockerCliOrchestrator {
                     running: raw.state.running,
                     version_label: labels.get("cityhall.workspace.version").cloned(),
                     network_label: labels.get("cityhall.workspace.network").cloned(),
+                    env_label: labels.get("cityhall.workspace.env").cloned(),
                 }))
             }
             None => Ok(None),
@@ -161,7 +163,21 @@ impl DockerCliOrchestrator {
         ])
         .await?;
 
-        let args = run_args(spec, self.network.as_deref());
+        // The guard's Drop removes the file on every exit path below,
+        // including an early `?` return from a failed or timed-out
+        // `docker run`; the values must not linger on disk after the CLI
+        // returns.
+        let contents = env_file_contents(spec);
+        let env_file = if contents.is_empty() {
+            None
+        } else {
+            Some(write_env_file(spec.user_id, &contents)?)
+        };
+        let args = run_args(
+            spec,
+            self.network.as_deref(),
+            env_file.as_ref().map(EnvFileGuard::path),
+        );
         self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         Ok(())
@@ -313,8 +329,88 @@ fn log_tail(path: &std::path::Path) -> String {
     }
 }
 
+/// `KEY=value` lines for everything the workspace's environment needs: the
+/// bundle location and token (when configured), then every agent credential.
+/// One line per pair, in that order; `agent_credentials::validate_value`
+/// guarantees a value can contain no NUL, newline, or carriage return before
+/// it ever reaches here, which this line-oriented format depends on.
+fn env_file_contents(spec: &WorkspaceSpec) -> String {
+    let mut out = String::new();
+    if let Some(bundle) = &spec.bundle {
+        out.push_str(&format!("AOE_CITYHALL_BUNDLE_URL={}\n", bundle.url));
+        out.push_str(&format!("AOE_CITYHALL_BUNDLE_TOKEN={}\n", bundle.token));
+    }
+    for (name, value) in &spec.agent_env.pairs {
+        out.push_str(&format!("{name}={}\n", value.expose()));
+    }
+    out
+}
+
+/// A workspace's `--env-file` on disk, deleted as soon as it goes out of
+/// scope. `docker run` only needs the file to exist for the moment it reads
+/// it client-side; an RAII guard rather than an explicit remove-on-every-path
+/// means an early `?` return from a failed or timed-out `docker run` still
+/// cleans it up.
+struct EnvFileGuard(PathBuf);
+
+impl EnvFileGuard {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for EnvFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Write `contents` to a fresh, mode-0600 file in the process temp dir (never
+/// a directory mounted into a container), named so a concurrent create for
+/// any user cannot collide with it. The permission is set at creation time
+/// (`mode` on `OpenOptions`) rather than after writing, so there is no window
+/// where the file is world-readable.
+fn write_env_file(user_id: i32, contents: &str) -> Result<EnvFileGuard, OrchestratorError> {
+    use std::io::Write;
+
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix)
+        .map_err(|_| OrchestratorError::Runtime("secure RNG failure".to_string()))?;
+    let suffix = u64::from_le_bytes(suffix);
+    let path = std::env::temp_dir().join(format!(
+        "cityhall-workspace-env-u{user_id}-{suffix:016x}.env"
+    ));
+
+    let open_result = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+        }
+    };
+    let mut file = open_result
+        .map_err(|e| OrchestratorError::Runtime(format!("failed to create env file: {e}")))?;
+    // Wrapped in the guard immediately: a write failure below must still
+    // delete the file rather than leave credentials sitting on disk.
+    let guard = EnvFileGuard(path);
+    file.write_all(contents.as_bytes())
+        .map_err(|e| OrchestratorError::Runtime(format!("failed to write env file: {e}")))?;
+    Ok(guard)
+}
+
 /// The full `docker run` invocation for a workspace container.
-fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
+fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>) -> Vec<String> {
     let name = container_name(spec.user_id);
     let volume = volume_name(spec.user_id);
     let mut args: Vec<String> = vec![
@@ -328,6 +424,11 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
         format!("cityhall.user_id={}", spec.user_id),
         "--label".into(),
         format!("cityhall.workspace.version={}", spec.version),
+        // Empty (never absent) when the user has no stored credentials, so an
+        // unconfigured user's fingerprint and a pre-feature container's
+        // absent label compare equal and neither is treated as drift.
+        "--label".into(),
+        format!("cityhall.workspace.env={}", spec.agent_env.fingerprint),
         "-v".into(),
         format!("{volume}:{AOE_DATA_DIR}"),
     ];
@@ -346,15 +447,14 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>) -> Vec<String> {
             args.push(format!("127.0.0.1:0:{AOE_PORT}"));
         }
     }
-    // Where the workspace fetches its config bundle at boot. The token is
-    // visible in `docker inspect`, which is not an additional exposure: it only
-    // reads this one user's bundle, whose contents are written into the
-    // container's own volume anyway, and reading either needs host docker access.
-    if let Some(bundle) = &spec.bundle {
-        args.push("-e".into());
-        args.push(format!("AOE_CITYHALL_BUNDLE_URL={}", bundle.url));
-        args.push("-e".into());
-        args.push(format!("AOE_CITYHALL_BUNDLE_TOKEN={}", bundle.token));
+    // The bundle token and every agent credential travel through
+    // `--env-file` rather than `-e`. `--env-file` is read client-side, so the
+    // values still reach the container config and `docker inspect` still
+    // shows them; what it buys is keeping them out of argv, out of the host
+    // process list, and out of the `args.join(" ")` error strings in `run`.
+    if let Some(path) = env_file {
+        args.push("--env-file".into());
+        args.push(path.display().to_string());
     }
     args.extend(
         [
@@ -390,17 +490,17 @@ impl Orchestrator for DockerCliOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         let name = container_name(spec.user_id);
         match self.inspect(&name).await? {
-            Some(state)
-                if state.version_label.as_deref() != Some(spec.version.as_str())
-                    || state.network_label != self.network =>
-            {
-                // Version or addressing drift: recreate the container,
-                // keeping the volume.
+            Some(state) if needs_recreate(&state, spec, self.network.as_deref()) => {
+                // Version, addressing, or credential drift: recreate the
+                // container, keeping the volume. `docker start` reuses the
+                // stored container config, so it cannot pick up a new
+                // environment; recreation is the only way a credential
+                // change ever reaches the workspace process.
                 tracing::info!(
                     user_id = spec.user_id,
                     from = state.version_label.as_deref().unwrap_or("unknown"),
                     to = %spec.version,
-                    "recreating workspace for version or addressing change"
+                    "recreating workspace for version, addressing, or credential change"
                 );
                 self.run(&["rm", "-f", &name]).await?;
                 self.create_and_start(spec).await?;
@@ -446,6 +546,23 @@ struct ContainerState {
     running: bool,
     version_label: Option<String>,
     network_label: Option<String>,
+    env_label: Option<String>,
+}
+
+/// Whether a running container must be recreated rather than reused or
+/// resumed: the pinned version changed, the addressing mode changed, or the
+/// injected credential set changed. Extracted as a pure function so the
+/// credential-drift condition (the part this feature adds) is testable
+/// without a docker daemon.
+///
+/// The env label is absent on any container created before this feature.
+/// Treating that absence as the empty string means a user with no stored
+/// credentials (whose fingerprint is also empty) is never recreated on
+/// upgrade just because the label didn't exist yet.
+fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<&str>) -> bool {
+    state.version_label.as_deref() != Some(spec.version.as_str())
+        || state.network_label.as_deref() != network
+        || state.env_label.as_deref().unwrap_or("") != spec.agent_env.fingerprint
 }
 
 #[derive(Deserialize)]
@@ -518,6 +635,7 @@ mod tests {
             image: "cityhall/aoe:v1.0.0".to_string(),
             version: "v1.0.0".to_string(),
             bundle: None,
+            agent_env: crate::agent_credentials::AgentEnv::default(),
         }
     }
 
@@ -531,38 +649,95 @@ mod tests {
         }
     }
 
-    /// The workspace needs both variables before the image argument, or docker
-    /// treats them as arguments to aoe instead of container env.
+    /// A distinctive credential value, checked for absence in argv and error
+    /// strings elsewhere: any test that finds this substring outside the
+    /// env file content has found a leak.
+    const SECRET_VALUE: &str = "sk-super-secret-value";
+
+    fn spec_with_agent_env() -> WorkspaceSpec {
+        WorkspaceSpec {
+            agent_env: crate::agent_credentials::AgentEnv {
+                pairs: vec![(
+                    "ANTHROPIC_API_KEY".to_string(),
+                    crate::crypto::Secret::new(SECRET_VALUE.to_string()),
+                )],
+                fingerprint: "abc123fingerprint".to_string(),
+            },
+            ..spec()
+        }
+    }
+
+    fn spec_with_bundle_and_agent_env() -> WorkspaceSpec {
+        WorkspaceSpec {
+            agent_env: spec_with_agent_env().agent_env,
+            ..spec_with_bundle()
+        }
+    }
+
     #[test]
-    fn bundle_env_is_passed_before_the_image() {
-        let args = run_args(&spec_with_bundle(), None);
+    fn env_file_contents_lists_bundle_and_agent_pairs_one_per_line() {
+        let contents = env_file_contents(&spec_with_bundle_and_agent_env());
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "AOE_CITYHALL_BUNDLE_URL=http://cityhall:3000/api/workspace-bundle",
+                "AOE_CITYHALL_BUNDLE_TOKEN=tok",
+                &format!("ANTHROPIC_API_KEY={SECRET_VALUE}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_file_contents_is_empty_with_nothing_to_inject() {
+        assert_eq!(env_file_contents(&spec()), "");
+    }
+
+    /// Neither the bundle token nor an agent credential may ever reach argv:
+    /// they travel through `--env-file` instead of `-e`, because `run()`
+    /// joins argv into its error strings on a failed or timed-out command.
+    #[test]
+    fn run_args_never_puts_credentials_in_argv() {
+        let args = run_args(&spec_with_bundle_and_agent_env(), None, None);
+        assert!(!args.iter().any(|a| a == "-e"), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a.contains(SECRET_VALUE)),
+            "credential value leaked into argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("tok")),
+            "bundle token leaked into argv: {args:?}"
+        );
+    }
+
+    /// The flag has to precede the image argument, or docker treats it as an
+    /// argument to aoe instead of as container configuration. This replaces the
+    /// same guard the old `-e` pairs had.
+    #[test]
+    fn run_args_passes_the_given_env_file_path_before_the_image() {
+        let path = std::path::Path::new("/tmp/cityhall-workspace-env-test.env");
+        let args = run_args(&spec_with_bundle(), None, Some(path));
+        let at = args.iter().position(|a| a == "--env-file").unwrap();
+        assert_eq!(args[at + 1], path.display().to_string());
         let image_at = args
             .iter()
             .position(|a| a == "cityhall/aoe:v1.0.0")
             .unwrap();
-        for expected in [
-            "AOE_CITYHALL_BUNDLE_URL=http://cityhall:3000/api/workspace-bundle",
-            "AOE_CITYHALL_BUNDLE_TOKEN=tok",
-        ] {
-            let at = args
-                .iter()
-                .position(|a| a == expected)
-                .unwrap_or_else(|| panic!("{expected} missing from {args:?}"));
-            assert_eq!(args[at - 1], "-e");
-            assert!(at < image_at, "{expected} must precede the image");
-        }
+        assert!(at < image_at, "--env-file must precede the image: {args:?}");
     }
 
-    /// No bundle configured must leave the command line exactly as it was.
+    /// Nothing to inject means no file was created, so there is nothing to
+    /// point `--env-file` at.
     #[test]
-    fn no_bundle_adds_no_env() {
-        let args = run_args(&spec(), None);
+    fn no_bundle_or_credentials_means_no_env_file_flag() {
+        let args = run_args(&spec(), None, None);
+        assert!(!args.iter().any(|a| a == "--env-file"), "{args:?}");
         assert!(!args.iter().any(|a| a == "-e"), "{args:?}");
     }
 
     #[test]
     fn published_mode_publishes_loopback_and_no_network() {
-        let args = run_args(&spec(), None);
+        let args = run_args(&spec(), None, None);
         let publish_at = args.iter().position(|a| a == "-p").unwrap();
         assert_eq!(args[publish_at + 1], "127.0.0.1:0:8080");
         assert!(!args.iter().any(|a| a == "--network"));
@@ -573,7 +748,7 @@ mod tests {
 
     #[test]
     fn workspaces_run_in_cityhall_client_mode() {
-        let args = run_args(&spec(), None);
+        let args = run_args(&spec(), None, None);
         // Locked-down end-user client, never the full aoe dashboard.
         assert!(args.iter().any(|a| a == "--cityhall"));
         // --behind-proxy without this makes `aoe serve` refuse to start.
@@ -582,7 +757,7 @@ mod tests {
 
     #[test]
     fn network_mode_joins_network_and_publishes_nothing() {
-        let args = run_args(&spec(), Some("cityhall-workspaces"));
+        let args = run_args(&spec(), Some("cityhall-workspaces"), None);
         let net_at = args.iter().position(|a| a == "--network").unwrap();
         assert_eq!(args[net_at + 1], "cityhall-workspaces");
         assert!(!args.iter().any(|a| a == "-p"));
@@ -590,5 +765,50 @@ mod tests {
         assert!(args
             .iter()
             .any(|a| a == "cityhall.workspace.network=cityhall-workspaces"));
+    }
+
+    fn container_state(
+        version: &str,
+        network: Option<&str>,
+        env_label: Option<&str>,
+    ) -> ContainerState {
+        ContainerState {
+            running: true,
+            version_label: Some(version.to_string()),
+            network_label: network.map(str::to_string),
+            env_label: env_label.map(str::to_string),
+        }
+    }
+
+    /// A container from before this feature has no env label at all. A user
+    /// with no stored credentials has an empty fingerprint. Those two must
+    /// compare equal, or every pre-feature container would be recreated once
+    /// on upgrade.
+    #[test]
+    fn absent_env_label_and_empty_fingerprint_do_not_trigger_recreate() {
+        let spec = spec();
+        assert_eq!(spec.agent_env.fingerprint, "");
+        let state = container_state("v1.0.0", None, None);
+        assert!(!needs_recreate(&state, &spec, None));
+    }
+
+    #[test]
+    fn a_differing_env_label_triggers_recreate() {
+        let spec = spec_with_agent_env();
+        let stale = container_state("v1.0.0", None, Some("some-other-fingerprint"));
+        assert!(needs_recreate(&stale, &spec, None));
+
+        let current = container_state("v1.0.0", None, Some(&spec.agent_env.fingerprint));
+        assert!(!needs_recreate(&current, &spec, None));
+    }
+
+    #[test]
+    fn version_and_network_drift_still_trigger_recreate() {
+        let spec = spec();
+        let wrong_version = container_state("v0.9.0", None, None);
+        assert!(needs_recreate(&wrong_version, &spec, None));
+
+        let wrong_network = container_state("v1.0.0", Some("net-a"), None);
+        assert!(needs_recreate(&wrong_network, &spec, Some("net-b")));
     }
 }

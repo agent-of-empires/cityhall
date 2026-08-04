@@ -86,9 +86,13 @@ pub fn lookup(env_var: &str) -> Option<&'static CredentialKind> {
 /// Normalize and check a submitted value, or explain why it is unusable.
 ///
 /// Outer whitespace goes: keys are pasted, and a trailing newline is a
-/// copy-paste artifact rather than part of the secret. A NUL byte cannot exist
-/// in a process environment at all, so it is rejected here instead of failing
-/// the container start much later.
+/// copy-paste artifact rather than part of the secret.
+///
+/// A NUL byte cannot exist in a process environment at all. An interior newline
+/// or carriage return cannot survive the docker backend either, which delivers
+/// these through a line-oriented `--env-file`, where one value spanning two
+/// lines would silently become two wrong variables. No provider key contains
+/// one, so both are rejected here rather than corrupting a container start.
 pub fn validate_value(value: &str) -> Result<String, AppError> {
     let value = value.trim();
     if value.is_empty() {
@@ -97,6 +101,11 @@ pub fn validate_value(value: &str) -> Result<String, AppError> {
     if value.contains('\0') {
         return Err(AppError::BadRequest(
             "a credential value cannot contain a NUL byte",
+        ));
+    }
+    if value.contains('\n') || value.contains('\r') {
+        return Err(AppError::BadRequest(
+            "a credential value cannot contain a line break",
         ));
     }
     if value.len() > MAX_VALUE_LEN {
@@ -226,6 +235,9 @@ mod tests {
         assert_eq!(validate_value("  sk-abc\n").unwrap(), "sk-abc");
         assert!(validate_value("   ").is_err());
         assert!(validate_value("sk-\0abc").is_err());
+        // Would split into two variables in a docker --env-file.
+        assert!(validate_value("sk-abc\ninjected=1").is_err());
+        assert!(validate_value("sk-abc\rinjected=1").is_err());
         assert!(validate_value(&"x".repeat(MAX_VALUE_LEN + 1)).is_err());
     }
 

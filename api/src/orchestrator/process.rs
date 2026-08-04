@@ -44,6 +44,14 @@ struct RunState {
     pid: i32,
     port: u16,
     version: String,
+    /// The agent-credential fingerprint this process was spawned with, so a
+    /// credential change is detectable as drift the same way a version
+    /// change is. `#[serde(default)]` so a state.json written before this
+    /// field existed still deserializes, reading back as the empty
+    /// fingerprint (which compares equal to an unconfigured user, not as
+    /// drift).
+    #[serde(default)]
+    env_fingerprint: String,
 }
 
 impl ProcessOrchestrator {
@@ -118,6 +126,7 @@ impl ProcessOrchestrator {
                     pid,
                     port,
                     version: spec.version.clone(),
+                    env_fingerprint: spec.agent_env.fingerprint.clone(),
                 },
             )?;
             match wait_ready(&addr).await {
@@ -172,6 +181,16 @@ impl ProcessOrchestrator {
         if let Some(bundle) = &spec.bundle {
             cmd.env("AOE_CITYHALL_BUNDLE_URL", &bundle.url)
                 .env("AOE_CITYHALL_BUNDLE_TOKEN", &bundle.token);
+        }
+        // Command::env does not go through argv, so unlike the docker
+        // backend this needs no env-file indirection: the value never
+        // appears on a command line or in a `ps` listing. It is still
+        // readable from /proc/<pid>/environ by anyone who can read that file,
+        // an exposure inherent to spawning a plain OS process rather than a
+        // container, and one that widens if workspaces ever run under a
+        // shared UID instead of one process per user.
+        for (name, value) in &spec.agent_env.pairs {
+            cmd.env(name, value.expose());
         }
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
@@ -254,16 +273,21 @@ impl Orchestrator for ProcessOrchestrator {
         if let Some(state) = self.read_state(spec.user_id) {
             if alive(state.pid) {
                 let addr = format!("127.0.0.1:{}", state.port);
-                if state.version == spec.version && http_probe(&addr).await {
+                if state.version == spec.version
+                    && state.env_fingerprint == spec.agent_env.fingerprint
+                    && http_probe(&addr).await
+                {
                     return Ok(addr);
                 }
-                // Version drift, a hung process, or a recycled PID that is
-                // not our workspace: clear it and start fresh.
+                // Version drift, a credential change, a hung process, or a
+                // recycled PID that is not our workspace: clear it and start
+                // fresh. A credential change must terminate and respawn
+                // because Command::env is only set once, at spawn.
                 tracing::info!(
                     user_id = spec.user_id,
                     from = %state.version,
                     to = %spec.version,
-                    "restarting workspace process"
+                    "restarting workspace process for a version or credential change"
                 );
                 self.terminate(state.pid).await;
             }
@@ -490,16 +514,36 @@ mod tests {
                 pid: 1234,
                 port: 43210,
                 version: "v1.0.0".to_string(),
+                env_fingerprint: "somefingerprint".to_string(),
             },
         )
         .unwrap();
         let state = orch.read_state(7).unwrap();
         assert_eq!(
-            (state.pid, state.port, state.version.as_str()),
-            (1234, 43210, "v1.0.0")
+            (
+                state.pid,
+                state.port,
+                state.version.as_str(),
+                state.env_fingerprint.as_str()
+            ),
+            (1234, 43210, "v1.0.0", "somefingerprint")
         );
         // No leftover temp file from the atomic write.
         assert!(!orch.state_path(7).with_extension("json.tmp").exists());
+    }
+
+    /// A state.json written before `env_fingerprint` existed must still
+    /// deserialize, reading back as the empty fingerprint rather than
+    /// failing to load (which would otherwise strand every workspace running
+    /// before an upgrade).
+    #[test]
+    fn state_without_env_fingerprint_still_deserializes() {
+        let json = r#"{"pid":1234,"port":43210,"version":"v1.0.0"}"#;
+        let state: RunState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.pid, 1234);
+        assert_eq!(state.port, 43210);
+        assert_eq!(state.version, "v1.0.0");
+        assert_eq!(state.env_fingerprint, "");
     }
 
     #[tokio::test]
@@ -517,6 +561,7 @@ mod tests {
                 pid: i32::MAX - 1,
                 port: 1,
                 version: "v1".to_string(),
+                env_fingerprint: String::new(),
             },
         )
         .unwrap();
@@ -530,6 +575,7 @@ mod tests {
                 pid: std::process::id() as i32,
                 port: 45678,
                 version: "v1".to_string(),
+                env_fingerprint: String::new(),
             },
         )
         .unwrap();
@@ -549,6 +595,7 @@ mod tests {
             image: "unused".to_string(),
             version: "v9.9.9".to_string(),
             bundle: None,
+            agent_env: crate::agent_credentials::AgentEnv::default(),
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.
