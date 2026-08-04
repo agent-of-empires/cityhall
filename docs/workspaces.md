@@ -55,6 +55,13 @@ registry:
 docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 ```
 
+The build checks the downloaded release against the `.sha256` published beside
+it, so a damaged or substituted tarball fails the build rather than becoming the
+binary your workspaces run. Both come from the same release, so this catches a
+corrupted download and a partially replaced asset, not a release an attacker
+controls outright. CityHall's own image pins its `docker`, `buildx`, and
+`kubectl` digests in the `Dockerfile` itself, which does not have that limit.
+
 Version fields offer the discovered stable aoe releases, fetched from the
 GitHub API and cached for an hour (the last known list is served when GitHub
 is unreachable; set `GITHUB_TOKEN` if the unauthenticated per-IP rate limit

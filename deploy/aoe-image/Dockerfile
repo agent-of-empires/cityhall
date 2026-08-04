@@ -54,9 +54,26 @@ RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 
          *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
        esac \
     && mkdir -p /out \
+    && ASSET="aoe-linux-${AOE_ARCH}.tar.gz" \
+    && BASE="https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}" \
+    # Verified against the `.sha256` every aoe release publishes beside its
+    # assets, so a truncated or substituted tarball fails here instead of being
+    # unpacked and run as the workspace. No digest can be hardcoded the way the
+    # CityHall image does it: AOE_VERSION is a build arg, so the version is not
+    # known when this file is written. That leaves the checksum coming from the
+    # same release as the bytes it checks, which catches a damaged download and a
+    # partially replaced asset, but not a release an attacker controls outright.
+    # Closing that needs signed releases upstream, not a change here.
+    #
+    # Downloaded to a file rather than piped into tar: bytes that go straight
+    # into an extractor cannot be checked first.
+    && curl -fsSL -o "/tmp/${ASSET}" "${BASE}/${ASSET}" \
+    && curl -fsSL -o "/tmp/${ASSET}.sha256" "${BASE}/${ASSET}.sha256" \
+    && printf '%s  /tmp/%s\n' "$(cut -d' ' -f1 "/tmp/${ASSET}.sha256")" "${ASSET}" \
+       | sha256sum -c - \
     # The tarball contains a single arch-suffixed binary (aoe-linux-<arch>).
-    && curl -fsSL "https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}/aoe-linux-${AOE_ARCH}.tar.gz" \
-       | tar -xz -C /out \
+    && tar -xz -C /out -f "/tmp/${ASSET}" \
+    && rm "/tmp/${ASSET}" "/tmp/${ASSET}.sha256" \
     && mv "/out/aoe-linux-${AOE_ARCH}" /out/aoe
 
 # Source builds happen in two stages so neither toolchain has to carry the
