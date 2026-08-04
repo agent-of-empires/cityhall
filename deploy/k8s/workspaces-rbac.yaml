@@ -1,6 +1,14 @@
 # Lets CityHall manage per-user workspace objects (Deployment + Service + PVC +
 # Secret, plus reading pod status) in its namespace via the kubernetes workspace
 # backend (WORKSPACE_BACKEND=kubernetes).
+#
+# This grants CityHall itself. What it cannot do is limit everyone else: the
+# workspace bundle token and every agent credential live in the per-user Secret
+# precisely so they are not in the Deployment, and that only helps while reading
+# a Deployment in this namespace does not also mean reading its Secrets. If you
+# add roles here, keep "secrets" read narrower than "deployments" read. A single
+# workspace Secret is enough to fetch that user's whole config bundle, which
+# includes their decrypted git token.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

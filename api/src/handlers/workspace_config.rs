@@ -3,7 +3,7 @@
 //!
 //! A workspace runs `aoe serve --cityhall`, which closes every route that could
 //! configure it: settings, project CRUD, git clone. So configuration arrives as
-//! one document the workspace fetches at boot. Three surfaces here:
+//! one document the workspace fetches at boot. Four surfaces here:
 //!
 //! - **`/api/settings/workspace-config`** — the admin's copy of the document.
 //!   Stored as opaque TOML: aoe defines the settings schema, so aoe owns the
@@ -11,6 +11,10 @@
 //! - **`/api/me/git-credential`** — each user's own git credential, so commits
 //!   and pushes from their workspace carry their identity rather than a shared
 //!   robot's. Stored encrypted; the token is never read back out to a client.
+//! - **`/api/me/git-ssh-key`**: the same user's SSH key, for the remotes a token
+//!   cannot authenticate (#52), plus the host keys their workspace verifies
+//!   against. Its own surface because the two are independent: removing one must
+//!   not disturb the other.
 //! - **`/api/workspace-bundle`** — what a workspace container fetches. The only
 //!   place the two provenances meet: the admin's document plus that user's
 //!   `[git]` section. This is why the stored bundle never has to hold a secret.
@@ -26,8 +30,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::crypto;
-use crate::entities::{git_credential, user, workspace, workspace_config};
+use crate::entities::{git_credential, git_ssh_key, user, workspace, workspace_config};
 use crate::error::AppError;
+use crate::git_ssh;
 
 /// The config row is a singleton, like `workspace_settings`.
 pub const CONFIG_ID: i32 = 1;
@@ -203,7 +208,12 @@ pub async fn update_git_credential(
         .map(str::trim)
         .filter(|t| !t.is_empty())
     {
-        Some(token) => crypto::encrypt(token)?,
+        Some(token) => crypto::encrypt(
+            token,
+            &crypto::Aad::GitCredential {
+                user_id: caller.user.id,
+            },
+        )?,
         None => existing
             .as_ref()
             .map(|r| r.token_encrypted.clone())
@@ -246,6 +256,104 @@ pub async fn delete_git_credential(
         .exec(&state.db)
         .await?;
     get_git_credential(State(state), caller).await
+}
+
+// --- Self-service: a user's git SSH key ------------------------------------
+
+#[derive(Serialize)]
+pub struct GitSshKeyResponse {
+    /// Whether a key is stored. The key itself is never returned.
+    pub key_set: bool,
+    /// Returned, unlike the key: a host's public key is public, and making a user
+    /// re-paste it to change the key alone would be friction for nothing.
+    pub known_hosts: String,
+    /// Whether `CITYHALL_SECRET_KEY` is configured; without it nothing can be
+    /// stored, so the form says so instead of failing on save.
+    pub secret_key_available: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateGitSshKeyRequest {
+    /// Omitted (or empty) keeps the stored key; a value replaces it.
+    pub key: Option<String>,
+    pub known_hosts: String,
+}
+
+/// GET /api/me/git-ssh-key
+pub async fn get_git_ssh_key(
+    State(state): State<crate::state::AppState>,
+    caller: AuthUser,
+) -> Result<Json<GitSshKeyResponse>, AppError> {
+    caller.require("workspaces.use")?;
+    let row = git_ssh_key::Entity::find_by_id(caller.user.id)
+        .one(&state.db)
+        .await?;
+    Ok(Json(GitSshKeyResponse {
+        key_set: row.is_some(),
+        known_hosts: row.map(|r| r.known_hosts).unwrap_or_default(),
+        secret_key_available: crypto::key_available(),
+    }))
+}
+
+/// PUT /api/me/git-ssh-key
+pub async fn update_git_ssh_key(
+    State(state): State<crate::state::AppState>,
+    caller: AuthUser,
+    Json(body): Json<UpdateGitSshKeyRequest>,
+) -> Result<Json<GitSshKeyResponse>, AppError> {
+    caller.require("workspaces.use")?;
+
+    // Checked before the key, so a user fixing only their host keys is told what
+    // is wrong with them rather than being asked for the key again.
+    let known_hosts = git_ssh::validate_known_hosts(&body.known_hosts)?;
+
+    let existing = git_ssh_key::Entity::find_by_id(caller.user.id)
+        .one(&state.db)
+        .await?;
+    let key = match body.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => crypto::encrypt(
+            &git_ssh::validate_key(key)?,
+            &crypto::Aad::GitSshKey {
+                user_id: caller.user.id,
+            },
+        )?,
+        None => existing
+            .as_ref()
+            .map(|r| r.key_encrypted.clone())
+            .ok_or(AppError::BadRequest("a private key is required"))?,
+    };
+
+    git_ssh_key::Entity::insert(git_ssh_key::ActiveModel {
+        user_id: Set(caller.user.id),
+        key_encrypted: Set(key),
+        known_hosts: Set(known_hosts),
+        updated_at: Set(Utc::now()),
+    })
+    .on_conflict(
+        OnConflict::column(git_ssh_key::Column::UserId)
+            .update_columns([
+                git_ssh_key::Column::KeyEncrypted,
+                git_ssh_key::Column::KnownHosts,
+                git_ssh_key::Column::UpdatedAt,
+            ])
+            .to_owned(),
+    )
+    .exec(&state.db)
+    .await?;
+
+    get_git_ssh_key(State(state), caller).await
+}
+
+/// DELETE /api/me/git-ssh-key
+pub async fn delete_git_ssh_key(
+    State(state): State<crate::state::AppState>,
+    caller: AuthUser,
+) -> Result<Json<GitSshKeyResponse>, AppError> {
+    caller.require("workspaces.use")?;
+    git_ssh_key::Entity::delete_by_id(caller.user.id)
+        .exec(&state.db)
+        .await?;
+    get_git_ssh_key(State(state), caller).await
 }
 
 // --- Workspaces: the composed document ------------------------------------
@@ -332,7 +440,10 @@ async fn git_table(db: &DatabaseConnection, owner: &user::Model) -> Result<toml:
         // workspace would boot with no settings and no projects either. Serve the
         // rest and drop the secret, loudly enough that an operator can tell the
         // user to re-enter it.
-        match crypto::decrypt(&cred.token_encrypted) {
+        match crypto::decrypt(
+            &cred.token_encrypted,
+            &crypto::Aad::GitCredential { user_id: owner.id },
+        ) {
             Ok(token) => {
                 git.insert(
                     "credential_host".to_string(),
@@ -347,6 +458,29 @@ async fn git_table(db: &DatabaseConnection, owner: &user::Model) -> Result<toml:
             Err(e) => tracing::warn!(
                 user_id = owner.id,
                 "git credential could not be decrypted, serving the bundle without it: {e}"
+            ),
+        }
+    }
+
+    // The SSH half, for the remotes an HTTPS token cannot reach (#52). Both keys
+    // go in together or neither does: aoe points `core.sshCommand` at the pair,
+    // and a key with no host keys to check against is what
+    // `StrictHostKeyChecking=yes` exists to refuse.
+    if let Some(row) = git_ssh_key::Entity::find_by_id(owner.id).one(db).await? {
+        match crypto::decrypt(
+            &row.key_encrypted,
+            &crypto::Aad::GitSshKey { user_id: owner.id },
+        ) {
+            Ok(key) => {
+                git.insert("ssh_private_key".to_string(), toml::Value::String(key));
+                git.insert(
+                    "ssh_known_hosts".to_string(),
+                    toml::Value::String(row.known_hosts),
+                );
+            }
+            Err(e) => tracing::warn!(
+                user_id = owner.id,
+                "git SSH key could not be decrypted, serving the bundle without it: {e}"
             ),
         }
     }
@@ -470,6 +604,9 @@ fn summarize(table: toml::Table) -> BundleSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    use sea_orm::ActiveModelTrait;
 
     const GOOD: &str = r#"
 schema_version = 1
@@ -592,5 +729,85 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
             "Basic abc".parse().unwrap(),
         );
         assert_eq!(bearer_token(&headers), None);
+    }
+
+    /// The `[git]` table is where a user's secrets meet the document every
+    /// workspace fetches, so this covers the SSH half end to end: both keys go in
+    /// together for their owner, and a key copied into someone else's row is
+    /// dropped rather than served to them (#52).
+    #[test]
+    fn an_ssh_key_reaches_its_owner_and_nobody_else() {
+        // A std mutex guard held across an await would block the executor, so the
+        // key env is set outside the async block, like `crate::secrets`' tests.
+        // The guard puts the previous values back even if the body panics.
+        let _guard = crypto::guard_key_env();
+        std::env::set_var("CITYHALL_SECRET_KEY", B64.encode([7u8; 32]));
+        std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+                opts.max_connections(1);
+                let db = sea_orm::Database::connect(opts).await.unwrap();
+                <crate::migration::Migrator as sea_orm_migration::MigratorTrait>::up(&db, None)
+                    .await
+                    .unwrap();
+
+                let alice = make_user(&db, "alice").await;
+                let bob = make_user(&db, "bob").await;
+
+                let key = crypto::encrypt(
+                    "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+                    &crypto::Aad::GitSshKey { user_id: alice.id },
+                )
+                .unwrap();
+                for user_id in [alice.id, bob.id] {
+                    git_ssh_key::ActiveModel {
+                        user_id: Set(user_id),
+                        // Bob's row holds Alice's ciphertext verbatim, which is
+                        // exactly the move the binding exists to catch.
+                        key_encrypted: Set(key.clone()),
+                        known_hosts: Set("github.com ssh-ed25519 AAAA\n".to_string()),
+                        updated_at: Set(Utc::now()),
+                    }
+                    .insert(&db)
+                    .await
+                    .unwrap();
+                }
+
+                let mine = git_table(&db, &alice).await.unwrap();
+                assert!(mine.get("ssh_private_key").is_some());
+                // Never one without the other: a key with no host keys to check
+                // against is what StrictHostKeyChecking exists to refuse.
+                assert!(mine.get("ssh_known_hosts").is_some());
+
+                let theirs = git_table(&db, &bob).await.unwrap();
+                assert!(
+                    theirs.get("ssh_private_key").is_none(),
+                    "a key from another user's row must not be served: {theirs:?}"
+                );
+                assert!(theirs.get("ssh_known_hosts").is_none());
+                // And losing the key does not cost Bob the rest of his identity,
+                // which is what would break his whole workspace.
+                assert_eq!(theirs.get("user_name").and_then(|v| v.as_str()), Some("bob"));
+            });
+    }
+
+    async fn make_user(db: &DatabaseConnection, username: &str) -> user::Model {
+        let id = crate::service::create(
+            db,
+            username,
+            None,
+            &crate::auth::random_token(24),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+        user::Entity::find_by_id(id).one(db).await.unwrap().unwrap()
     }
 }

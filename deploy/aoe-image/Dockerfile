@@ -4,6 +4,20 @@
 #
 #   docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 #
+# To run an aoe that has no release yet, compile a commit instead of
+# downloading a tarball, and tag it as a version you then pin users to:
+#
+#   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<full-commit-sha> \
+#     -t cityhall/aoe:main-20260804 deploy/aoe-image/
+#
+# A full commit id, not a branch or a tag: the build refuses anything else, so
+# one image tag keeps meaning one build.
+#
+# CityHall never runs that path itself; it only ever pulls an image or builds
+# the release path below. A source build is slow and memory hungry, so it is a
+# thing an operator does deliberately on a machine they control. See
+# docs/workspaces.md.
+#
 # The tag must match the workspace settings image template (default
 # `cityhall/aoe:{version}`) rendered with the version users are pinned to.
 # CityHall starts containers from this image with:
@@ -16,17 +30,21 @@
 # agent's login on the volume so both survive a container recreate. An operator
 # who wants a fixed set builds a derived image; see docs/workspaces.md.
 
-# Node is the runtime for the agents aoe launches through npm (claude, codex,
-# gemini, pi). aoe's floor is Node 20 and its own container image uses 22.
-FROM node:22-bookworm-slim
+# Which stage supplies /out/aoe: `release` downloads a published tarball,
+# `git` compiles a commit from source. Declared before the first FROM so a
+# stage name can interpolate it. BuildKit builds only the stage that is
+# actually reached, so a release build never pays for the toolchain stages and
+# a source build never runs the download.
+ARG AOE_SOURCE=release
 
 # TARGETARCH is set automatically by buildx; plain `docker build` falls back
 # to the build host's architecture.
+FROM debian:bookworm-slim AS aoe-release
 ARG AOE_VERSION
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tmux \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 1) \
@@ -35,11 +53,119 @@ RUN test -n "$AOE_VERSION" || (echo "AOE_VERSION build arg is required" && exit 
          arm64) AOE_ARCH=arm64 ;; \
          *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
        esac \
+    && mkdir -p /out \
+    && ASSET="aoe-linux-${AOE_ARCH}.tar.gz" \
+    && BASE="https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}" \
+    # Verified against the `.sha256` every aoe release publishes beside its
+    # assets, so a truncated or substituted tarball fails here instead of being
+    # unpacked and run as the workspace. No digest can be hardcoded the way the
+    # CityHall image does it: AOE_VERSION is a build arg, so the version is not
+    # known when this file is written. That leaves the checksum coming from the
+    # same release as the bytes it checks, which catches a damaged download and a
+    # partially replaced asset, but not a release an attacker controls outright.
+    # Closing that needs signed releases upstream, not a change here.
+    #
+    # Downloaded to a file rather than piped into tar: bytes that go straight
+    # into an extractor cannot be checked first.
+    && curl -fsSL -o "/tmp/${ASSET}" "${BASE}/${ASSET}" \
+    && curl -fsSL -o "/tmp/${ASSET}.sha256" "${BASE}/${ASSET}.sha256" \
+    && printf '%s  /tmp/%s\n' "$(cut -d' ' -f1 "/tmp/${ASSET}.sha256")" "${ASSET}" \
+       | sha256sum -c - \
     # The tarball contains a single arch-suffixed binary (aoe-linux-<arch>).
-    && curl -fsSL "https://github.com/agent-of-empires/agent-of-empires/releases/download/${AOE_VERSION}/aoe-linux-${AOE_ARCH}.tar.gz" \
-       | tar -xz -C /usr/local/bin \
-    && mv "/usr/local/bin/aoe-linux-${AOE_ARCH}" /usr/local/bin/aoe \
-    && chmod +x /usr/local/bin/aoe
+    && tar -xz -C /out -f "/tmp/${ASSET}" \
+    && rm "/tmp/${ASSET}" "/tmp/${ASSET}.sha256" \
+    && mv "/out/aoe-linux-${AOE_ARCH}" /out/aoe
+
+# Source builds happen in two stages so neither toolchain has to carry the
+# other: this one produces the dashboard bundle, the next compiles the binary
+# against it. Node, not Rust, because aoe's build.rs shells out to npm.
+FROM node:22-bookworm-slim AS aoe-web
+ARG AOE_GIT_SHA
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# A commit, not a ref: CityHall resolves the ref before it ever gets here, so
+# the image tag and the version drift label name one immutable build. That is
+# enforced rather than assumed, because `checkout` would happily take a branch
+# or a tag from an operator building this by hand, and then the same image tag
+# means something different next week. Requiring the resolved object id to equal
+# what was passed rejects branches, tags, and abbreviated revisions in one test.
+# --filter=blob:none fetches every commit (any sha stays checkout-able) while
+# leaving the history's file contents on the server.
+RUN test -n "$AOE_GIT_SHA" || (echo "AOE_GIT_SHA build arg is required when AOE_SOURCE=git" && exit 1) \
+    && git clone --filter=blob:none --no-checkout \
+       https://github.com/agent-of-empires/agent-of-empires.git /src \
+    && AOE_GIT_COMMIT="$(git -C /src rev-parse --verify "${AOE_GIT_SHA}^{commit}")" \
+    && { test "$AOE_GIT_COMMIT" = "$AOE_GIT_SHA" \
+         || { echo "AOE_GIT_SHA must be a full 40-character commit id, not a branch," \
+                   "a tag, or an abbreviated sha. Got '$AOE_GIT_SHA', which resolves" \
+                   "to '$AOE_GIT_COMMIT'." >&2; exit 1; }; } \
+    && git -C /src checkout --detach "$AOE_GIT_COMMIT"
+
+RUN cd /src/web && npm ci && npm run build
+
+FROM rust:1-bookworm AS aoe-git
+
+# git2 vendors OpenSSL, which builds with perl; aws-lc-sys builds with cmake;
+# the vendored libgit2 links zlib.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake perl pkg-config zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=aoe-web /src /src
+
+# AOE_WEB_DIST makes aoe's build.rs copy a prebuilt bundle and return before it
+# looks for npm, so this stage needs no Node. It must not point at
+# /src/web/dist: build.rs deletes that directory before copying into it.
+COPY --from=aoe-web /src/web/dist /web-dist
+ENV AOE_WEB_DIST=/web-dist
+
+# Both defaults are set by what fits a stock 4 GB Docker VM, measured rather
+# than guessed, and are args because a bigger builder can afford more.
+#
+# Two separate memory problems, which is why it takes two knobs. The checkout's
+# own .cargo/config.toml asks for 8 parallel rustc jobs, so the dependency graph
+# alone can run 8 at once. That one is the job count. The `agent-of-empires` lib
+# crate is then a single rustc that no job count can shrink, and at any
+# optimization level above 0 it gets OOM-killed on its own; that one is the
+# optimization level. aoe's `dev-release` profile does not set opt-level, so it
+# inherits release's 3, and a cargo env var is what overrides the checkout's
+# config.toml.
+ARG CARGO_BUILD_JOBS=2
+ARG CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=0
+ENV CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS
+ENV CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=$CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL
+
+# `dev-release` is aoe's own profile for a build without LTO. `serve` is the
+# feature that ships the dashboard CityHall proxies to.
+#
+# An OOM kill arrives as a bare "cannot allocate memory" at the end of a
+# truncated log tail, which tells an admin nothing, so name the likely cause
+# here where it is still attached to the failure.
+RUN cd /src \
+    && { cargo build --profile dev-release --features serve \
+         || { echo "aoe build failed. If a rustc process was killed (signal 9)," \
+                   "the builder ran out of memory: give the docker VM more RAM," \
+                   "or lower CARGO_BUILD_JOBS." >&2; exit 1; }; } \
+    && mkdir -p /out \
+    && cp target/dev-release/aoe /out/aoe
+
+# Resolves to aoe-release or aoe-git. An unknown AOE_SOURCE fails the build
+# here, naming the stage it could not find.
+FROM aoe-${AOE_SOURCE} AS aoe-binary
+
+# Node is the runtime for the agents aoe launches through npm (claude, codex,
+# gemini, pi). aoe's floor is Node 20 and its own container image uses 22.
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=aoe-binary /out/aoe /usr/local/bin/aoe
+RUN chmod +x /usr/local/bin/aoe
 
 # The node base image already owns uid 1000. `aoe` has to keep that uid: it is
 # what every volume written by an earlier build of this image is owned by, and a

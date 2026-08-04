@@ -37,7 +37,8 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 /// The reference workspace image build, embedded so a running CityHall can
 /// build missing images without a repo checkout. It needs no build context
 /// (it downloads the release tarball itself), so it is piped to
-/// `docker build -`.
+/// `docker build -`. Its `AOE_SOURCE=git` path, which compiles a commit, is
+/// for an operator building by hand and is never used from here.
 const AOE_IMAGE_DOCKERFILE: &str = include_str!("../../../deploy/aoe-image/Dockerfile");
 
 pub fn container_name(user_id: i32) -> String {
@@ -274,6 +275,12 @@ async fn provision_run(
 
     let mut cmd = Command::new(cli);
     cmd.args(args)
+        // The reference image needs BuildKit: it writes its entrypoint with a
+        // COPY heredoc and selects a build stage by argument, and the classic
+        // builder supports neither, silently building every stage instead.
+        // Asking for it explicitly turns a missing buildx plugin into a clear
+        // error here rather than a confusing failure inside the wrong stage.
+        .env("DOCKER_BUILDKIT", "1")
         // kill_on_drop reaps the CLI when the timeout fires; the docker
         // daemon may still finish server-side, which the next existence
         // check picks up.
@@ -311,19 +318,34 @@ async fn provision_run(
     }
 }
 
-/// The last ~500 bytes of a provisioning log, for error messages.
+/// The tail of a provisioning log, for error messages. Whole lines only: a
+/// byte-counted tail cuts mid-word, and the result reads as corruption rather
+/// than as the end of a build log.
 fn log_tail(path: &std::path::Path) -> String {
+    const MAX_LINES: usize = 12;
+    const MAX_BYTES: usize = 2000;
     match std::fs::read_to_string(path) {
         Ok(s) => {
-            let tail: String = s
-                .chars()
-                .rev()
-                .take(500)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            tail.trim().to_string()
+            let mut tail = String::new();
+            for line in s.lines().rev().take(MAX_LINES) {
+                if tail.len() + line.len() > MAX_BYTES {
+                    break;
+                }
+                tail.insert_str(0, line);
+                tail.insert(0, '\n');
+            }
+            let tail = tail.trim();
+            if !tail.is_empty() {
+                tail.to_string()
+            } else if s.trim().is_empty() {
+                "command failed (no output)".to_string()
+            } else {
+                // The loop breaks before adding a line that would not fit, so a
+                // single line longer than the budget leaves the tail empty even
+                // though the log has content. Saying "no output" there sends an
+                // admin looking for a log that is sitting right there.
+                format!("command failed (last log line exceeds {MAX_BYTES} bytes)")
+            }
         }
         Err(_) => "command failed (no log available)".to_string(),
     }
@@ -810,5 +832,43 @@ mod tests {
 
         let wrong_network = container_state("v1.0.0", Some("net-a"), None);
         assert!(needs_recreate(&wrong_network, &spec, Some("net-b")));
+    }
+
+    #[test]
+    fn a_log_tail_keeps_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("cityhall-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log");
+
+        // Long enough that a byte-counted tail would land mid-line, which is
+        // what made a real failure read as "SION build arg is required".
+        let body: String = (0..80)
+            .map(|i| format!("step {i}: AOE_VERSION build arg is required, and then some\n"))
+            .collect();
+        std::fs::write(&path, &body).unwrap();
+        let tail = log_tail(&path);
+        assert!(tail.lines().count() <= 12);
+        assert!(tail.len() <= 2000, "unbounded: {} bytes", tail.len());
+        assert!(tail.starts_with("step "), "cut mid-line: {tail}");
+        assert!(tail.ends_with("some"));
+
+        // One line that cannot fit at all. Keeping whole lines means the tail
+        // comes back empty here, and reporting that as "no output" would send an
+        // admin looking for a log that does exist.
+        std::fs::write(&path, format!("{}\n", "x".repeat(2001))).unwrap();
+        let oversized = log_tail(&path);
+        assert_ne!(oversized, "command failed (no output)");
+        assert!(oversized.contains("2000 bytes"), "{oversized}");
+
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(log_tail(&path), "command failed (no output)");
+        // Whitespace only is still nothing to show.
+        std::fs::write(&path, "\n  \n").unwrap();
+        assert_eq!(log_tail(&path), "command failed (no output)");
+        assert_eq!(
+            log_tail(&dir.join("absent")),
+            "command failed (no log available)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,7 +10,8 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `STATIC_DIR`    | `web/dist`                       | Directory of the built frontend to serve.           |
 | `CITYHALL_LOG`  | _(unset)_                        | Single log level for the app and its dependencies.  |
 | `RUST_LOG`      | _(unset)_                        | Per-target log filter (overrides the default).      |
-| `CITYHALL_SECRET_KEY` | _(unset)_                  | Base64 32-byte key; encrypts secrets (SMTP password) at rest. |
+| `CITYHALL_SECRET_KEY` | _(unset)_                  | Base64 32-byte key; encrypts stored secrets at rest. |
+| `CITYHALL_SECRET_KEY_PREVIOUS` | _(unset)_       | Comma-separated former keys, used to decrypt only (see [Rotating the key](#rotating-the-key)). |
 | `CITYHALL_BASE_URL` | _(request host)_             | Public base URL used to build links in emails (e.g. password reset). |
 | `SMTP_HOST`     | _(unset)_                        | SMTP host. Setting it makes SMTP env-managed (see below). |
 | `SMTP_PORT`     | _(per encryption)_               | SMTP port; defaults to 25/587/465 for none/starttls/tls. |
@@ -118,18 +119,90 @@ security, which also determines the default port:
 
 ### Secret key
 
-When a password is set through the settings page, it is encrypted at rest with
-AES-256-GCM using `CITYHALL_SECRET_KEY` (a base64-encoded 32-byte key). Generate
-one with:
+Five kinds of secret are stored in the database: the SMTP password, the OIDC
+client secret, each user's git credential and git SSH key, and each user's agent
+credentials.
+All of them are encrypted with AES-256-GCM using `CITYHALL_SECRET_KEY`, a
+base64-encoded 32-byte key. Generate one with:
 
 ```sh
 openssl rand -base64 32
 ```
 
-Without the key set, saving an SMTP password is rejected. Passwords supplied
-through `SMTP_PASSWORD` are read straight from the environment and do not need
-the key. Losing or changing the key makes a previously stored password
-undecryptable; re-enter it in the settings page after rotating the key.
+Without the key set, saving any of them is rejected. Values supplied through the
+environment instead (`SMTP_PASSWORD`, `OIDC_CLIENT_SECRET`) are read straight
+from it and do not need the key.
+
+Each value written with the authenticated envelope is bound to the row that holds
+it, so a value copied to another row, or to another user, no longer decrypts.
+Without that binding, anyone who could write to the database could move one user's
+encrypted provider key into another user's row and CityHall would hand it over.
+Values written by a CityHall older than the envelope are not bound until
+`cityhall secrets rotate` rewrites them; see
+[Upgrading secrets stored by an older CityHall](#upgrading-secrets-stored-by-an-older-cityhall).
+
+Check what the current key can read at any time:
+
+```sh
+cityhall secrets status
+```
+
+### Rotating the key
+
+Changing `CITYHALL_SECRET_KEY` does not re-encrypt anything by itself, so on its
+own it makes every stored secret unreadable. `CITYHALL_SECRET_KEY_PREVIOUS` holds
+former keys, used only to decrypt, which is what makes a change survivable.
+
+1. **Back up the new key first.** Once secrets are re-encrypted under it, losing
+   it destroys values the old key could still have recovered.
+2. Set `CITYHALL_SECRET_KEY` to the new key and `CITYHALL_SECRET_KEY_PREVIOUS` to
+   the old one, then restart **every** replica. This matters: a process still
+   running with the old key keeps writing secrets that the next step will not
+   find.
+3. Re-encrypt everything under the new key:
+
+   ```sh
+   cityhall secrets rotate
+   ```
+
+4. Confirm it finished:
+
+   ```sh
+   cityhall secrets status
+   ```
+
+   Continue only when `NEEDS-PREVIOUS` and `LEGACY` are both zero. A non-zero
+   `NEEDS-PREVIOUS` means a writer was missed in step 2; fix that and rotate
+   again.
+
+5. Remove `CITYHALL_SECRET_KEY_PREVIOUS` and restart.
+
+`CITYHALL_SECRET_KEY_PREVIOUS` accepts several keys separated by commas, so more
+than one old key can be kept readable at once.
+
+A secret nothing in the ring can read is reported as `UNREADABLE` and named by
+`cityhall secrets rotate`. Its plaintext is gone, so the only fix is to enter it
+again.
+
+### Upgrading secrets stored by an older CityHall
+
+Secrets written before CityHall bound values to their rows are still readable, so
+upgrading changes nothing on its own. They are **not** protected against being
+moved between rows until they are rewritten, which the same command does with no
+key change:
+
+```sh
+cityhall secrets rotate
+```
+
+CityHall warns at startup while any remain, and `cityhall secrets status` counts
+them under `LEGACY`. Saving a secret through the UI also rewrites it, so the count
+falls on its own over time.
+
+One caveat: rotating an old value that had **already** been copied into the wrong
+row binds it to where it now sits. The old format records no owner, so nothing can
+tell where it came from. Rotation protects ownership from that point on; it cannot
+establish it retroactively.
 
 ### Reset links
 

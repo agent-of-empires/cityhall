@@ -191,7 +191,12 @@ async fn build_response(
                 structured_view: kind.structured_view,
                 limitation: (!kind.structured_view).then_some(STRUCTURED_VIEW_LIMITATION),
                 value_set: row.is_some(),
-                usable: row.is_some_and(|r| agent_credentials::usable(&r.value_encrypted)),
+                usable: row.is_some_and(|r| {
+                    agent_credentials::usable(
+                        &r.value_encrypted,
+                        &agent_credentials::aad(r.user_id, &r.env_var),
+                    )
+                }),
             }
         })
         .collect();
@@ -216,7 +221,10 @@ async fn set_credential(
         AppError::BadRequestOwned(format!("unknown agent credential `{env_var}`"))
     })?;
     let value = agent_credentials::validate_value(value)?;
-    let encrypted = crypto::encrypt(&value)?;
+    // Through the store's own helper, like every read of one of these: the
+    // encoding lives in one place, so the write cannot drift from what the
+    // workspace path will accept.
+    let encrypted = crypto::encrypt(&value, &agent_credentials::aad(user_id, env_var))?;
 
     // One upsert statement, like the git credential's: two concurrent saves
     // for the same user and variable cannot then both see no row and race to
@@ -426,7 +434,11 @@ mod tests {
                     .unwrap();
                 assert_eq!(rows.len(), 1);
                 assert_eq!(
-                    crypto::decrypt(&rows[0].value_encrypted).unwrap(),
+                    crypto::decrypt(
+                        &rows[0].value_encrypted,
+                        &agent_credentials::aad(user_id, "ANTHROPIC_API_KEY")
+                    )
+                    .unwrap(),
                     "sk-second-value"
                 );
             });

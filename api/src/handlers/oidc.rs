@@ -392,7 +392,7 @@ pub async fn update_settings(
 
     let existing = oidc::load_row(&db).await?;
     let client_secret_encrypted = match body.client_secret.filter(|s| !s.is_empty()) {
-        Some(secret) => Some(crypto::encrypt(&secret)?),
+        Some(secret) => Some(crypto::encrypt(&secret, &crypto::Aad::OidcClientSecret)?),
         None => existing
             .as_ref()
             .and_then(|r| r.client_secret_encrypted.clone()),

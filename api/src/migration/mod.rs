@@ -13,6 +13,7 @@ mod m0010_add_email_verified_to_users;
 mod m0011_create_workspaces;
 mod m0012_create_workspace_config;
 mod m0013_create_agent_credentials;
+mod m0014_create_git_ssh_keys;
 
 pub struct Migrator;
 
@@ -33,6 +34,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0011_create_workspaces::Migration),
             Box::new(m0012_create_workspace_config::Migration),
             Box::new(m0013_create_agent_credentials::Migration),
+            Box::new(m0014_create_git_ssh_keys::Migration),
         ]
     }
 }

@@ -86,6 +86,12 @@ pub fn api_router(state: AppState) -> Router {
                 .put(workspace_config::update_git_credential)
                 .delete(workspace_config::delete_git_credential),
         )
+        .route(
+            "/me/git-ssh-key",
+            get(workspace_config::get_git_ssh_key)
+                .put(workspace_config::update_git_ssh_key)
+                .delete(workspace_config::delete_git_ssh_key),
+        )
         .route("/me/agent-credentials", get(agent_credentials::get_mine))
         .route(
             "/me/agent-credentials/{env_var}",

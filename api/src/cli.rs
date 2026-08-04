@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::auth::random_token;
 use crate::error::AppError;
-use crate::{db, rbac, seed, server, service};
+use crate::{crypto, db, rbac, secrets, seed, server, service};
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +30,19 @@ pub enum Command {
         #[command(subcommand)]
         action: UserAction,
     },
+    /// Inspect and rotate the encryption of stored secrets.
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SecretsAction {
+    /// Report what the current key can read, per store.
+    Status,
+    /// Re-encrypt stored secrets under the current CITYHALL_SECRET_KEY.
+    Rotate,
 }
 
 #[derive(Subcommand)]
@@ -63,17 +76,120 @@ pub enum UserAction {
 }
 
 pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Before anything else: a malformed CITYHALL_SECRET_KEY_PREVIOUS is a
+    // configuration error, and refusing to start beats discovering it whenever
+    // some unrelated request happens to decrypt a secret.
+    crypto::validate_keyring()?;
+
     let db = db::connect().await?;
-    seed::ensure_roles(&db).await?;
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => {
+            seed::ensure_roles(&db).await?;
             seed::ensure_admin(&db).await?;
+            secrets::warn_about_legacy_secrets(&db).await;
             server::serve(db).await?;
         }
-        Command::User { action } => run_user_action(&db, action).await?,
+        Command::User { action } => {
+            seed::ensure_roles(&db).await?;
+            run_user_action(&db, action).await?
+        }
+        // Deliberately without seeding roles, unlike every other command: this is
+        // what an operator reaches for when stored secrets are already unreadable,
+        // so it must not write to unrelated tables or be able to fail on them.
+        Command::Secrets { action } => run_secrets_action(&db, action).await?,
     }
     Ok(())
+}
+
+async fn run_secrets_action(
+    db: &sea_orm::DatabaseConnection,
+    action: SecretsAction,
+) -> Result<(), AppError> {
+    match action {
+        SecretsAction::Status => {
+            let reports = secrets::status(db).await?;
+            print_store_table(&reports);
+            print_guidance(&reports);
+        }
+        SecretsAction::Rotate => {
+            let report = secrets::rotate(db).await?;
+            println!("re-encrypted {} secret(s)", report.rotated);
+            if !report.unreadable.is_empty() {
+                println!(
+                    "\nno key in CITYHALL_SECRET_KEY or CITYHALL_SECRET_KEY_PREVIOUS opens these,\n\
+                     so they cannot be recovered and must be entered again:"
+                );
+                for label in &report.unreadable {
+                    println!("  {label}");
+                }
+            }
+            if !report.skipped.is_empty() {
+                println!(
+                    "\nsomething else wrote these while rotating, so they were left alone.\n\
+                     A writer is probably still running with the old key; restart every\n\
+                     replica and rotate again:"
+                );
+                for label in &report.skipped {
+                    println!("  {label}");
+                }
+            }
+            println!();
+            print_store_table(&report.after);
+            print_guidance(&report.after);
+        }
+    }
+    Ok(())
+}
+
+fn print_store_table(reports: &[secrets::StoreReport]) {
+    println!(
+        "{:<20} {:>5} {:>8} {:>15} {:>7} {:>11}",
+        "STORE", "ROWS", "CURRENT", "NEEDS-PREVIOUS", "LEGACY", "UNREADABLE"
+    );
+    for r in reports {
+        println!(
+            "{:<20} {:>5} {:>8} {:>15} {:>7} {:>11}",
+            r.store, r.rows, r.current, r.needs_previous, r.legacy, r.unreadable
+        );
+    }
+}
+
+/// Turn the counts into the next action, so an operator does not have to know
+/// which column means "not safe to drop the old key yet".
+fn print_guidance(reports: &[secrets::StoreReport]) {
+    let sum = |f: fn(&secrets::StoreReport) -> usize| reports.iter().map(f).sum::<usize>();
+    let (needs_previous, legacy, unreadable) = (
+        sum(|r| r.needs_previous),
+        sum(|r| r.legacy),
+        sum(|r| r.unreadable),
+    );
+
+    println!();
+    if needs_previous > 0 {
+        println!(
+            "{needs_previous} secret(s) need CITYHALL_SECRET_KEY_PREVIOUS to be readable.\n\
+             Run `cityhall secrets rotate`; removing it before that count is zero loses them."
+        );
+    }
+    if legacy > 0 {
+        println!(
+            "{legacy} secret(s) predate the encryption envelope, so they are not bound to the\n\
+             row holding them and could be moved between rows. Run `cityhall secrets rotate`."
+        );
+    }
+    if unreadable > 0 {
+        println!(
+            "{unreadable} secret(s) cannot be read with any configured key. Either a previous\n\
+             key is missing from CITYHALL_SECRET_KEY_PREVIOUS, or they must be entered again."
+        );
+    }
+    if needs_previous == 0 && legacy == 0 && unreadable == 0 {
+        println!(
+            "Every stored secret is bound to its row and readable with the current key.\n\
+             CITYHALL_SECRET_KEY_PREVIOUS is safe to remove."
+        );
+    }
 }
 
 async fn run_user_action(

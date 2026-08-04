@@ -1,6 +1,7 @@
 pub mod agent_credential;
 pub mod auth_settings;
 pub mod git_credential;
+pub mod git_ssh_key;
 pub mod oidc_settings;
 pub mod password_reset_token;
 pub mod role;

@@ -227,12 +227,13 @@ pub async fn set_version(
 ) -> Result<Json<serde_json::Value>, AppError> {
     caller.require("workspaces.write")?;
     ensure_user_exists(&state, user_id).await?;
-    pin_version(&state, user_id, body.pinned_version.clone()).await?;
+    let pinned_version = normalize(body.pinned_version);
+    pin_version(&state, user_id, pinned_version.clone()).await?;
     if body.restart {
         spawn_restarts(state.clone(), vec![user_id]);
     }
     Ok(Json(
-        serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
+        serde_json::json!({ "pinned_version": pinned_version }),
     ))
 }
 
@@ -260,14 +261,15 @@ pub async fn bulk_set_version(
     for user_id in &body.user_ids {
         ensure_user_exists(&state, *user_id).await?;
     }
+    let pinned_version = normalize(body.pinned_version);
     for user_id in &body.user_ids {
-        pin_version(&state, *user_id, body.pinned_version.clone()).await?;
+        pin_version(&state, *user_id, pinned_version.clone()).await?;
     }
     if body.restart {
         spawn_restarts(state.clone(), body.user_ids);
     }
     Ok(Json(
-        serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
+        serde_json::json!({ "pinned_version": pinned_version }),
     ))
 }
 
@@ -285,6 +287,8 @@ fn spawn_restarts(state: AppState, user_ids: Vec<i32>) {
     });
 }
 
+/// A version is free text: it is rendered into the image template, so any tag
+/// an operator has built and tagged is valid, not only a discovered release.
 fn normalize(version: Option<String>) -> Option<String> {
     version
         .map(|v| v.trim().to_string())
@@ -306,7 +310,7 @@ async fn pin_version(
 ) -> Result<(), AppError> {
     let row = workspaces::get_or_create(&state.db, user_id).await?;
     let mut active: workspace::ActiveModel = row.into();
-    active.pinned_version = Set(normalize(version));
+    active.pinned_version = Set(version);
     active.updated_at = Set(Utc::now());
     active.update(&state.db).await?;
     Ok(())

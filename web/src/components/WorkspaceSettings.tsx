@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type WorkspaceSettings } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
-import { Button, ErrorText, Field, Input, Select } from "./ui";
+import { Button, ErrorText, Field, Input } from "./ui";
+import { VersionField } from "./VersionField";
 
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,25 +79,19 @@ export function WorkspaceSettingsSection() {
               placeholder="cityhall/aoe:{version}"
             />
           </Field>
-          <Field label="Default version">
-            {versions.length > 0 ? (
-              <Select value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)}>
-                <option value="">none</option>
-                {/* A previously saved version can predate the discovered list. */}
-                {defaultVersion && !versions.includes(defaultVersion) && (
-                  <option value={defaultVersion}>{defaultVersion}</option>
-                )}
-                {versions.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                    {v === latest ? " (latest)" : ""}
-                  </option>
-                ))}
-              </Select>
-            ) : (
-              <Input value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)} placeholder="v0.1.0" />
-            )}
-          </Field>
+          {/* Deliberately not a Field: that wraps its children in a label with
+              no `for`, which binds to the first control inside it, and here that
+              would be VersionField's checkbox rather than the version control. */}
+          <div className="block space-y-1.5">
+            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Default version</span>
+            <VersionField
+              value={defaultVersion}
+              onChange={setDefaultVersion}
+              versions={versions}
+              latest={latest ?? undefined}
+              noneLabel="none"
+            />
+          </div>
           <Field label="Idle stop (minutes)">
             <Input
               type="number"
@@ -112,7 +107,9 @@ export function WorkspaceSettingsSection() {
           their pinned version (or the default). Idle workspaces are stopped automatically; their data volume is kept.
         </p>
 
-        {latest && defaultVersion && isOlderVersion(defaultVersion, latest) && (
+        {/* Only releases are comparable: a custom tag's digits are not a
+            version, so "dev-0" would otherwise read as behind the latest. */}
+        {latest && versions.includes(defaultVersion) && isOlderVersion(defaultVersion, latest) && (
           <p className="text-sm text-status-waiting">
             The default version {defaultVersion} is behind the latest release {latest}.{" "}
             <button type="button" className="underline" onClick={() => setDefaultVersion(latest)}>

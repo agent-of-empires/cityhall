@@ -151,6 +151,15 @@ export interface GitCredential {
   secret_key_available: boolean;
 }
 
+/// A user's own git SSH key. The key is never returned, only whether one is
+/// stored; known_hosts is, because a host's public key is public and re-pasting
+/// it to change the key alone would be friction for nothing.
+export interface GitSshKey {
+  key_set: boolean;
+  known_hosts: string;
+  secret_key_available: boolean;
+}
+
 /// One agent-facing credential variable, whether or not a value is stored for
 /// it. The server owns this catalog: the client renders whatever comes back
 /// rather than hardcoding the variable list.
@@ -320,6 +329,13 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   deleteGitCredential: () => request<GitCredential>("/me/git-credential", { method: "DELETE" }),
+  getGitSshKey: () => request<GitSshKey>("/me/git-ssh-key"),
+  updateGitSshKey: (patch: { key: string | null; known_hosts: string }) =>
+    request<GitSshKey>("/me/git-ssh-key", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteGitSshKey: () => request<GitSshKey>("/me/git-ssh-key", { method: "DELETE" }),
   getAgentCredentials: () => request<AgentCredentials>("/me/agent-credentials"),
   getUserAgentCredentials: (userId: number) => request<AgentCredentials>(`/users/${userId}/agent-credentials`),
   updateAgentCredential: (envVar: string, value: string) =>

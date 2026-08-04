@@ -11,7 +11,8 @@ get the message composer and the structured (chat) view only, with terminal
 and diff panes, project management, and advanced settings hidden in the UI and
 refused server-side. The flag requires an aoe version that supports it;
 starting a workspace on an older version fails with an unknown-argument error
-from `aoe serve`.
+from `aoe serve`. If no release has it yet, see
+[Unreleased aoe](#unreleased-aoe).
 
 ## How it works
 
@@ -28,7 +29,8 @@ from `aoe serve`.
   (or a selected group) to a specific version. A version change recreates the
   container on its next start, keeping the volume. The image used is the
   settings' image template with `{version}` substituted, e.g.
-  `cityhall/aoe:v0.5.0`.
+  `cityhall/aoe:v0.5.0`. A version is normally a release tag, and can also be
+  an unreleased commit ([Unreleased aoe](#unreleased-aoe)).
 
 ## Setup
 
@@ -42,12 +44,23 @@ admin Workspaces page shows the progress, and requests get a retry-shortly
 error until the artifact is ready. The kubernetes backend cannot be
 auto-built: point the image template at a registry the cluster can pull.
 
+Local builds need BuildKit, so whatever runs CityHall needs the `buildx` docker
+CLI plugin. The published image ships it; a hand-rolled one that omits it fails
+the build with a message naming the missing component.
+
 Pre-building is still possible to skip the first-start wait, or to push to a
 registry:
 
 ```sh
 docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 ```
+
+The build checks the downloaded release against the `.sha256` published beside
+it, so a damaged or substituted tarball fails the build rather than becoming the
+binary your workspaces run. Both come from the same release, so this catches a
+corrupted download and a partially replaced asset, not a release an attacker
+controls outright. CityHall's own image pins its `docker`, `buildx`, and
+`kubectl` digests in the `Dockerfile` itself, which does not have that limit.
 
 Version fields offer the discovered stable aoe releases, fetched from the
 GitHub API and cached for an hour (the last known list is served when GitHub
@@ -56,6 +69,51 @@ is a problem). On a first startup the default version is pre-filled with the
 latest release (skipped when offline); adjust it under **Settings →
 Workspaces** if needed. Starting a workspace with no default version set
 fails with a descriptive error.
+
+### Unreleased aoe
+
+A version does not have to be one of the discovered releases. Tick **custom
+version** on any version field and type anything; it is substituted into the
+image template exactly as a release tag is, so `main-20260804` with the default
+template means `cityhall/aoe:main-20260804`. Nothing more happens: CityHall pulls
+that image, or builds it from the reference Dockerfile's release path, and if
+neither can produce it the workspace reports a provisioning failure naming the
+image. Pointing at a different registry or repository is the image template's
+job, under **Settings → Workspaces**, since that part is shared by everyone.
+
+That is how you run an aoe with no release yet: build the image yourself and tag
+it as the version you pin. The reference Dockerfile compiles a commit when told
+to, so there is nothing to hand-assemble:
+
+```sh
+SHA=$(git -C ../agent-of-empires rev-parse main)
+docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
+  -t cityhall/aoe:main-20260804 deploy/aoe-image/
+```
+
+`AOE_GIT_SHA` has to be a full commit id. The build refuses a branch or a tag,
+because either would let the same image tag mean a different build next week.
+
+Then set the version to `main-20260804`, as the default or for one pinned user.
+CityHall finds the image already present and runs it. Tag it however you like;
+the tag is the version string and nothing parses it.
+
+Notes on that build, all learned the hard way:
+
+- **Give it memory.** It compiles unoptimized (`opt-level=0`, no LTO) with two
+  parallel rustc jobs, which is what fits a 4 GB Docker VM with nothing else in
+  it. Raise `CARGO_BUILD_JOBS` and `CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL` on a
+  bigger builder. A failure ending in `cannot allocate memory` or `signal: 9` is
+  the builder running out of memory, not a compile error, and the build says so.
+- **It needs BuildKit**, for the same reason the release path does.
+- **Expect several minutes**, and a slower binary than a release build. This is
+  for testing a change, not for a deployment to settle on.
+- **Build for the architecture the workspace runs on.** The compile happens on
+  the machine you run it on, so build on the docker host, or push a multi-arch
+  image.
+- **The process backend cannot use this.** It downloads a release tarball by tag
+  name, so it only runs published versions. For kubernetes, push the image
+  somewhere the cluster can pull it.
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
@@ -160,6 +218,36 @@ Per user rather than one shared deployment credential: attribution is correct at
 the push level, and deleting an account revokes exactly that person's access. A
 user who has not set one can still work with public repos; a private clone fails
 with git's own error in the workspace.
+
+#### SSH keys
+
+A token cannot authenticate a `git@host:...` remote, so **Account** also takes an
+SSH private key, stored and served the same way. Two rules the form enforces
+rather than leaving to fail inside the container:
+
+- **The key must have no passphrase.** Nothing in a workspace can prompt for one,
+  so a protected key would turn every clone into a hang. A key kept for this
+  purpose only is the answer, not the key on your laptop.
+- **Host keys are required with it.** The workspace connects with strict host key
+  checking, so it refuses anything not listed in the known hosts field rather
+  than trusting whatever answers. Shipping a key without them would trade a
+  credential problem for a machine-in-the-middle one.
+
+  For GitHub, **Fill from GitHub** fetches the keys GitHub publishes, over a
+  connection authenticated for a name an attacker on the path cannot present. For
+  another host, run `ssh-keyscan <host>` somewhere you trust the network and check
+  the result against the fingerprints that host publishes. `ssh-keyscan` on its
+  own trusts whatever answers on port 22, so pasting a scan unchecked pins
+  whatever was listening at that moment, and strict checking then cannot tell the
+  difference.
+
+Host keys are public, so unlike the key itself they are shown back to the user
+and can be edited without re-entering it.
+
+Installing the key is aoe's half of the job, from the same `[git]` table it
+already reads the token out of. An aoe too old to know about the two keys ignores
+them, so nothing breaks on an older workspace; `git@` remotes simply keep failing
+until it is upgraded.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
@@ -273,10 +361,13 @@ outside that set is still available to anything you run in a terminal session.
 The UI marks these, and widening the set is tracked in
 [agent-of-empires#3238](https://github.com/agent-of-empires/agent-of-empires/issues/3238).
 
-Values are encrypted with `CITYHALL_SECRET_KEY`, are never returned to a client
-once stored, and are removed with the user's account. Changing that key leaves
-stored credentials unreadable; the account page then shows them as needing to be
-re-entered, and a workspace starts without them rather than failing.
+Values are encrypted with `CITYHALL_SECRET_KEY` and bound to the user and variable
+they were stored for, so a value moved to another user's row does not decrypt for
+them. They are never returned to a client once stored, and are removed with the
+user's account. Changing the key without following the
+[rotation procedure](configuration.md#rotating-the-key) leaves stored credentials
+unreadable; the account page then shows them as needing to be re-entered, and a
+workspace starts without them rather than failing.
 
 **A change applies when the workspace is next created**, because credentials are
 part of a container's environment rather than something injected into a running
@@ -290,7 +381,12 @@ deleted as soon as the command returns, which keeps them out of argv, the host
 process list, and CityHall's logs, but `docker inspect` on a running container
 still shows them. On kubernetes they live in a per-user Secret referenced with
 `envFrom`, so they stay out of the Deployment; note a Secret is not encrypted at
-rest unless the cluster is configured for that. With the `process` backend they
+rest unless the cluster is configured for that. **That split only buys anything if
+your namespace RBAC keeps it**: reading a Deployment must not imply reading
+Secrets, or the values are back in reach of everyone who could see them before.
+Grant `secrets` read separately and to fewer principals than `deployments` read,
+and remember a per-user Secret is enough to fetch that user's whole config bundle,
+including their decrypted git token. With the `process` backend they
 are readable through `/proc/<pid>/environ` by the CityHall OS user, which is the
 same user every workspace runs as. In every case, anyone who can administer the
 runtime can read a workspace's credentials.
@@ -338,19 +434,22 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   `deploy/docker-compose.workspaces.yml`). Mounting the docker socket gives
   CityHall effective root on the host; use a restricted socket proxy if that
   matters.
-- **`kubernetes`**. One Deployment + Service + PVC per user, managed with
+- **`kubernetes`**. One Deployment + Service + PVC per user, plus a Secret when
+  there is a bundle token or an agent credential to inject, managed with
   `kubectl` in the CityHall pod's namespace (override with
   `WORKSPACE_K8S_NAMESPACE`). Stop scales to zero keeping the PVC; destroy
-  deletes all three. The image template must point at a registry the cluster
+  deletes all of them. The image template must point at a registry the cluster
   can pull. Requires the RBAC and NetworkPolicy shipped in `deploy/k8s/` and
   the helm chart; without the NetworkPolicy any pod in the cluster can reach
-  the auth-none workspaces.
+  the auth-none workspaces. Restrict who else may read Secrets in that
+  namespace, per the note above.
 - **`process`** (unix). One detached `aoe serve` per user with an isolated
   HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Version
   binaries live at `$WORKSPACE_PROCESS_DIR/versions/<version>/aoe`,
   downloaded automatically from the release tarball (or installed there
-  manually). Processes survive CityHall restarts. This isolates data, not
-  security: every workspace runs as the CityHall OS user.
+  manually), so released versions only. Processes survive CityHall restarts.
+  This isolates data, not security: every workspace runs as the CityHall OS
+  user.
 
 ## Current limitations
 
@@ -360,5 +459,9 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   CityHall install a chosen set; the image is the only lever
   ([#57](https://github.com/agent-of-empires/cityhall/issues/57)). See
   [Coding agents](#coding-agents).
-- Git credentials are HTTPS tokens only; there is no way to supply an SSH key
-  ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
+- An SSH key only reaches a workspace running an aoe new enough to install one.
+  An older aoe ignores it and `git@` remotes keep failing. See
+  [SSH keys](#ssh-keys).
+- A workspace built from an unreleased commit does not follow the ref it came
+  from, and only the docker backend can build one. See
+  [Unreleased aoe](#unreleased-aoe).

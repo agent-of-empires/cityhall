@@ -76,6 +76,19 @@ pub const CATALOG: &[CredentialKind] = &[
 pub const STRUCTURED_VIEW_LIMITATION: &str =
     "Available in terminal sessions only. Structured-view agents do not receive this variable yet.";
 
+/// What one stored credential's ciphertext is bound to.
+///
+/// Shared so the three places that decrypt one (the workspace start path below,
+/// the owner's status view in `handlers::agent_credentials`, and rotation in
+/// `crate::secrets`) cannot disagree about the binding and read each other's
+/// rows as unusable.
+pub fn aad(user_id: i32, env_var: &str) -> crypto::Aad {
+    crypto::Aad::AgentCredential {
+        user_id,
+        env_var: env_var.to_string(),
+    }
+}
+
 /// The catalog entry for `env_var`, matched exactly. Case-sensitive: environment
 /// variable names are, and a lenient match here would let `path` through as
 /// `PATH` on a case-insensitive comparison.
@@ -184,7 +197,12 @@ pub async fn materialize(db: &DatabaseConnection, user_id: i32) -> Result<AgentE
             );
             continue;
         }
-        match crypto::decrypt(&row.value_encrypted) {
+        // Bound to this user and variable, so a row moved here from another
+        // user's is skipped like any other undecryptable value rather than
+        // injected. Computed before the match so `row.env_var` can move into
+        // the pair.
+        let aad = aad(user_id, &row.env_var);
+        match crypto::decrypt(&row.value_encrypted, &aad) {
             Ok(value) => pairs.push((row.env_var, Secret::new(value))),
             Err(e) => tracing::warn!(
                 user_id,
@@ -196,12 +214,14 @@ pub async fn materialize(db: &DatabaseConnection, user_id: i32) -> Result<AgentE
     Ok(AgentEnv::new(pairs))
 }
 
-/// Whether `user_id`'s stored value for `env_var` decrypts.
+/// Whether a stored value decrypts as the credential `aad` describes.
 ///
 /// Reported to the owner so the UI cannot claim a credential is configured while
-/// the workspace silently drops it.
-pub fn usable(value_encrypted: &str) -> bool {
-    crypto::decrypt(value_encrypted).is_ok()
+/// the workspace silently drops it. Takes the binding rather than the ciphertext
+/// alone: without it a caller holding only a column value could report someone
+/// else's credential as usable, which is the confusion this whole change removes.
+pub fn usable(value_encrypted: &str, aad: &crypto::Aad) -> bool {
+    crypto::decrypt(value_encrypted, aad).is_ok()
 }
 
 #[cfg(test)]
@@ -219,6 +239,15 @@ mod tests {
         assert!(lookup("AOE_CITYHALL_BUNDLE_TOKEN").is_none());
         // Case-sensitive, so a lowercase spelling is not a way in.
         assert!(lookup("anthropic_api_key").is_none());
+    }
+
+    /// The binding for a credential is `agent-credential:<user>:<env_var>`, so a
+    /// name containing the separator could make two different rows authenticate
+    /// against the same bytes. The catalog is closed, which is what makes the
+    /// plain string encoding safe; this pins that.
+    #[test]
+    fn catalog_names_cannot_break_the_binding() {
+        assert!(CATALOG.iter().all(|k| !k.env_var.contains(':')));
     }
 
     #[test]
