@@ -44,6 +44,10 @@ admin Workspaces page shows the progress, and requests get a retry-shortly
 error until the artifact is ready. The kubernetes backend cannot be
 auto-built: point the image template at a registry the cluster can pull.
 
+Local builds need BuildKit, so whatever runs CityHall needs the `buildx` docker
+CLI plugin. The published image ships it; a hand-rolled one that omits it fails
+the build with a message naming the missing component.
+
 Pre-building is still possible to skip the first-start wait, or to push to a
 registry:
 
@@ -59,56 +63,47 @@ latest release (skipped when offline); adjust it under **Settings →
 Workspaces** if needed. Starting a workspace with no default version set
 fails with a descriptive error.
 
-### Unreleased aoe
+### Custom versions and unreleased aoe
 
-A version field also accepts `git:<ref>`, where the ref is a branch, tag, or
-commit sha in the aoe repository. CityHall then provisions that workspace by
-compiling aoe rather than downloading a release, which is what makes a change
-that has landed on `main` but is not released yet testable. Experimental,
-docker backend only, and slow.
+A version does not have to be one of the discovered releases. Tick **custom
+version** on any version field and type anything; it is substituted into the
+image template exactly as a release tag is, so `main-20260804` with the default
+template means `cityhall/aoe:main-20260804`. Nothing more happens: CityHall pulls
+that image, or builds it from the reference Dockerfile's release path, and if
+neither can produce it the workspace reports a provisioning failure naming the
+image. Pointing at a different registry or repository is the image template's
+job, under **Settings → Workspaces**, since that part is shared by everyone.
 
-The ref is resolved to the commit it points at when you save, and what gets
-stored is `git-<sha>`. That sha, not the ref, is the version identity: it is the
-image tag, the container's version label, and what the admin Workspaces page
-shows, so it is always visible that a workspace is not on a release.
-Consequences worth knowing:
-
-- The ref is not tracked. Advancing `main` changes nothing on its own; save
-  `git:main` again and the newly resolved sha recreates the container on its
-  next start. Nothing rebuilds a workspace someone is using behind their back.
-- Re-saving an already-resolved `git-<sha>` does not resolve or rebuild
-  anything, so saving a form twice is free.
-- Only public commits resolve. CityHall reads the ref through the GitHub API
-  (with `GITHUB_TOKEN` when one is set) and the build clones over HTTPS with no
-  credentials.
-
-The build runs in the same background provisioning flow as an image pull, so it
-survives a closed browser tab, runs once per image no matter how many requests
-arrive, and reports progress on the admin Workspaces page. Expect roughly four
-minutes on a 12 core, 4 GB Docker VM.
-
-It compiles unoptimized (`opt-level=0`, no LTO) with two parallel rustc jobs,
-which is what fits a stock 4 GB VM. Both are needed and for different reasons:
-aoe's own `.cargo/config.toml` asks for eight parallel jobs, and separately the
-`agent-of-empires` lib crate is one rustc process that no job count can shrink
-and that gets OOM-killed at any optimization level above 0. The resulting binary
-is slower than a release build, so this is for testing a change, not for a
-deployment to settle on. Raise either knob if the builder has memory to spare:
+That is how you run an aoe with no release yet: build the image yourself and tag
+it as the version you pin. The reference Dockerfile compiles a commit when told
+to, so there is nothing to hand-assemble:
 
 ```sh
 SHA=$(git -C ../agent-of-empires rev-parse main)
 docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
-  --build-arg CARGO_BUILD_JOBS=8 --build-arg CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL=1 \
-  -t "cityhall/aoe:git-$SHA" deploy/aoe-image/
+  -t cityhall/aoe:main-20260804 deploy/aoe-image/
 ```
 
-If a build fails with `cannot allocate memory`, or a log tail ending in
-`signal: 9`, the builder ran out of memory rather than hitting a compile error.
+Then set the version to `main-20260804`, as the default or for one pinned user.
+CityHall finds the image already present and runs it. Tag it however you like;
+the tag is the version string and nothing parses it.
 
-The other backends do not build. The process backend refuses a `git-` version,
-since a commit has no release tarball to download. The kubernetes backend can
-run one, but only if you build the image with the command above and push it
-where the cluster can pull it.
+Notes on that build, all learned the hard way:
+
+- **Give it memory.** It compiles unoptimized (`opt-level=0`, no LTO) with two
+  parallel rustc jobs, which is what fits a 4 GB Docker VM with nothing else in
+  it. Raise `CARGO_BUILD_JOBS` and `CARGO_PROFILE_DEV_RELEASE_OPT_LEVEL` on a
+  bigger builder. A failure ending in `cannot allocate memory` or `signal: 9` is
+  the builder running out of memory, not a compile error, and the build says so.
+- **It needs BuildKit**, for the same reason the release path does.
+- **Expect several minutes**, and a slower binary than a release build. This is
+  for testing a change, not for a deployment to settle on.
+- **Build for the architecture the workspace runs on.** The compile happens on
+  the machine you run it on, so build on the docker host, or push a multi-arch
+  image.
+- **The process backend cannot use this.** It downloads a release tarball by tag
+  name, so it only runs published versions. For kubernetes, push the image
+  somewhere the cluster can pull it.
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces

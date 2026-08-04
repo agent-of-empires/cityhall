@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ExternalLink, KeyRound, Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
-import { formatVersion, isGitVersion, isOlderVersion } from "../lib/versions";
+import { isOlderVersion } from "../lib/versions";
 import { AgentCredentialsEditor } from "./AgentCredentials";
 import { TopBar } from "./TopBar";
 import { Button, Select } from "./ui";
@@ -118,7 +118,15 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
   }
 
   function outdated(item: WorkspaceItem): boolean {
-    return latest !== null && item.effective_version !== null && isOlderVersion(item.effective_version, latest);
+    // A hand-built tag (e.g. "main-20260804") is not a release, so comparing
+    // it numerically against `latest` would parse garbage version components.
+    // Only flag outdated when the version is one of the discovered releases.
+    return (
+      latest !== null &&
+      item.effective_version !== null &&
+      versions.includes(item.effective_version) &&
+      isOlderVersion(item.effective_version, latest)
+    );
   }
 
   function selectOutdated() {
@@ -182,8 +190,7 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
               </p>
             ))}
             <p className="text-xs text-text-muted">
-              An image pull takes a few minutes and a source build compiles aoe, which can take well over ten. Either
-              way it continues if this page is closed.
+              A first image pull or local build takes a few minutes and continues if this page is closed.
             </p>
           </div>
         )}
@@ -271,14 +278,12 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                             className="w-44"
                           >
                             <option value="">
-                              {item.effective_version
-                                ? `default (${formatVersion(item.effective_version)})`
-                                : "default"}
+                              {item.effective_version ? `default (${item.effective_version})` : "default"}
                             </option>
                             {/* A previously saved version can predate the discovered list. */}
                             {item.pinned_version && !versions.includes(item.pinned_version) && (
                               <option value={item.pinned_version} title={item.pinned_version}>
-                                {formatVersion(item.pinned_version)}
+                                {item.pinned_version}
                               </option>
                             )}
                             {versions.map((v) => (
@@ -291,15 +296,10 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                         ) : (
                           <span>
                             {item.pinned_version
-                              ? formatVersion(item.pinned_version)
+                              ? item.pinned_version
                               : item.effective_version
-                                ? `default (${formatVersion(item.effective_version)})`
+                                ? `default (${item.effective_version})`
                                 : "-"}
-                          </span>
-                        )}
-                        {item.effective_version && isGitVersion(item.effective_version) && (
-                          <span className="text-xs font-medium text-text-secondary" title={item.effective_version}>
-                            source build
                           </span>
                         )}
                         {outdated(item) && (

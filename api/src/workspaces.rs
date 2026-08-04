@@ -11,7 +11,6 @@ use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
     bundle_url, render_image, BundleAccess, OrchestratorError, WorkspaceSpec, WorkspaceStatus,
-    GIT_VERSION_PREFIX,
 };
 use crate::state::AppState;
 
@@ -103,98 +102,6 @@ async fn fetch_releases() -> Result<Vec<String>, String> {
         .await
         .map_err(|e| e.to_string())?;
     parse_releases(&body).map_err(|e| e.to_string())
-}
-
-/// What an admin types to ask for an unreleased aoe commit instead of a
-/// release tag: `git:main`, `git:<branch>`, `git:<sha>`.
-const GIT_REF_INPUT_PREFIX: &str = "git:";
-
-/// Turn a version as typed into the version CityHall stores: a release tag is
-/// kept verbatim, `git:<ref>` becomes `git-<sha>`.
-///
-/// The ref is resolved here, on write, and never again. `build_spec` runs on
-/// every proxied request behind a cache and does no I/O, so resolving there
-/// would put GitHub on that hot path; worse, a moving ref would change what a
-/// version means underneath a container that is already running it. The cost of
-/// pinning is that advancing `main` needs the admin to re-enter `git:main`,
-/// which is also what keeps main advancing from rebuilding a live workspace.
-pub async fn resolve_version(version: Option<String>) -> Result<Option<String>, AppError> {
-    let Some(version) = version
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    else {
-        return Ok(None);
-    };
-    // An already-resolved `git-<sha>` has no `git:` prefix and passes straight
-    // through, so re-saving a form does not re-resolve anything.
-    let Some(git_ref) = version.strip_prefix(GIT_REF_INPUT_PREFIX) else {
-        return Ok(Some(version));
-    };
-    let git_ref = git_ref.trim();
-    if !valid_git_ref(git_ref) {
-        return Err(AppError::BadRequest(
-            "git version needs a ref, for example git:main",
-        ));
-    }
-    let sha = resolve_git_ref(git_ref).await.map_err(|e| {
-        AppError::BadRequestOwned(format!("cannot resolve aoe ref '{git_ref}': {e}"))
-    })?;
-    Ok(Some(format!("{GIT_VERSION_PREFIX}{sha}")))
-}
-
-/// A ref is interpolated into a GitHub API path, so it is checked before it
-/// gets there. Slashes are allowed because branch names use them; anything
-/// that could climb out of the path or start a query string is not.
-fn valid_git_ref(git_ref: &str) -> bool {
-    !git_ref.is_empty()
-        && !git_ref.starts_with('/')
-        && !git_ref.starts_with('.')
-        && !git_ref.contains("..")
-        && git_ref
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '+'))
-}
-
-/// The commit a branch, tag, or sha currently points at.
-async fn resolve_git_ref(git_ref: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req = client
-        .get(format!(
-            "https://api.github.com/repos/agent-of-empires/agent-of-empires/commits/{git_ref}"
-        ))
-        // GitHub's API rejects requests without a User-Agent.
-        .header("User-Agent", "cityhall")
-        // Ask for just the sha instead of the commit with its diff.
-        .header("Accept", "application/vnd.github.sha");
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.trim().is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", token.trim()));
-        }
-    }
-    let body = req
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
-    parse_commit_sha(&body)
-}
-
-/// The sha is about to become an image tag and a path component, so an
-/// unexpected body is rejected rather than propagated.
-fn parse_commit_sha(body: &str) -> Result<String, String> {
-    let sha = body.trim();
-    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(sha.to_ascii_lowercase())
-    } else {
-        Err("GitHub did not return a commit sha".to_string())
-    }
 }
 
 /// Parse the GitHub releases payload into stable tags, newest version first.
@@ -657,63 +564,6 @@ mod tests {
         // Drafts and prereleases are dropped; order is by version, not the
         // API's creation-date order.
         assert_eq!(parse_releases(body).unwrap(), vec!["v1.10.0", "v1.9.0"]);
-    }
-
-    #[test]
-    fn refs_that_could_escape_the_api_path_are_rejected() {
-        // Branch names contain slashes, so those have to be allowed.
-        assert!(valid_git_ref("main"));
-        assert!(valid_git_ref("feat/some-branch"));
-        assert!(valid_git_ref("v1.13.2"));
-        assert!(valid_git_ref("be15cfc8"));
-
-        assert!(!valid_git_ref(""));
-        assert!(!valid_git_ref("../../users/octocat"));
-        assert!(!valid_git_ref("/repos/other"));
-        assert!(!valid_git_ref(".git"));
-        assert!(!valid_git_ref("main?per_page=1"));
-        assert!(!valid_git_ref("main#frag"));
-        assert!(!valid_git_ref("two words"));
-    }
-
-    #[test]
-    fn only_a_real_sha_becomes_a_version() {
-        let sha = "be15cfc8be15cfc8be15cfc8be15cfc8be15cfc8";
-        assert_eq!(parse_commit_sha(&format!("  {sha}\n")).unwrap(), sha);
-        assert_eq!(parse_commit_sha(&sha.to_uppercase()).unwrap(), sha);
-        // A sha becomes an image tag and a path component, so anything else,
-        // including the full commit JSON an unrecognized Accept header returns,
-        // is refused rather than passed on.
-        assert!(parse_commit_sha("be15cfc8").is_err());
-        assert!(parse_commit_sha(r#"{"sha": "be15cfc8"}"#).is_err());
-        assert!(parse_commit_sha("").is_err());
-    }
-
-    #[tokio::test]
-    async fn resolving_a_version_only_calls_github_for_a_ref() {
-        // None of these reach the network: a release tag, an unset value, and
-        // an already-resolved source build all pass straight through, so saving
-        // a form twice does not re-resolve anything.
-        assert_eq!(
-            resolve_version(Some("v1.13.2".to_string())).await.unwrap(),
-            Some("v1.13.2".to_string())
-        );
-        assert_eq!(resolve_version(None).await.unwrap(), None);
-        assert_eq!(
-            resolve_version(Some("   ".to_string())).await.unwrap(),
-            None
-        );
-        let resolved = format!("{GIT_VERSION_PREFIX}be15cfc8be15cfc8be15cfc8be15cfc8be15cfc8");
-        assert_eq!(
-            resolve_version(Some(resolved.clone())).await.unwrap(),
-            Some(resolved)
-        );
-
-        // A bad ref is refused before any request is made.
-        assert!(resolve_version(Some("git:".to_string())).await.is_err());
-        assert!(resolve_version(Some("git:../octocat".to_string()))
-            .await
-            .is_err());
     }
 
     #[tokio::test]

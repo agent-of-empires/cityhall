@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    binary_key, git_version_sha, http_probe, proxy_allowed_host, proxy_allowed_origin, wait_ready,
-    Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    binary_key, http_probe, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin,
+    Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -270,15 +270,6 @@ impl ProcessOrchestrator {
 impl Orchestrator for ProcessOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         validate_version(&spec.version)?;
-        // A source build of unreleased aoe exists only as a container image
-        // this backend has no way to run, and there is no release tarball to
-        // download for it, so say that instead of 404ing on the download.
-        if git_version_sha(&spec.version).is_some() {
-            return Err(OrchestratorError::ArtifactMissing(format!(
-                "version '{}' builds aoe from source, which only the docker workspace backend can provision; pin a released version to use the process backend",
-                spec.version
-            )));
-        }
         if let Some(state) = self.read_state(spec.user_id) {
             if alive(state.pid) {
                 let addr = format!("127.0.0.1:{}", state.port);

@@ -21,8 +21,8 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{
-    git_version_sha, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator,
-    OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
+    ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -33,14 +33,12 @@ const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 /// Image pulls and first builds legitimately take minutes.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
-/// A source build compiles aoe's several hundred crates and its frontend, which
-/// does not fit in the budget a download gets.
-const SOURCE_BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// The reference workspace image build, embedded so a running CityHall can
 /// build missing images without a repo checkout. It needs no build context
-/// (it fetches aoe itself, as a release tarball or a git clone), so it is
-/// piped to `docker build -`.
+/// (it downloads the release tarball itself), so it is piped to
+/// `docker build -`. Its `AOE_SOURCE=git` path, which compiles a commit, is
+/// for an operator building by hand and is never used from here.
 const AOE_IMAGE_DOCKERFILE: &str = include_str!("../../../deploy/aoe-image/Dockerfile");
 
 pub fn container_name(user_id: i32) -> String {
@@ -216,73 +214,42 @@ impl DockerCliOrchestrator {
     }
 }
 
-/// Build arguments, timeout, and progress message for building `image`: a
-/// release version downloads a tarball, a `git-<sha>` version compiles that
-/// commit. Extracted as a pure function so the source-build path is testable
-/// without a docker daemon.
-fn build_plan(image: &str, version: &str) -> (Vec<String>, Duration, String) {
-    match git_version_sha(version) {
-        Some(sha) => (
-            vec![
-                "--build-arg".to_string(),
-                "AOE_SOURCE=git".to_string(),
-                "--build-arg".to_string(),
-                format!("AOE_GIT_SHA={sha}"),
-            ],
-            SOURCE_BUILD_TIMEOUT,
-            format!("building image {image} from aoe source (compiling aoe takes many minutes)"),
-        ),
-        None => (
-            vec!["--build-arg".to_string(), format!("AOE_VERSION={version}")],
-            PROVISION_TIMEOUT,
-            format!("building image {image} (a first build takes a few minutes)"),
-        ),
-    }
-}
-
 async fn provision_image_job(
     cli: String,
     image: String,
     version: String,
     registry: Arc<ProvisioningRegistry>,
 ) {
-    // A source build's image is published nowhere, so pulling it can only fail
-    // and add that failure to the message a real build error would carry.
-    let git_sha = git_version_sha(&version).map(str::to_string);
-    let pull_err = match git_sha {
-        Some(_) => None,
-        None => {
-            match provision_run(&cli, &["pull", &image], None, &image, PROVISION_TIMEOUT).await {
-                Ok(()) => {
-                    tracing::info!(%image, "pulled workspace image");
-                    registry.succeed(&image);
-                    return;
-                }
-                Err(e) => Some(e),
-            }
+    let pull_err = match provision_run(&cli, &["pull", &image], None, &image).await {
+        Ok(()) => {
+            tracing::info!(%image, "pulled workspace image");
+            registry.succeed(&image);
+            return;
         }
+        Err(e) => e,
     };
-
-    let (build_args, timeout, message) = build_plan(&image, &version);
-    registry.progress(&image, &message);
-
-    let mut args: Vec<&str> = vec!["build"];
-    args.extend(build_args.iter().map(String::as_str));
-    args.extend(["-t", image.as_str(), "-"]);
-    match provision_run(&cli, &args, Some(AOE_IMAGE_DOCKERFILE), &image, timeout).await {
+    registry.progress(
+        &image,
+        &format!("building image {image} (a first build takes a few minutes)"),
+    );
+    let build_arg = format!("AOE_VERSION={version}");
+    match provision_run(
+        &cli,
+        &["build", "--build-arg", &build_arg, "-t", &image, "-"],
+        Some(AOE_IMAGE_DOCKERFILE),
+        &image,
+    )
+    .await
+    {
         Ok(()) => {
             tracing::info!(%image, "built workspace image from the reference Dockerfile");
             registry.succeed(&image);
         }
         Err(build_err) => {
             tracing::warn!(%image, "workspace image provisioning failed");
-            let detail = match &pull_err {
-                Some(pull) => format!("pull: {pull}; build: {build_err}"),
-                None => format!("build: {build_err}"),
-            };
             registry.fail(
                 &image,
-                format!("provisioning image {image} failed; {detail}"),
+                format!("provisioning image {image} failed; pull: {pull_err}; build: {build_err}"),
             );
         }
     }
@@ -295,7 +262,6 @@ async fn provision_run(
     args: &[&str],
     stdin: Option<&str>,
     log_name: &str,
-    timeout: Duration,
 ) -> Result<(), String> {
     let sanitized: String = log_name
         .chars()
@@ -341,9 +307,9 @@ async fn provision_run(
         }
         child.wait().await.map_err(|e| format!("{cli} failed: {e}"))
     };
-    let status = tokio::time::timeout(timeout, run)
+    let status = tokio::time::timeout(PROVISION_TIMEOUT, run)
         .await
-        .map_err(|_| format!("{cli} {} timed out after {timeout:?}", args[0]))??;
+        .map_err(|_| format!("{cli} {} timed out after {PROVISION_TIMEOUT:?}", args[0]))??;
 
     if status.success() {
         Ok(())
@@ -886,32 +852,5 @@ mod tests {
             "command failed (no log available)"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_release_version_builds_by_downloading_its_tarball() {
-        let (args, timeout, _) = build_plan("cityhall/aoe:v1.0.0", "v1.0.0");
-        assert_eq!(args, ["--build-arg", "AOE_VERSION=v1.0.0"]);
-        assert_eq!(timeout, PROVISION_TIMEOUT);
-    }
-
-    #[test]
-    fn a_source_version_builds_the_commit_it_names() {
-        let (args, timeout, message) = build_plan("cityhall/aoe:git-c0ffee", "git-c0ffee");
-        assert_eq!(
-            args,
-            [
-                "--build-arg",
-                "AOE_SOURCE=git",
-                "--build-arg",
-                "AOE_GIT_SHA=c0ffee",
-            ]
-        );
-        // The version itself is never passed as AOE_VERSION: the Dockerfile
-        // would try to download a release tarball named after a commit.
-        assert!(!args.iter().any(|a| a.starts_with("AOE_VERSION=")));
-        // Compiling aoe does not fit the budget a download gets.
-        assert!(timeout > PROVISION_TIMEOUT);
-        assert!(message.contains("source"));
     }
 }

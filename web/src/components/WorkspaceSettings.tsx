@@ -81,8 +81,7 @@ export function WorkspaceSettingsSection() {
           </Field>
           {/* Deliberately not a Field: that wraps its children in a label with
               no `for`, which binds to the first control inside it, and here that
-              would be VersionField's experimental checkbox rather than the
-              version control. */}
+              would be VersionField's checkbox rather than the version control. */}
           <div className="block space-y-1.5">
             <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Default version</span>
             <VersionField
@@ -108,7 +107,9 @@ export function WorkspaceSettingsSection() {
           their pinned version (or the default). Idle workspaces are stopped automatically; their data volume is kept.
         </p>
 
-        {latest && defaultVersion && isOlderVersion(defaultVersion, latest) && (
+        {/* Only releases are comparable: a custom tag's digits are not a
+            version, so "dev-0" would otherwise read as behind the latest. */}
+        {latest && versions.includes(defaultVersion) && isOlderVersion(defaultVersion, latest) && (
           <p className="text-sm text-status-waiting">
             The default version {defaultVersion} is behind the latest release {latest}.{" "}
             <button type="button" className="underline" onClick={() => setDefaultVersion(latest)}>

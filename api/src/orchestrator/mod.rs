@@ -223,18 +223,6 @@ pub fn render_image(template: &str, version: &str) -> String {
     template.replace("{version}", version)
 }
 
-/// Prefix marking a version as a build of an unreleased aoe commit rather than
-/// a published release tag. The remainder is the commit sha, so an image tag
-/// and a version drift label both name one immutable build even when the ref
-/// it came from moves. A hyphen and not a colon, because a version becomes a
-/// docker tag and a filesystem path component and a colon is legal in neither.
-pub const GIT_VERSION_PREFIX: &str = "git-";
-
-/// The commit a source-build version names, or `None` for a release tag.
-pub fn git_version_sha(version: &str) -> Option<&str> {
-    version.strip_prefix(GIT_VERSION_PREFIX)
-}
-
 /// The `Host` value browsers reach workspaces on, for aoe's DNS-rebinding
 /// gate: `aoe serve --behind-proxy` refuses to start without at least one
 /// `--allowed-host`, and the proxy forwards the public host it was called on.
@@ -415,13 +403,5 @@ mod tests {
             drop(sock);
         });
         assert!(!http_probe(&addr).await);
-    }
-
-    #[test]
-    fn only_a_prefixed_version_names_a_commit() {
-        assert_eq!(git_version_sha("git-abc123"), Some("abc123"));
-        assert_eq!(git_version_sha("v1.13.2"), None);
-        // Not a source build: the marker is a prefix, not a substring.
-        assert_eq!(git_version_sha("v1-git-2"), None);
     }
 }

@@ -4,10 +4,16 @@
 #
 #   docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
 #
-# An unreleased aoe is compiled from source instead of downloaded:
+# To run an aoe that has no release yet, compile a commit instead of
+# downloading a tarball, and tag it as a version you then pin users to:
 #
 #   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<sha> \
-#     -t cityhall/aoe:git-<sha> deploy/aoe-image/
+#     -t cityhall/aoe:main-20260804 deploy/aoe-image/
+#
+# CityHall never runs that path itself; it only ever pulls an image or builds
+# the release path below. A source build is slow and memory hungry, so it is a
+# thing an operator does deliberately on a machine they control. See
+# docs/workspaces.md.
 #
 # The tag must match the workspace settings image template (default
 # `cityhall/aoe:{version}`) rendered with the version users are pinned to.
