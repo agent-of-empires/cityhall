@@ -165,6 +165,64 @@ with git's own error in the workspace.
 | -------- | ------- | ------- |
 | `WORKSPACE_BUNDLE_ORIGIN` | _(unset)_ | Origin a workspace uses to reach CityHall. Unset disables config provisioning. |
 
+### Coding agents
+
+**The reference image ships no coding agent.** It carries the aoe binary, git,
+tmux, and a Node runtime, and nothing else. Which agent a workspace runs is the
+user's choice, made per session in aoe's own session wizard, so CityHall does not
+duplicate that as a setting.
+
+A user installs the agent they want from a terminal session inside their
+workspace. aoe prints the exact command when a chosen agent is missing, so
+nothing here needs memorising:
+
+```sh
+npm install -g @agentclientprotocol/claude-agent-acp@latest   # Claude
+npm install -g @agentclientprotocol/codex-acp@latest          # Codex
+npm install -g @google/gemini-cli                             # Gemini
+curl -fsSL https://opencode.ai/install | bash                 # OpenCode
+```
+
+**That install survives a restart.** Only the per-user volume persists, and it is
+mounted at the aoe data dir, so every agent's own state directory would otherwise
+be lost each time the container is recreated, which happens on a version change
+or a credential change. The image entrypoint relocates them onto the volume with
+symlinks: `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`,
+`~/.config/opencode`, `~/.local/share/opencode`, plus the three install prefixes
+(`~/.npm-global`, `~/.local/bin`, `~/.opencode`). Symlinks rather than
+`CODEX_HOME`-style variables because aoe clears the environment when it spawns a
+structured-view agent, so an env-based approach would work in a terminal session
+and quietly fail in structured view.
+
+CityHall does not own agent versions. An install without a pinned version tracks
+whatever the registry serves.
+
+To set the default agent for every workspace, put it in the workspace config
+document (**Settings → Workspaces**):
+
+```toml
+[settings.acp]
+default_agent = "claude"
+```
+
+**An operator cannot force a workspace to use a particular agent.** aoe applies
+no allowlist to the agents a session may pick, and a terminal session can run
+whatever is installed regardless, so the set of installed binaries is the only
+real lever. Build a derived image to fix that set:
+
+```dockerfile
+FROM cityhall/aoe:v0.5.0
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.64.2
+```
+
+Point the image template at it, and users get exactly those agents. An
+aoe-side allowlist is tracked in
+[agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241).
+
+The `process` backend has no image and no entrypoint, so agents are installed on
+the host by the operator; each user's `HOME` is already a persistent directory,
+so logins persist there without any of the above.
+
 ### Agent credentials
 
 Coding agents inside a workspace need their own provider credentials. A user
@@ -187,6 +245,24 @@ Only these variables can be stored, and nothing else:
 The list is closed rather than free-form because these values become the
 workspace's environment, so an arbitrary name would be a way to reconfigure the
 workspace from a credential form.
+
+**Subscriptions work too, by two different routes.** For a Claude Pro or Max
+subscription, run `claude setup-token` anywhere you are already logged in and
+store the result as `CLAUDE_CODE_OAUTH_TOKEN` above; an admin can set it on a
+user's behalf like any other credential. Every other agent authenticates a
+subscription through its own interactive login, run from a terminal session
+inside the workspace:
+
+```sh
+codex login          # ChatGPT subscription
+gemini              # Google account, prompts on first run
+opencode auth login  # per-provider
+```
+
+Those write to the agent's own config directory, which the image entrypoint keeps
+on the volume, so the login survives a restart and does not need repeating.
+CityHall never sees these credentials, stores nothing, and cannot set them on a
+user's behalf, which is the trade for not handling the secret at all.
 
 **The last three reach terminal sessions but not structured-view agents.** aoe
 starts a structured-view agent with a cleared environment and forwards a fixed
@@ -278,9 +354,7 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 
 - Agent credentials only reach structured-view agents for Claude. See
   [Agent credentials](#agent-credentials).
-- CityHall's reference workspace image (`deploy/aoe-image/Dockerfile`) installs
-  the `aoe` binary but no agent CLIs, so credentials there have nothing to
-  authenticate until the image is extended
-  ([#53](https://github.com/agent-of-empires/cityhall/issues/53)).
+- An operator cannot restrict which agent a workspace runs; the installed set is
+  the only lever. See [Coding agents](#coding-agents).
 - Git credentials are HTTPS tokens only; there is no way to supply an SSH key
   ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
