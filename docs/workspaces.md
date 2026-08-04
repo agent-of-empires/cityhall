@@ -215,8 +215,10 @@ FROM cityhall/aoe:v0.5.0
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.64.2
 ```
 
-Point the image template at it, and users get exactly those agents. An
-aoe-side allowlist is tracked in
+Point the image template at it, and users get exactly those agents. Having
+CityHall install an admin-chosen set instead of a derived image is tracked in
+[#57](https://github.com/agent-of-empires/cityhall/issues/57); the aoe-side
+allowlist that would make a restriction actually hold is
 [agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241).
 
 The `process` backend has no image and no entrypoint, so agents are installed on
@@ -354,7 +356,9 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 
 - Agent credentials only reach structured-view agents for Claude. See
   [Agent credentials](#agent-credentials).
-- An operator cannot restrict which agent a workspace runs; the installed set is
-  the only lever. See [Coding agents](#coding-agents).
+- An operator cannot restrict which agent a workspace runs, and cannot have
+  CityHall install a chosen set; the image is the only lever
+  ([#57](https://github.com/agent-of-empires/cityhall/issues/57)). See
+  [Coding agents](#coding-agents).
 - Git credentials are HTTPS tokens only; there is no way to supply an SSH key
   ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
