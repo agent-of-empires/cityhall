@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
-use crate::orchestrator::{binary_key, render_image, WorkspaceStatus};
+use crate::orchestrator::{
+    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceStatus,
+};
 use crate::proxy;
 use crate::state::AppState;
 use crate::workspaces::{self, SETTINGS_ID};
@@ -321,6 +323,16 @@ pub struct WorkspaceSettingsResponse {
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
+    /// The stored telemetry policy, which is what a save writes and what takes
+    /// effect once any override is removed.
+    pub telemetry_policy: &'static str,
+    /// The deployment-level override, when `WORKSPACE_TELEMETRY_POLICY` is set.
+    /// Reported separately from the stored value so the page can say the policy
+    /// is pinned by the environment instead of showing a control that silently
+    /// does nothing.
+    pub telemetry_policy_override: Option<&'static str>,
+    /// What workspaces actually run under: the override, or the stored value.
+    pub effective_telemetry_policy: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -328,6 +340,13 @@ pub struct UpdateWorkspaceSettingsRequest {
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
+    pub telemetry_policy: String,
+    /// Recreate every RUNNING workspace so the saved policy applies now.
+    /// Off by default, and the same opt-in the version rollout uses: a recreate
+    /// ends whatever the user is running. Stopped workspaces do not need it;
+    /// they come back on the new policy at their next start.
+    #[serde(default)]
+    pub restart_running: bool,
 }
 
 /// GET /api/settings/workspaces
@@ -337,7 +356,13 @@ pub async fn get_settings(
 ) -> Result<Json<WorkspaceSettingsResponse>, AppError> {
     caller.require("settings.read")?;
     let cfg = workspaces::settings(&state.db).await?;
+    // Unwrapped rather than propagated: an invalid override already failed
+    // CityHall's startup, so this cannot be an error by the time a request runs.
+    let policy_override = telemetry_policy_override().unwrap_or_default();
     Ok(Json(WorkspaceSettingsResponse {
+        telemetry_policy: TelemetryPolicy::from_stored(&cfg.telemetry_policy).as_str(),
+        telemetry_policy_override: policy_override.map(TelemetryPolicy::as_str),
+        effective_telemetry_policy: workspaces::effective_telemetry_policy(&cfg).as_str(),
         image_template: cfg.image_template,
         default_version: cfg.default_version,
         idle_stop_minutes: cfg.idle_stop_minutes,
@@ -357,6 +382,11 @@ pub async fn update_settings(
     if body.idle_stop_minutes < 1 {
         return Err(AppError::BadRequest("idle stop must be at least 1 minute"));
     }
+    // Rejected rather than coerced: silently storing `user_choice` for a value
+    // the admin thought forced telemetry off is the failure worth avoiding.
+    let telemetry_policy = TelemetryPolicy::parse(&body.telemetry_policy).ok_or(
+        AppError::BadRequest("telemetry policy must be user_choice, force_on, or force_off"),
+    )?;
     let default_version = normalize(body.default_version);
 
     let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
@@ -367,12 +397,22 @@ pub async fn update_settings(
         image_template: Set(body.image_template.trim().to_string()),
         default_version: Set(default_version),
         idle_stop_minutes: Set(body.idle_stop_minutes),
+        telemetry_policy: Set(telemetry_policy.as_str().to_string()),
         updated_at: Set(Utc::now()),
     };
     if existing.is_some() {
         model.update(&state.db).await?;
     } else {
         model.insert(&state.db).await?;
+    }
+    if body.restart_running {
+        let user_ids = workspace::Entity::find()
+            .all(&state.db)
+            .await?
+            .into_iter()
+            .map(|r| r.user_id)
+            .collect();
+        spawn_restarts(state.clone(), user_ids);
     }
     get_settings(State(state), caller).await
 }

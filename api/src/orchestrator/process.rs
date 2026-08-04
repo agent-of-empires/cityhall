@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     binary_key, http_probe, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin,
-    Orchestrator, OrchestratorError, ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec,
+    WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -52,6 +53,13 @@ struct RunState {
     /// drift).
     #[serde(default)]
     env_fingerprint: String,
+    /// The telemetry policy this process was spawned under, so a policy change
+    /// is drift like a version or credential change is. `#[serde(default)]` for
+    /// the same reason as the fingerprint above: a state.json written before
+    /// the policy existed reads back as `user_choice`, which is what such a
+    /// process is in fact running under, so an upgrade alone restarts nothing.
+    #[serde(default)]
+    telemetry: String,
 }
 
 impl ProcessOrchestrator {
@@ -114,6 +122,7 @@ impl ProcessOrchestrator {
         std::fs::create_dir_all(&home).map_err(|e| {
             OrchestratorError::Runtime(format!("failed to create workspace home: {e}"))
         })?;
+        apply_force_on(spec, &binary, &home)?;
 
         let mut last_err = None;
         for _ in 0..START_ATTEMPTS {
@@ -127,6 +136,7 @@ impl ProcessOrchestrator {
                     port,
                     version: spec.version.clone(),
                     env_fingerprint: spec.agent_env.fingerprint.clone(),
+                    telemetry: spec.telemetry.as_str().to_string(),
                 },
             )?;
             match wait_ready(&addr).await {
@@ -177,6 +187,14 @@ impl ProcessOrchestrator {
         ])
         .env("HOME", home)
         .current_dir(home);
+        // The telemetry policy's variables. `DO_NOT_TRACK` is removed first,
+        // always: unlike a container, this process inherits CityHall's own
+        // environment, so a `DO_NOT_TRACK` set for CityHall itself would
+        // otherwise force every workspace off whatever the admin chose.
+        cmd.env_remove("DO_NOT_TRACK");
+        for (name, value) in spec.telemetry.env_pairs() {
+            cmd.env(name, value);
+        }
         // Where the workspace fetches its config bundle at boot.
         if let Some(bundle) = &spec.bundle {
             cmd.env("AOE_CITYHALL_BUNDLE_URL", &bundle.url)
@@ -275,19 +293,21 @@ impl Orchestrator for ProcessOrchestrator {
                 let addr = format!("127.0.0.1:{}", state.port);
                 if state.version == spec.version
                     && state.env_fingerprint == spec.agent_env.fingerprint
+                    && TelemetryPolicy::from_stored(&state.telemetry) == spec.telemetry
                     && http_probe(&addr).await
                 {
                     return Ok(addr);
                 }
-                // Version drift, a credential change, a hung process, or a
-                // recycled PID that is not our workspace: clear it and start
-                // fresh. A credential change must terminate and respawn
-                // because Command::env is only set once, at spawn.
+                // Version drift, a credential change, a telemetry policy
+                // change, a hung process, or a recycled PID that is not our
+                // workspace: clear it and start fresh. A credential or policy
+                // change must terminate and respawn because Command::env is
+                // only set once, at spawn.
                 tracing::info!(
                     user_id = spec.user_id,
                     from = %state.version,
                     to = %spec.version,
-                    "restarting workspace process for a version or credential change"
+                    "restarting workspace process for a version, credential, or telemetry policy change"
                 );
                 self.terminate(state.pid).await;
             }
@@ -452,6 +472,43 @@ fn validate_version(version: &str) -> Result<(), OrchestratorError> {
     }
 }
 
+/// Assert a force-on telemetry policy against this workspace's data, before its
+/// server starts, by running aoe's own `telemetry enable`. That is what both
+/// enables telemetry and records the consent as answered, so CityHall never has
+/// to touch aoe's config or state files itself.
+///
+/// No shell wrapper here, unlike the container backends: CityHall spawns both
+/// commands, so it can run one, check it, then run the other. A failure fails
+/// the start, naming the command, rather than leaving a workspace up under a
+/// policy that was not applied.
+fn apply_force_on(
+    spec: &WorkspaceSpec,
+    binary: &Path,
+    home: &Path,
+) -> Result<(), OrchestratorError> {
+    if spec.telemetry != TelemetryPolicy::ForceOn {
+        return Ok(());
+    }
+    let output = std::process::Command::new(binary)
+        .args(["telemetry", "enable"])
+        .env("HOME", home)
+        // Removed for the same reason as in the spawn: an inherited
+        // `DO_NOT_TRACK` would make aoe report the opt-in as suppressed.
+        .env_remove("DO_NOT_TRACK")
+        .current_dir(home)
+        .output()
+        .map_err(|e| {
+            OrchestratorError::Runtime(format!("failed to run `aoe telemetry enable`: {e}"))
+        })?;
+    if !output.status.success() {
+        return Err(OrchestratorError::Runtime(format!(
+            "`aoe telemetry enable` failed while forcing telemetry on: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 fn alive(pid: i32) -> bool {
     // Signal 0 probes existence without touching the process.
     unsafe { libc::kill(pid, 0) == 0 }
@@ -479,6 +536,67 @@ fn free_port() -> Result<u16, OrchestratorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Force-on is asserted by aoe's own CLI, and a failure has to fail the
+    /// start: a workspace that came up anyway would be serving under a policy
+    /// the admin set and CityHall did not apply. The other policies must not run
+    /// the command at all, which is what makes them work with an aoe too old to
+    /// have it.
+    #[test]
+    fn force_on_fails_the_start_when_aoe_cannot_apply_it() {
+        let orch = scratch("telemetry");
+        let home = orch.user_dir(1).join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let fake = |name: &str, body: &str| {
+            let path = orch.root.join(name);
+            std::fs::write(&path, body).unwrap();
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+            path
+        };
+        let works = fake("aoe-ok", "#!/bin/sh\nexit 0\n");
+        let broken = fake(
+            "aoe-old",
+            "#!/bin/sh\necho 'unknown subcommand' >&2\nexit 1\n",
+        );
+
+        let spec = WorkspaceSpec {
+            telemetry: TelemetryPolicy::ForceOn,
+            ..spec_for(1)
+        };
+        assert!(apply_force_on(&spec, &works, &home).is_ok());
+        let err = apply_force_on(&spec, &broken, &home)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("telemetry enable"), "{err}");
+        assert!(
+            err.contains("unknown subcommand"),
+            "must carry aoe's own stderr: {err}"
+        );
+
+        // Nothing is run for the other two, so a missing binary is fine.
+        let missing = orch.root.join("does-not-exist");
+        for policy in [TelemetryPolicy::UserChoice, TelemetryPolicy::ForceOff] {
+            let spec = WorkspaceSpec {
+                telemetry: policy,
+                ..spec_for(1)
+            };
+            assert!(apply_force_on(&spec, &missing, &home).is_ok());
+        }
+    }
+
+    fn spec_for(user_id: i32) -> WorkspaceSpec {
+        WorkspaceSpec {
+            user_id,
+            image: "unused".to_string(),
+            version: "v1.0.0".to_string(),
+            bundle: None,
+            agent_env: crate::agent_credentials::AgentEnv::default(),
+            telemetry: TelemetryPolicy::default(),
+        }
+    }
 
     fn scratch(name: &str) -> ProcessOrchestrator {
         let root = std::env::temp_dir().join(format!(
@@ -515,6 +633,7 @@ mod tests {
                 port: 43210,
                 version: "v1.0.0".to_string(),
                 env_fingerprint: "somefingerprint".to_string(),
+                telemetry: TelemetryPolicy::default().as_str().to_string(),
             },
         )
         .unwrap();
@@ -562,6 +681,7 @@ mod tests {
                 port: 1,
                 version: "v1".to_string(),
                 env_fingerprint: String::new(),
+                telemetry: TelemetryPolicy::default().as_str().to_string(),
             },
         )
         .unwrap();
@@ -576,6 +696,7 @@ mod tests {
                 port: 45678,
                 version: "v1".to_string(),
                 env_fingerprint: String::new(),
+                telemetry: TelemetryPolicy::default().as_str().to_string(),
             },
         )
         .unwrap();
@@ -596,6 +717,7 @@ mod tests {
             version: "v9.9.9".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            telemetry: TelemetryPolicy::default(),
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.

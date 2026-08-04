@@ -18,7 +18,7 @@ use tokio::process::Command;
 
 use super::{
     http_probe, proxy_allowed_host, proxy_allowed_origin, Orchestrator, OrchestratorError,
-    WorkspaceSpec, WorkspaceStatus,
+    TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace pod.
@@ -287,6 +287,9 @@ fn env_values(spec: &WorkspaceSpec) -> std::collections::BTreeMap<String, String
             bundle.token.clone(),
         );
     }
+    for (name, value) in spec.telemetry.env_pairs() {
+        values.insert(name.to_string(), value.to_string());
+    }
     for (name, value) in &spec.agent_env.pairs {
         values.insert(name.clone(), value.expose().to_string());
     }
@@ -322,25 +325,26 @@ fn render_manifests(
         // where the reference image relocates each agent's config directory
         // onto the volume. Passing the whole command as `args` instead matches
         // what the docker backend does, and an image with no entrypoint runs
-        // these as the command anyway.
-        "args": [
-            "aoe",
-            "serve",
-            "--host", "0.0.0.0",
-            "--port", AOE_PORT.to_string(),
+        // these as the command anyway. Force-on wraps these args (never the
+        // entrypoint) so the policy is asserted before aoe serves.
+        "args": spec.telemetry.wrap_command(vec![
+            "aoe".to_string(),
+            "serve".to_string(),
+            "--host".to_string(), "0.0.0.0".to_string(),
+            "--port".to_string(), AOE_PORT.to_string(),
             // CityHall's session gates the proxy; the
             // shipped NetworkPolicy keeps other pods out.
-            "--auth", "none",
-            "--behind-proxy",
+            "--auth".to_string(), "none".to_string(),
+            "--behind-proxy".to_string(),
             // The proxy forwards the public Host and
             // Origin, both of which aoe's DNS-rebinding
             // gate requires on the allowlist.
-            "--allowed-host", proxy_allowed_host(),
-            "--allowed-origin", proxy_allowed_origin(),
+            "--allowed-host".to_string(), proxy_allowed_host(),
+            "--allowed-origin".to_string(), proxy_allowed_origin(),
             // Locked-down end-user client: composer +
             // structured view only.
-            "--cityhall",
-        ],
+            "--cityhall".to_string(),
+        ]),
         "ports": [{ "containerPort": AOE_PORT }],
         "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
     });
@@ -382,6 +386,24 @@ fn render_manifests(
         }));
     }
 
+    let mut annotations = json!({
+        // Version drives pod recreation on apply.
+        "cityhall.workspace.version": spec.version,
+        // Editing the Secret alone does not restart running
+        // pods; changing this annotation changes the pod
+        // template, which is what makes the Deployment roll
+        // to pick up a new credential set.
+        "cityhall.workspace/env-fingerprint": spec.agent_env.fingerprint,
+    });
+    // Same reason as the fingerprint: the policy changes the pod's environment
+    // and args, so the template has to change for the Deployment to roll.
+    // Written only when a policy is actually forced, so deploying this feature
+    // leaves an existing workspace's template byte-identical and does not roll
+    // every pod in the namespace for a setting nobody has touched yet.
+    if spec.telemetry != TelemetryPolicy::UserChoice {
+        annotations["cityhall.workspace/telemetry-policy"] = json!(spec.telemetry.as_str());
+    }
+
     items.push(json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -394,15 +416,7 @@ fn render_manifests(
             "template": {
                 "metadata": {
                     "labels": labels,
-                    "annotations": {
-                        // Version drives pod recreation on apply.
-                        "cityhall.workspace.version": spec.version,
-                        // Editing the Secret alone does not restart running
-                        // pods; changing this annotation changes the pod
-                        // template, which is what makes the Deployment roll
-                        // to pick up a new credential set.
-                        "cityhall.workspace/env-fingerprint": spec.agent_env.fingerprint,
-                    },
+                    "annotations": annotations,
                 },
                 "spec": {
                     "containers": [container],
@@ -475,6 +489,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            telemetry: TelemetryPolicy::default(),
         }
     }
 
@@ -663,6 +678,75 @@ mod tests {
                 ["cityhall.workspace/env-fingerprint"],
             "abc123fingerprint"
         );
+    }
+
+    fn spec_with_telemetry(policy: TelemetryPolicy) -> WorkspaceSpec {
+        WorkspaceSpec {
+            telemetry: policy,
+            ..spec()
+        }
+    }
+
+    fn deployment(policy: TelemetryPolicy) -> serde_json::Value {
+        let m = render_manifests(&spec_with_telemetry(policy), "cityhall", "5Gi", None);
+        m["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "Deployment")
+            .unwrap()
+            .clone()
+    }
+
+    /// The annotation is what makes the Deployment roll, so it must appear for a
+    /// forced policy and must NOT appear for `user_choice`: writing it there too
+    /// would change every existing workspace's pod template on upgrade and roll
+    /// every pod in the namespace for a setting nobody has touched.
+    #[test]
+    fn only_a_forced_telemetry_policy_annotates_the_pod_template() {
+        let annotations =
+            |policy| deployment(policy)["spec"]["template"]["metadata"]["annotations"].clone();
+        assert!(annotations(TelemetryPolicy::UserChoice)
+            .get("cityhall.workspace/telemetry-policy")
+            .is_none());
+        assert_eq!(
+            annotations(TelemetryPolicy::ForceOn)["cityhall.workspace/telemetry-policy"],
+            "force_on"
+        );
+    }
+
+    /// Force-on wraps the container's args, never its `command`, which would
+    /// take the image's ENTRYPOINT out of the picture. Every serve argument
+    /// stays its own list element.
+    #[test]
+    fn force_on_wraps_the_container_args() {
+        let dep = deployment(TelemetryPolicy::ForceOn);
+        let container = &dep["spec"]["template"]["spec"]["containers"][0];
+        let args = container["args"].as_array().unwrap();
+        assert_eq!(args[0], "sh");
+        assert_eq!(args[1], "-c");
+        assert!(args[2].as_str().unwrap().contains("aoe telemetry enable"));
+        assert_eq!(args[3], "aoe");
+        assert_eq!(args[4], "serve");
+        assert!(container.get("command").is_none());
+    }
+
+    /// Force-off travels as `DO_NOT_TRACK`, so a deployment with no credentials
+    /// and no bundle still needs the Secret that policy rides in.
+    #[test]
+    fn force_off_injects_do_not_track_through_the_secret() {
+        let m = render_manifests(
+            &spec_with_telemetry(TelemetryPolicy::ForceOff),
+            "cityhall",
+            "5Gi",
+            None,
+        );
+        let items = m["items"].as_array().unwrap();
+        let secret = items
+            .iter()
+            .find(|i| i["kind"] == "Secret")
+            .expect("force-off has a variable to inject, so a Secret is emitted");
+        assert_eq!(secret["stringData"]["DO_NOT_TRACK"], "1");
     }
 
     #[test]

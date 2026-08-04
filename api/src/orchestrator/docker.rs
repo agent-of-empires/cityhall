@@ -22,7 +22,7 @@ use tokio::process::Command;
 
 use super::{
     proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
-    ProvisioningRegistry, WorkspaceSpec, WorkspaceStatus,
+    ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -112,6 +112,7 @@ impl DockerCliOrchestrator {
                     version_label: labels.get("cityhall.workspace.version").cloned(),
                     network_label: labels.get("cityhall.workspace.network").cloned(),
                     env_label: labels.get("cityhall.workspace.env").cloned(),
+                    telemetry_label: labels.get("cityhall.workspace.telemetry").cloned(),
                 }))
             }
             None => Ok(None),
@@ -352,15 +353,22 @@ fn log_tail(path: &std::path::Path) -> String {
 }
 
 /// `KEY=value` lines for everything the workspace's environment needs: the
-/// bundle location and token (when configured), then every agent credential.
-/// One line per pair, in that order; `agent_credentials::validate_value`
-/// guarantees a value can contain no NUL, newline, or carriage return before
-/// it ever reaches here, which this line-oriented format depends on.
+/// bundle location and token (when configured), the telemetry policy's own
+/// variables, then every agent credential. One line per pair, in that order;
+/// `agent_credentials::validate_value` guarantees a value can contain no NUL,
+/// newline, or carriage return before it ever reaches here, which this
+/// line-oriented format depends on.
+///
+/// The policy's variables are not secret, but they ride the same file rather
+/// than a second `-e` mechanism: one place builds this container's environment.
 fn env_file_contents(spec: &WorkspaceSpec) -> String {
     let mut out = String::new();
     if let Some(bundle) = &spec.bundle {
         out.push_str(&format!("AOE_CITYHALL_BUNDLE_URL={}\n", bundle.url));
         out.push_str(&format!("AOE_CITYHALL_BUNDLE_TOKEN={}\n", bundle.token));
+    }
+    for (name, value) in spec.telemetry.env_pairs() {
+        out.push_str(&format!("{name}={value}\n"));
     }
     for (name, value) in &spec.agent_env.pairs {
         out.push_str(&format!("{name}={}\n", value.expose()));
@@ -451,6 +459,11 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         // absent label compare equal and neither is treated as drift.
         "--label".into(),
         format!("cityhall.workspace.env={}", spec.agent_env.fingerprint),
+        // Its own label rather than folded into the env fingerprint above: an
+        // operator inspecting a container should be able to read the policy it
+        // runs under, and a policy change is not a credential change.
+        "--label".into(),
+        format!("cityhall.workspace.telemetry={}", spec.telemetry.as_str()),
         "-v".into(),
         format!("{volume}:{AOE_DATA_DIR}"),
     ];
@@ -478,31 +491,37 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         args.push("--env-file".into());
         args.push(path.display().to_string());
     }
+    args.push(spec.image.clone());
+    // The image's ENTRYPOINT stays in charge (it is what puts each agent's
+    // config on the volume); this is only the command it execs, which force-on
+    // wraps to assert the telemetry policy first.
     args.extend(
-        [
-            &spec.image,
-            "aoe",
-            "serve",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            &AOE_PORT.to_string(),
-            // CityHall's session gates the proxy; the container port is never
-            // reachable from outside (loopback publish or internal network).
-            "--auth",
-            "none",
-            "--behind-proxy",
-            // The proxy forwards the public Host and Origin, both of which
-            // aoe's DNS-rebinding gate requires on the allowlist.
-            "--allowed-host",
-            &proxy_allowed_host(),
-            "--allowed-origin",
-            &proxy_allowed_origin(),
-            // Locked-down end-user client: composer + structured view only.
-            "--cityhall",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
+        spec.telemetry.wrap_command(
+            [
+                "aoe",
+                "serve",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                &AOE_PORT.to_string(),
+                // CityHall's session gates the proxy; the container port is never
+                // reachable from outside (loopback publish or internal network).
+                "--auth",
+                "none",
+                "--behind-proxy",
+                // The proxy forwards the public Host and Origin, both of which
+                // aoe's DNS-rebinding gate requires on the allowlist.
+                "--allowed-host",
+                &proxy_allowed_host(),
+                "--allowed-origin",
+                &proxy_allowed_origin(),
+                // Locked-down end-user client: composer + structured view only.
+                "--cityhall",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ),
     );
     args
 }
@@ -569,22 +588,36 @@ struct ContainerState {
     version_label: Option<String>,
     network_label: Option<String>,
     env_label: Option<String>,
+    telemetry_label: Option<String>,
 }
 
 /// Whether a running container must be recreated rather than reused or
-/// resumed: the pinned version changed, the addressing mode changed, or the
-/// injected credential set changed. Extracted as a pure function so the
-/// credential-drift condition (the part this feature adds) is testable
-/// without a docker daemon.
+/// resumed: the pinned version changed, the addressing mode changed, the
+/// injected credential set changed, or the telemetry policy changed. Extracted
+/// as a pure function so the drift conditions are testable without a docker
+/// daemon.
 ///
-/// The env label is absent on any container created before this feature.
-/// Treating that absence as the empty string means a user with no stored
-/// credentials (whose fingerprint is also empty) is never recreated on
-/// upgrade just because the label didn't exist yet.
+/// The env label is absent on any container created before credentials were
+/// injected. Treating that absence as the empty string means a user with no
+/// stored credentials (whose fingerprint is also empty) is never recreated on
+/// upgrade just because the label didn't exist yet. The telemetry label is
+/// absent for the same reason and reads as `user_choice`, which is what a
+/// container created before the policy existed effectively runs under, so
+/// again nothing is recreated by the upgrade alone.
+///
+/// The policy has to be here and not only in the create path: a stopped
+/// container is otherwise resumed with `docker start`, which reuses its stored
+/// environment, and a policy change would never reach it.
 fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<&str>) -> bool {
+    let telemetry = state
+        .telemetry_label
+        .as_deref()
+        .map(TelemetryPolicy::from_stored)
+        .unwrap_or_default();
     state.version_label.as_deref() != Some(spec.version.as_str())
         || state.network_label.as_deref() != network
         || state.env_label.as_deref().unwrap_or("") != spec.agent_env.fingerprint
+        || telemetry != spec.telemetry
 }
 
 #[derive(Deserialize)]
@@ -658,6 +691,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            telemetry: TelemetryPolicy::default(),
         }
     }
 
@@ -789,6 +823,89 @@ mod tests {
             .any(|a| a == "cityhall.workspace.network=cityhall-workspaces"));
     }
 
+    fn spec_with_telemetry(policy: TelemetryPolicy) -> WorkspaceSpec {
+        WorkspaceSpec {
+            telemetry: policy,
+            ..spec()
+        }
+    }
+
+    /// Force-off is delivered as `DO_NOT_TRACK`, which aoe treats as absolute,
+    /// and leaves the command alone. The other two policies inject nothing.
+    #[test]
+    fn only_force_off_puts_do_not_track_in_the_env_file() {
+        let contents = env_file_contents(&spec_with_telemetry(TelemetryPolicy::ForceOff));
+        assert_eq!(contents, "DO_NOT_TRACK=1\n");
+        for policy in [TelemetryPolicy::UserChoice, TelemetryPolicy::ForceOn] {
+            assert!(env_file_contents(&spec_with_telemetry(policy)).is_empty());
+        }
+    }
+
+    /// Force-on runs aoe's own CLI first, so aoe records the opt-in (and the
+    /// answered consent that suppresses its modal) in the volume. The wrapper
+    /// goes after the image, so it is the container's command, and the image's
+    /// ENTRYPOINT still runs first.
+    #[test]
+    fn force_on_wraps_the_container_command_after_the_image() {
+        let args = run_args(&spec_with_telemetry(TelemetryPolicy::ForceOn), None, None);
+        let image_at = args
+            .iter()
+            .position(|a| a == "cityhall/aoe:v1.0.0")
+            .unwrap();
+        assert_eq!(args[image_at + 1], "sh");
+        assert_eq!(args[image_at + 2], "-c");
+        assert!(args[image_at + 3].contains("aoe telemetry enable"));
+        // The serve command survives as separate argv elements, not a string.
+        assert_eq!(args[image_at + 4], "aoe");
+        assert_eq!(args[image_at + 5], "serve");
+        assert!(args.iter().any(|a| a == "--cityhall"));
+
+        // The other policies leave the command exactly as it was.
+        let plain = run_args(&spec(), None, None);
+        assert!(!plain.iter().any(|a| a == "sh"), "{plain:?}");
+    }
+
+    #[test]
+    fn the_policy_is_recorded_on_the_container() {
+        let args = run_args(&spec_with_telemetry(TelemetryPolicy::ForceOff), None, None);
+        assert!(args
+            .iter()
+            .any(|a| a == "cityhall.workspace.telemetry=force_off"));
+    }
+
+    /// A container created before the policy existed has no telemetry label,
+    /// which reads as `user_choice`: what it is in fact running under. So the
+    /// upgrade alone recreates nothing, while an actual policy change does, and
+    /// it has to, because a stopped container would otherwise be resumed with
+    /// `docker start` and its old environment.
+    #[test]
+    fn telemetry_policy_change_is_drift_but_the_upgrade_alone_is_not() {
+        let state = container_state("v1.0.0", None, None);
+        assert!(!needs_recreate(&state, &spec(), None));
+        assert!(needs_recreate(
+            &state,
+            &spec_with_telemetry(TelemetryPolicy::ForceOff),
+            None
+        ));
+
+        let forced = ContainerState {
+            telemetry_label: Some("force_off".to_string()),
+            ..container_state("v1.0.0", None, None)
+        };
+        assert!(!needs_recreate(
+            &forced,
+            &spec_with_telemetry(TelemetryPolicy::ForceOff),
+            None
+        ));
+        // Including switching between the two forced states, and back.
+        assert!(needs_recreate(
+            &forced,
+            &spec_with_telemetry(TelemetryPolicy::ForceOn),
+            None
+        ));
+        assert!(needs_recreate(&forced, &spec(), None));
+    }
+
     fn container_state(
         version: &str,
         network: Option<&str>,
@@ -799,6 +916,9 @@ mod tests {
             version_label: Some(version.to_string()),
             network_label: network.map(str::to_string),
             env_label: env_label.map(str::to_string),
+            // Absent, like a container created before the policy existed. The
+            // telemetry cases below set it explicitly.
+            telemetry_label: None,
         }
     }
 
