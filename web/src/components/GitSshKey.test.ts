@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSaveSshKey } from "./GitSshKey";
+import { canSaveSshKey, githubKnownHosts } from "./GitSshKey";
 import type { GitSshKey } from "../lib/api";
 
 const NOTHING_STORED: GitSshKey = { key_set: false, known_hosts: "", secret_key_available: true };
@@ -35,5 +35,22 @@ describe("canSaveSshKey", () => {
 
   it("refuses everything without a server secret key, since nothing could be stored", () => {
     expect(canSaveSshKey({ ...NOTHING_STORED, secret_key_available: false }, KEY, HOSTS)).toBe(false);
+  });
+});
+
+describe("githubKnownHosts", () => {
+  // api.github.com/meta returns bare `<type> <key>` pairs with no host in front,
+  // which is not what known_hosts wants.
+  it("prefixes the host GitHub's endpoint leaves off", () => {
+    expect(githubKnownHosts(["ssh-ed25519 AAAA", "ssh-rsa BBBB"])).toBe(
+      "github.com ssh-ed25519 AAAA\ngithub.com ssh-rsa BBBB",
+    );
+  });
+
+  it("drops blanks rather than emitting a host with no key", () => {
+    // A bare `github.com` line fails the server's three-field check, which would
+    // surface as the user having pasted something wrong.
+    expect(githubKnownHosts(["", "  ", "ssh-ed25519 AAAA"])).toBe("github.com ssh-ed25519 AAAA");
+    expect(githubKnownHosts([])).toBe("");
   });
 });

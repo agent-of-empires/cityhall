@@ -84,7 +84,7 @@ pub fn validate_known_hosts(known_hosts: &str) -> Result<String, AppError> {
     let known_hosts = normalize(known_hosts);
     if known_hosts.trim().is_empty() {
         return Err(AppError::BadRequest(
-            "known_hosts is required, so the workspace can verify the host it connects to. Get it with `ssh-keyscan <host>` on a machine you trust",
+            "known_hosts is required, so the workspace can verify the host it connects to. For GitHub, use the fill button; for another host, `ssh-keyscan <host>` somewhere you trust the network, checked against the fingerprints that host publishes",
         ));
     }
     if known_hosts.len() > MAX_KNOWN_HOSTS_LEN {

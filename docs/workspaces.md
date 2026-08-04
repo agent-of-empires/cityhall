@@ -228,11 +228,18 @@ rather than leaving to fail inside the container:
 - **The key must have no passphrase.** Nothing in a workspace can prompt for one,
   so a protected key would turn every clone into a hang. A key kept for this
   purpose only is the answer, not the key on your laptop.
-- **Host keys are required with it.** Paste the output of `ssh-keyscan <host>`,
-  run on a machine you trust, into the known hosts field. The workspace connects
-  with strict host key checking, so it refuses anything not listed there rather
+- **Host keys are required with it.** The workspace connects with strict host key
+  checking, so it refuses anything not listed in the known hosts field rather
   than trusting whatever answers. Shipping a key without them would trade a
   credential problem for a machine-in-the-middle one.
+
+  For GitHub, **Fill from GitHub** fetches the keys GitHub publishes, over a
+  connection authenticated for a name an attacker on the path cannot present. For
+  another host, run `ssh-keyscan <host>` somewhere you trust the network and check
+  the result against the fingerprints that host publishes. `ssh-keyscan` on its
+  own trusts whatever answers on port 22, so pasting a scan unchecked pins
+  whatever was listening at that moment, and strict checking then cannot tell the
+  difference.
 
 Host keys are public, so unlike the key itself they are shown back to the user
 and can be edited without re-entering it.

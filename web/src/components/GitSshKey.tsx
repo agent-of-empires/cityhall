@@ -15,6 +15,42 @@ export function canSaveSshKey(cred: GitSshKeyData | null, key: string, knownHost
 const TEXTAREA =
   "w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50";
 
+/// GitHub publishes its current SSH host keys here, over HTTPS against a
+/// certificate for a name an attacker on the path cannot produce.
+const GITHUB_META = "https://api.github.com/meta";
+
+/// GitHub's published host keys as known_hosts lines.
+///
+/// The endpoint returns bare `<type> <key>` pairs with no host in front of them,
+/// which known_hosts needs, so each one is prefixed. Filtering blanks matters
+/// because a line with nothing but the host would fail the server's check and
+/// report as the user's mistake.
+export function githubKnownHosts(sshKeys: string[]): string {
+  return sshKeys
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0)
+    .map((k) => `github.com ${k}`)
+    .join("\n");
+}
+
+/// Fetch GitHub's published host keys.
+///
+/// Worth a network call rather than telling the user to run `ssh-keyscan`: a scan
+/// trusts whatever answers on port 22, so an attacker on the path at that moment
+/// supplies the keys the workspace then pins forever, and strict host key
+/// checking cannot tell the difference. This endpoint is authenticated by TLS for
+/// a name that attacker cannot present. Fetched from the browser, not the server:
+/// GitHub sends a permissive CORS header, so a backend route would add a hop and
+/// a failure mode without changing what is trusted.
+async function fetchGithubKnownHosts(): Promise<string> {
+  const res = await fetch(GITHUB_META, { headers: { Accept: "application/vnd.github+json" } });
+  if (!res.ok) throw new Error(`GitHub returned ${res.status}`);
+  const body: unknown = await res.json();
+  const keys = (body as { ssh_keys?: unknown }).ssh_keys;
+  if (!Array.isArray(keys) || keys.length === 0) throw new Error("GitHub returned no host keys");
+  return githubKnownHosts(keys.filter((k): k is string => typeof k === "string"));
+}
+
 /// A user's SSH key for git, for the workspace remotes an HTTPS token cannot
 /// reach (#52).
 ///
@@ -30,6 +66,26 @@ export function GitSshKeyEditor() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  const [filling, setFilling] = useState(false);
+  const [fillError, setFillError] = useState<string | null>(null);
+
+  async function fillFromGithub() {
+    setFilling(true);
+    setFillError(null);
+    setSaved(false);
+    try {
+      setKnownHosts(await fetchGithubKnownHosts());
+    } catch (err) {
+      // Named rather than swallowed: the manual path still works, and a user who
+      // cannot reach GitHub from their browser needs to know that is why.
+      setFillError(
+        `could not reach GitHub to fetch its host keys (${err instanceof Error ? err.message : "unknown error"}). Paste them yourself instead.`,
+      );
+    } finally {
+      setFilling(false);
+    }
+  }
 
   const apply = useCallback((c: GitSshKeyData) => {
     setCred(c);
@@ -129,16 +185,26 @@ export function GitSshKeyEditor() {
             }}
             spellCheck={false}
             rows={4}
-            disabled={busy}
+            disabled={busy || filling}
             placeholder="github.com ssh-ed25519 AAAAC3Nza..."
             className={TEXTAREA}
           />
         </Field>
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="default" disabled={busy || filling} onClick={() => void fillFromGithub()}>
+            {filling ? "Fetching..." : "Fill from GitHub"}
+          </Button>
+          <p className="text-sm text-text-secondary">
+            Fetches GitHub's published host keys. For another host, run{" "}
+            <span className="font-mono text-text-primary">ssh-keyscan &lt;host&gt;</span> somewhere you trust the
+            network, and check the result against the fingerprints that host publishes: a scan trusts whatever answers,
+            so pasting one unchecked pins whatever was listening.
+          </p>
+        </div>
+        {fillError && <ErrorText>{fillError}</ErrorText>}
         <p className="text-sm text-text-secondary">
           Required. Your workspace verifies the host against these and refuses to connect to anything else, so a key on
-          its own is not enough. Get them with{" "}
-          <span className="font-mono text-text-primary">ssh-keyscan github.com</span> on a machine you trust, and paste
-          the output as it comes.
+          its own is not enough.
         </p>
 
         <p className="text-sm text-text-secondary">A change applies the next time your workspace starts.</p>
