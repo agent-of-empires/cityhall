@@ -321,10 +321,13 @@ outside that set is still available to anything you run in a terminal session.
 The UI marks these, and widening the set is tracked in
 [agent-of-empires#3238](https://github.com/agent-of-empires/agent-of-empires/issues/3238).
 
-Values are encrypted with `CITYHALL_SECRET_KEY`, are never returned to a client
-once stored, and are removed with the user's account. Changing that key leaves
-stored credentials unreadable; the account page then shows them as needing to be
-re-entered, and a workspace starts without them rather than failing.
+Values are encrypted with `CITYHALL_SECRET_KEY` and bound to the user and variable
+they were stored for, so a value moved to another user's row does not decrypt for
+them. They are never returned to a client once stored, and are removed with the
+user's account. Changing the key without following the
+[rotation procedure](configuration.md#rotating-the-key) leaves stored credentials
+unreadable; the account page then shows them as needing to be re-entered, and a
+workspace starts without them rather than failing.
 
 **A change applies when the workspace is next created**, because credentials are
 part of a container's environment rather than something injected into a running

@@ -44,7 +44,7 @@ Whatever the target, CityHall needs:
 | ----------- | --- |
 | `DATABASE_URL` | A persistent database. SQLite on a volume works; Postgres is recommended for anything shared. See [Database](#database). |
 | `BIND_ADDR=0.0.0.0:3000` | Listen on all interfaces so a proxy/orchestrator can reach it. The image sets this already. |
-| `CITYHALL_SECRET_KEY` | Base64 32-byte key encrypting stored secrets (SMTP/OIDC). Generate with `openssl rand -base64 32`. Keep it stable, back it up. |
+| `CITYHALL_SECRET_KEY` | Base64 32-byte key encrypting stored secrets (SMTP, OIDC, git and agent credentials). Generate with `openssl rand -base64 32`. Back it up; it can be changed, but only through the [rotation procedure](configuration.md#rotating-the-key). |
 | `CITYHALL_BASE_URL` | Public URL (e.g. `https://cityhall.example.com`). Makes email links point at the real address instead of the internal host. |
 | TLS | Session and OIDC flow cookies are `HttpOnly`; terminate HTTPS at a proxy and forward `X-Forwarded-Proto: https`. |
 
@@ -250,10 +250,14 @@ DATABASE_URL=postgres://cityhall:password@db:5432/cityhall
 - **Backups**: for Postgres, `pg_dump` on a schedule (or your provider's managed
   backups). For SQLite, snapshot the database file while the process is stopped,
   or use the SQLite online-backup approach.
-- **The secret key is part of your backup story**: SMTP and OIDC secrets in the
-  database are encrypted with `CITYHALL_SECRET_KEY`. Restoring a database without
-  the matching key leaves those secrets undecryptable (re-enter them in
-  Settings). Back up the key alongside the database, stored separately.
+- **The secret key is part of your backup story**: SMTP, OIDC, git, and agent
+  secrets in the database are encrypted with `CITYHALL_SECRET_KEY`. Restoring a
+  database without the matching key leaves those secrets undecryptable (re-enter
+  them in Settings). Back up the key alongside the database, stored separately.
+  `cityhall secrets status` reports how many secrets the configured key can read,
+  which is worth running after a restore. Old keys can be kept readable through
+  `CITYHALL_SECRET_KEY_PREVIOUS`, so a restore from before a rotation still works;
+  see [Rotating the key](configuration.md#rotating-the-key).
 
 MySQL is also supported (`mysql://…`); the same notes apply.
 

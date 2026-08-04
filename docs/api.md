@@ -540,9 +540,11 @@ returned.
 }
 ```
 
-`value_set` is whether a value is stored; `usable` is whether it still decrypts,
-so `value_set` true with `usable` false means a `CITYHALL_SECRET_KEY` change left
-that credential unreadable and it has to be entered again. `limitation` is
+`value_set` is whether a value is stored; `usable` is whether it still decrypts as
+this user's credential for this variable, so `value_set` true with `usable` false
+means either a `CITYHALL_SECRET_KEY` change without a
+[rotation](configuration.md#rotating-the-key), or a value that does not belong to
+this row. `limitation` is
 non-null for variables that reach terminal sessions but not structured-view
 agents. `secret_key_available` false means nothing can be stored at all.
 
