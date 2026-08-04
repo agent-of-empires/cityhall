@@ -22,7 +22,8 @@ use tokio::process::Command;
 
 use super::{
     proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
-    ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
+    ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceRuntime, WorkspaceSpec,
+    WorkspaceStatus, WorkspaceUsage,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -33,6 +34,15 @@ const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 /// Image pulls and first builds legitimately take minutes.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
+/// Budget for the dashboard's batch reads. Short on purpose: these run on a
+/// sampling interval, and a stuck daemon should leave the last good snapshot in
+/// place rather than pin a sampler tick for a minute.
+const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Marks every container CityHall created, and the only thing that makes a
+/// container ours.
+const MANAGED_FILTER: &str = "label=cityhall.managed=true";
+const USER_ID_LABEL: &str = "cityhall.user_id";
+const VERSION_LABEL: &str = "cityhall.workspace.version";
 
 /// The reference workspace image build, embedded so a running CityHall can
 /// build missing images without a repo checkout. It needs no build context
@@ -72,9 +82,20 @@ impl DockerCliOrchestrator {
     /// reported as `Ok(None)` so callers can treat missing objects as state,
     /// not failure.
     async fn run(&self, args: &[&str]) -> Result<Option<String>, OrchestratorError> {
+        self.run_timeout(args, CLI_TIMEOUT).await
+    }
+
+    /// [`Self::run`] with an explicit budget, for the dashboard's batch reads:
+    /// they run on a poll and must fail fast, where a lifecycle command can
+    /// legitimately sit for the full minute.
+    async fn run_timeout(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<Option<String>, OrchestratorError> {
         let mut cmd = Command::new(&self.cli);
         cmd.args(args).kill_on_drop(true);
-        let output = tokio::time::timeout(CLI_TIMEOUT, cmd.output())
+        let output = tokio::time::timeout(timeout, cmd.output())
             .await
             .map_err(|_| {
                 OrchestratorError::Runtime(format!("{} {} timed out", self.cli, args.join(" ")))
@@ -596,6 +617,227 @@ impl Orchestrator for DockerCliOrchestrator {
             Some(_) => Ok(WorkspaceStatus::Stopped),
         }
     }
+
+    /// One `docker ps` for the whole fleet, replacing a `container inspect` per
+    /// user.
+    async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {
+        let out = self
+            .run_timeout(
+                &[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    MANAGED_FILTER,
+                    "--format",
+                    "{{json .}}",
+                ],
+                BATCH_TIMEOUT,
+            )
+            .await?
+            .unwrap_or_default();
+        Ok(Some(parse_ps(&out)))
+    }
+
+    async fn usage(&self) -> Result<UsageReport, OrchestratorError> {
+        // Listed first so `stats` is handed only our containers. `docker stats`
+        // takes no `--filter`, and left unqualified it makes the daemon sample
+        // every unrelated workload on the host.
+        let ids = self
+            .run_timeout(
+                &[
+                    "ps",
+                    "-q",
+                    "--filter",
+                    MANAGED_FILTER,
+                    "--filter",
+                    "status=running",
+                ],
+                BATCH_TIMEOUT,
+            )
+            .await?
+            .unwrap_or_default();
+        let ids: Vec<&str> = ids
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Ok(UsageReport::Sampled(Vec::new()));
+        }
+
+        let mut args = vec!["stats", "--no-stream", "--format", "{{json .}}"];
+        args.extend_from_slice(&ids);
+        let out = self
+            .run_timeout(&args, BATCH_TIMEOUT)
+            .await?
+            .unwrap_or_default();
+        Ok(UsageReport::Sampled(parse_stats(&out)))
+    }
+}
+
+/// One line of `docker ps --format '{{json .}}'`.
+///
+/// Every field is optional and tolerantly typed because podman is a supported
+/// `CONTAINER_CLI` and does not agree with docker on all of them: `Names` is a
+/// string in docker and can be an array in podman, and `Labels` is a joined
+/// string in docker and an object in podman.
+#[derive(Deserialize)]
+struct PsRow {
+    #[serde(rename = "Names")]
+    names: Option<NameField>,
+    #[serde(rename = "State")]
+    state: Option<String>,
+    #[serde(rename = "Labels")]
+    labels: Option<LabelField>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NameField {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl NameField {
+    fn first(&self) -> &str {
+        match self {
+            NameField::One(name) => name,
+            NameField::Many(names) => names.first().map(String::as_str).unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LabelField {
+    /// docker: `a=1,b=2`. Ambiguous if a value contained a comma, which none
+    /// of CityHall's do (a numeric id, a docker tag, a hex fingerprint).
+    Joined(String),
+    Map(std::collections::HashMap<String, String>),
+}
+
+impl LabelField {
+    fn get(&self, key: &str) -> Option<&str> {
+        match self {
+            LabelField::Joined(joined) => joined
+                .split(',')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(k, _)| k.trim() == key)
+                .map(|(_, v)| v.trim()),
+            LabelField::Map(map) => map.get(key).map(String::as_str),
+        }
+    }
+}
+
+/// Runtime rows from `docker ps` output, skipping anything that is not an
+/// identifiable CityHall workspace. A line that does not parse is dropped
+/// rather than failing the batch: one odd container must not blank the whole
+/// dashboard.
+fn parse_ps(out: &str) -> Vec<WorkspaceRuntime> {
+    out.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<PsRow>(line).ok())
+        .filter_map(|row| {
+            let user_id = row
+                .labels
+                .as_ref()
+                .and_then(|l| l.get(USER_ID_LABEL))
+                .and_then(|v| v.parse().ok())
+                // Pre-label containers, and any runtime whose ps output omits
+                // labels, still carry the id in their deterministic name.
+                .or_else(|| user_id_from_name(row.names.as_ref()?.first()))?;
+            Some(WorkspaceRuntime {
+                user_id,
+                running: row.state.as_deref() == Some("running"),
+                version: row
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.get(VERSION_LABEL))
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// The user id inside a workspace container name, inverting
+/// [`container_name`]. `None` for anything else on the host.
+fn user_id_from_name(name: &str) -> Option<i32> {
+    name.trim()
+        .trim_start_matches('/')
+        .strip_prefix("cityhall-workspace-u")?
+        .parse()
+        .ok()
+}
+
+/// One line of `docker stats --format '{{json .}}'`.
+#[derive(Deserialize)]
+struct StatsRow {
+    #[serde(rename = "Name")]
+    name: Option<NameField>,
+    #[serde(rename = "CPUPerc")]
+    cpu_perc: Option<String>,
+    #[serde(rename = "MemUsage")]
+    mem_usage: Option<String>,
+}
+
+/// Usage rows from `docker stats` output. A container that stopped between the
+/// listing and the sample, or whose figures do not parse, is skipped: its
+/// workspace shows a status with no usage, which beats reporting zeros or
+/// discarding everyone else's numbers.
+fn parse_stats(out: &str) -> Vec<WorkspaceUsage> {
+    out.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<StatsRow>(line).ok())
+        .filter_map(|row| {
+            let user_id = user_id_from_name(row.name.as_ref()?.first())?;
+            let (memory_bytes, memory_limit_bytes) = parse_mem_usage(row.mem_usage.as_deref()?)?;
+            Some(WorkspaceUsage {
+                user_id,
+                cpu_percent: parse_cpu_percent(row.cpu_perc.as_deref()?)?,
+                memory_bytes,
+                memory_limit_bytes,
+            })
+        })
+        .collect()
+}
+
+/// `"0.05%"`, and podman's `"0.05 %"`.
+fn parse_cpu_percent(raw: &str) -> Option<f32> {
+    raw.trim().trim_end_matches('%').trim().parse().ok()
+}
+
+/// `"1.5MiB / 7.6GiB"` into `(used, Some(limit))`. An unlimited container can
+/// report a dash for the limit, which becomes `None` rather than zero.
+fn parse_mem_usage(raw: &str) -> Option<(u64, Option<u64>)> {
+    let (used, limit) = match raw.split_once('/') {
+        Some((used, limit)) => (used, Some(limit)),
+        None => (raw, None),
+    };
+    Some((parse_size(used)?, limit.and_then(parse_size)))
+}
+
+/// A container-runtime size: `"1.5MiB"` (IEC, docker) or `"1.5MB"` (SI,
+/// podman), and plain `"512B"` / `"512"`. The `i` decides the base, so the two
+/// are not silently conflated.
+fn parse_size(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let digits = raw
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .trim();
+    let unit = raw[digits.len()..].trim().to_ascii_lowercase();
+    let value: f64 = digits.parse().ok()?;
+    let base: f64 = if unit.contains('i') { 1024.0 } else { 1000.0 };
+    let exponent = match unit.trim_end_matches('b').trim_end_matches('i') {
+        "" => 0,
+        "k" => 1,
+        "m" => 2,
+        "g" => 3,
+        "t" => 4,
+        "p" => 5,
+        _ => return None,
+    };
+    let scaled = value * base.powi(exponent);
+    (scaled.is_finite() && scaled >= 0.0).then_some(scaled as u64)
 }
 
 struct ContainerState {
@@ -1047,6 +1289,159 @@ mod tests {
 
         let wrong_network = container_state("v1.0.0", Some("net-a"), None);
         assert!(needs_recreate(&wrong_network, &spec, Some("net-b")));
+    }
+
+    #[test]
+    fn ps_output_becomes_fleet_runtime_rows() {
+        // Real docker shapes: Labels joined, Names a string, State a word.
+        let out = concat!(
+            r#"{"ID":"a1","Names":"cityhall-workspace-u1","State":"running","Labels":"cityhall.managed=true,cityhall.user_id=1,cityhall.workspace.version=v1.2.3"}"#,
+            "\n",
+            r#"{"ID":"b2","Names":"cityhall-workspace-u2","State":"exited","Labels":"cityhall.managed=true,cityhall.user_id=2,cityhall.workspace.version=v1.0.0"}"#,
+            "\n"
+        );
+        let rows = parse_ps(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            WorkspaceRuntime {
+                user_id: 1,
+                running: true,
+                version: Some("v1.2.3".to_string()),
+            }
+        );
+        // Anything that is not literally "running" is not running: created,
+        // paused, and restarting must not read as live.
+        assert!(!rows[1].running);
+        assert_eq!(rows[1].user_id, 2);
+    }
+
+    /// podman is a supported `CONTAINER_CLI` and disagrees with docker on both
+    /// of these field shapes.
+    #[test]
+    fn ps_output_tolerates_podman_field_shapes() {
+        let out = concat!(
+            r#"{"Names":["cityhall-workspace-u7"],"State":"running","Labels":{"cityhall.managed":"true","cityhall.user_id":"7","cityhall.workspace.version":"v2.0.0"}}"#,
+            "\n"
+        );
+        let rows = parse_ps(out);
+        assert_eq!(
+            rows,
+            vec![WorkspaceRuntime {
+                user_id: 7,
+                running: true,
+                version: Some("v2.0.0".to_string()),
+            }]
+        );
+    }
+
+    /// The label is the identity contract, but a container created before it
+    /// existed still carries the id in its deterministic name.
+    #[test]
+    fn ps_falls_back_to_the_container_name_without_a_user_label() {
+        let out = r#"{"Names":"cityhall-workspace-u42","State":"running","Labels":"cityhall.managed=true"}"#;
+        let rows = parse_ps(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].user_id, 42);
+        assert_eq!(rows[0].version, None);
+    }
+
+    /// One unreadable line must not blank the fleet: the dashboard would go
+    /// from "one odd container" to "no workspaces exist".
+    #[test]
+    fn ps_skips_junk_and_foreign_containers_without_failing() {
+        let out = concat!(
+            "not json at all\n",
+            r#"{"Names":"some-other-app","State":"running","Labels":"role=web"}"#,
+            "\n",
+            "\n",
+            r#"{"Names":"cityhall-workspace-u5","State":"running","Labels":"cityhall.user_id=5"}"#,
+            "\n"
+        );
+        let rows = parse_ps(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].user_id, 5);
+        assert!(parse_ps("").is_empty());
+    }
+
+    #[test]
+    fn workspace_names_round_trip_to_user_ids() {
+        assert_eq!(user_id_from_name(&container_name(42)), Some(42));
+        // podman prefixes a slash on some outputs.
+        assert_eq!(user_id_from_name("/cityhall-workspace-u42"), Some(42));
+        assert_eq!(user_id_from_name("cityhall-workspace-u42-data"), None);
+        assert_eq!(user_id_from_name("postgres"), None);
+        assert_eq!(user_id_from_name(""), None);
+    }
+
+    #[test]
+    fn stats_output_becomes_usage_rows() {
+        let out = concat!(
+            r#"{"Name":"cityhall-workspace-u1","CPUPerc":"12.34%","MemUsage":"1.5MiB / 7.6GiB"}"#,
+            "\n",
+            r#"{"Name":"cityhall-workspace-u2","CPUPerc":"0.00%","MemUsage":"512B / 1KiB"}"#,
+            "\n"
+        );
+        let rows = parse_stats(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].user_id, 1);
+        assert!((rows[0].cpu_percent - 12.34).abs() < 0.001);
+        assert_eq!(rows[0].memory_bytes, 1_572_864);
+        assert_eq!(rows[0].memory_limit_bytes, Some(8_160_437_862));
+        assert_eq!(rows[1].memory_bytes, 512);
+        assert_eq!(rows[1].memory_limit_bytes, Some(1024));
+    }
+
+    /// A container can stop between the listing and the sample, and podman
+    /// spaces its percentage differently. Neither may cost the other rows.
+    #[test]
+    fn stats_skips_unusable_rows_and_accepts_podman_spacing() {
+        let out = concat!(
+            r#"{"Name":"cityhall-workspace-u1","CPUPerc":"--","MemUsage":"-- / --"}"#,
+            "\n",
+            r#"{"Name":"unrelated","CPUPerc":"5.00%","MemUsage":"1MiB / 2MiB"}"#,
+            "\n",
+            r#"{"Name":"cityhall-workspace-u3","CPUPerc":"7.50 %","MemUsage":"10.5 MB / 1 GB"}"#,
+            "\n"
+        );
+        let rows = parse_stats(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].user_id, 3);
+        assert!((rows[0].cpu_percent - 7.5).abs() < 0.001);
+        // SI units from podman, not silently read as IEC.
+        assert_eq!(rows[0].memory_bytes, 10_500_000);
+        assert_eq!(rows[0].memory_limit_bytes, Some(1_000_000_000));
+    }
+
+    /// A multi-core container legitimately exceeds 100%: clamping it here
+    /// would hide the most interesting case on the page.
+    #[test]
+    fn cpu_percent_above_one_core_is_preserved() {
+        assert_eq!(parse_cpu_percent("250.00%"), Some(250.0));
+        assert_eq!(parse_cpu_percent("0.00%"), Some(0.0));
+        assert_eq!(parse_cpu_percent("--"), None);
+        assert_eq!(parse_cpu_percent(""), None);
+    }
+
+    #[test]
+    fn sizes_distinguish_iec_from_si() {
+        assert_eq!(parse_size("1KiB"), Some(1024));
+        assert_eq!(parse_size("1kB"), Some(1000));
+        assert_eq!(parse_size("1GiB"), Some(1_073_741_824));
+        assert_eq!(parse_size("1GB"), Some(1_000_000_000));
+        assert_eq!(parse_size("512B"), Some(512));
+        assert_eq!(parse_size("512"), Some(512));
+        assert_eq!(parse_size("0B"), Some(0));
+        assert_eq!(parse_size("--"), None);
+        assert_eq!(parse_size("1ZiB"), None);
+        assert_eq!(parse_size(""), None);
+    }
+
+    #[test]
+    fn a_missing_memory_limit_is_absent_not_zero() {
+        assert_eq!(parse_mem_usage("1MiB"), Some((1_048_576, None)));
+        assert_eq!(parse_mem_usage("1MiB / --"), Some((1_048_576, None)));
+        assert_eq!(parse_mem_usage("-- / 1MiB"), None);
     }
 
     #[test]

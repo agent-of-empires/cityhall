@@ -9,7 +9,8 @@ use crate::auth::AuthUser;
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
-    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceStatus,
+    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceRuntime,
+    WorkspaceStatus,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -47,6 +48,50 @@ fn status_str(status: Result<WorkspaceStatus, impl std::fmt::Display>) -> &'stat
     }
 }
 
+/// How the fleet's runtime state was obtained for one listing.
+enum Fleet {
+    /// One batch call answered for everyone. A user missing from the map has
+    /// no runtime object.
+    Batched(std::collections::HashMap<i32, WorkspaceRuntime>),
+    /// The backend supports batching but the call failed. Reported as
+    /// `unknown` rather than retried per user: whatever broke the batch call
+    /// (a stopped daemon, usually) would break N more of them.
+    Unavailable,
+    /// The backend has no batch path, so fall back to one call per user.
+    PerUser,
+}
+
+impl Fleet {
+    async fn load(state: &AppState) -> Self {
+        match state.orchestrator.statuses().await {
+            Ok(Some(rows)) => Fleet::Batched(rows.into_iter().map(|r| (r.user_id, r)).collect()),
+            Ok(None) => Fleet::PerUser,
+            Err(e) => {
+                tracing::warn!("batch workspace status check failed: {e}");
+                Fleet::Unavailable
+            }
+        }
+    }
+
+    async fn status_of(&self, state: &AppState, user_id: i32) -> &'static str {
+        match self {
+            Fleet::Batched(map) => runtime_status(map.get(&user_id)),
+            Fleet::Unavailable => "unknown",
+            Fleet::PerUser => status_str(state.orchestrator.status(user_id).await),
+        }
+    }
+}
+
+/// A batch runtime row as a status string. Absent means no runtime object
+/// exists, which is the same thing `status()` reports as `NotCreated`.
+fn runtime_status(runtime: Option<&WorkspaceRuntime>) -> &'static str {
+    match runtime {
+        Some(rt) if rt.running => "running",
+        Some(_) => "stopped",
+        None => "not_created",
+    }
+}
+
 /// GET /api/workspaces: every user with their workspace state.
 pub async fn list(
     State(state): State<AppState>,
@@ -56,6 +101,9 @@ pub async fn list(
     let cfg = workspaces::settings(&state.db).await?;
     let users = crate::service::list(&state.db).await?;
     let rows = workspace::Entity::find().all(&state.db).await?;
+    // One round-trip for the whole fleet where the backend can manage it,
+    // instead of a shell-out per user on a page that polls every 10 seconds.
+    let fleet = Fleet::load(&state).await;
 
     let mut items = Vec::with_capacity(users.len());
     for user in users {
@@ -78,7 +126,7 @@ pub async fn list(
         items.push(WorkspaceItem {
             user_id: user.id,
             status: match row {
-                Some(_) => status_str(state.orchestrator.status(user.id).await),
+                Some(_) => fleet.status_of(&state, user.id).await,
                 // No intent row: never used, skip the runtime round-trip.
                 None => "not_created",
             },
@@ -600,5 +648,35 @@ mod tests {
         // Including on the very first save, when there is no row yet.
         assert!(policy_to_store("force_maybe", None).is_err());
         assert!(policy_to_store("", None).is_err());
+    }
+
+    #[test]
+    fn a_batch_row_maps_to_the_same_strings_as_a_per_user_check() {
+        let running = WorkspaceRuntime {
+            user_id: 1,
+            running: true,
+            version: None,
+        };
+        let stopped = WorkspaceRuntime {
+            user_id: 1,
+            running: false,
+            version: None,
+        };
+        assert_eq!(runtime_status(Some(&running)), "running");
+        assert_eq!(runtime_status(Some(&stopped)), "stopped");
+        // Absent from the batch listing means no container exists, which is
+        // exactly what `status()` reports as NotCreated.
+        assert_eq!(runtime_status(None), "not_created");
+
+        // The two paths have to agree, or a user's status would change purely
+        // because their backend gained a batch implementation.
+        let ok: Result<WorkspaceStatus, String> = Ok(WorkspaceStatus::Running {
+            addr: "127.0.0.1:1".to_string(),
+        });
+        assert_eq!(status_str(ok), runtime_status(Some(&running)));
+        let ok: Result<WorkspaceStatus, String> = Ok(WorkspaceStatus::Stopped);
+        assert_eq!(status_str(ok), runtime_status(Some(&stopped)));
+        let ok: Result<WorkspaceStatus, String> = Ok(WorkspaceStatus::NotCreated);
+        assert_eq!(status_str(ok), runtime_status(None));
     }
 }
