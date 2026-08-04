@@ -341,7 +341,12 @@ deleted as soon as the command returns, which keeps them out of argv, the host
 process list, and CityHall's logs, but `docker inspect` on a running container
 still shows them. On kubernetes they live in a per-user Secret referenced with
 `envFrom`, so they stay out of the Deployment; note a Secret is not encrypted at
-rest unless the cluster is configured for that. With the `process` backend they
+rest unless the cluster is configured for that. **That split only buys anything if
+your namespace RBAC keeps it**: reading a Deployment must not imply reading
+Secrets, or the values are back in reach of everyone who could see them before.
+Grant `secrets` read separately and to fewer principals than `deployments` read,
+and remember a per-user Secret is enough to fetch that user's whole config bundle,
+including their decrypted git token. With the `process` backend they
 are readable through `/proc/<pid>/environ` by the CityHall OS user, which is the
 same user every workspace runs as. In every case, anyone who can administer the
 runtime can read a workspace's credentials.
@@ -389,13 +394,15 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   `deploy/docker-compose.workspaces.yml`). Mounting the docker socket gives
   CityHall effective root on the host; use a restricted socket proxy if that
   matters.
-- **`kubernetes`**. One Deployment + Service + PVC per user, managed with
+- **`kubernetes`**. One Deployment + Service + PVC per user, plus a Secret when
+  there is a bundle token or an agent credential to inject, managed with
   `kubectl` in the CityHall pod's namespace (override with
   `WORKSPACE_K8S_NAMESPACE`). Stop scales to zero keeping the PVC; destroy
-  deletes all three. The image template must point at a registry the cluster
+  deletes all of them. The image template must point at a registry the cluster
   can pull. Requires the RBAC and NetworkPolicy shipped in `deploy/k8s/` and
   the helm chart; without the NetworkPolicy any pod in the cluster can reach
-  the auth-none workspaces.
+  the auth-none workspaces. Restrict who else may read Secrets in that
+  namespace, per the note above.
 - **`process`** (unix). One detached `aoe serve` per user with an isolated
   HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Version
   binaries live at `$WORKSPACE_PROCESS_DIR/versions/<version>/aoe`,
