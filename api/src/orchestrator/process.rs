@@ -33,6 +33,10 @@ const START_ATTEMPTS: u32 = 2;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// Sanity cap on the release tarball size.
 const MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+/// Budget for the `aoe telemetry enable` a force-on policy runs before the
+/// server starts. It only writes two small files, so anything near this means
+/// it is blocked rather than slow.
+const FORCE_ON_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ProcessOrchestrator {
     root: PathBuf,
@@ -122,7 +126,7 @@ impl ProcessOrchestrator {
         std::fs::create_dir_all(&home).map_err(|e| {
             OrchestratorError::Runtime(format!("failed to create workspace home: {e}"))
         })?;
-        apply_force_on(spec, &binary, &home)?;
+        apply_force_on(spec, &binary, &home, FORCE_ON_TIMEOUT).await?;
 
         let mut last_err = None;
         for _ in 0..START_ATTEMPTS {
@@ -481,22 +485,37 @@ fn validate_version(version: &str) -> Result<(), OrchestratorError> {
 /// commands, so it can run one, check it, then run the other. A failure fails
 /// the start, naming the command, rather than leaving a workspace up under a
 /// policy that was not applied.
-fn apply_force_on(
+///
+/// Bounded, and run through tokio like every other CLI this crate shells out
+/// to. aoe takes a lock on the data dir it is about to write, so a concurrent
+/// aoe holding it makes this command wait; unbounded, that would hold a runtime
+/// worker and hang the workspace start with no explanation. `kill_on_drop`
+/// means the expired child is killed and reaped when the timeout drops it.
+async fn apply_force_on(
     spec: &WorkspaceSpec,
     binary: &Path,
     home: &Path,
+    timeout: Duration,
 ) -> Result<(), OrchestratorError> {
     if spec.telemetry != TelemetryPolicy::ForceOn {
         return Ok(());
     }
-    let output = std::process::Command::new(binary)
-        .args(["telemetry", "enable"])
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(["telemetry", "enable"])
         .env("HOME", home)
         // Removed for the same reason as in the spawn: an inherited
         // `DO_NOT_TRACK` would make aoe report the opt-in as suppressed.
         .env_remove("DO_NOT_TRACK")
         .current_dir(home)
-        .output()
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(timeout, cmd.output())
+        .await
+        .map_err(|_| {
+            OrchestratorError::Runtime(format!(
+                "`aoe telemetry enable` did not finish within {timeout:?} while forcing \
+                 telemetry on; another aoe may be holding the workspace's config lock"
+            ))
+        })?
         .map_err(|e| {
             OrchestratorError::Runtime(format!("failed to run `aoe telemetry enable`: {e}"))
         })?;
@@ -542,22 +561,15 @@ mod tests {
     /// the admin set and CityHall did not apply. The other policies must not run
     /// the command at all, which is what makes them work with an aoe too old to
     /// have it.
-    #[test]
-    fn force_on_fails_the_start_when_aoe_cannot_apply_it() {
+    #[tokio::test]
+    async fn force_on_fails_the_start_when_aoe_cannot_apply_it() {
         let orch = scratch("telemetry");
         let home = orch.user_dir(1).join("home");
         std::fs::create_dir_all(&home).unwrap();
 
-        let fake = |name: &str, body: &str| {
-            let path = orch.root.join(name);
-            std::fs::write(&path, body).unwrap();
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-            std::fs::set_permissions(&path, perms).unwrap();
-            path
-        };
-        let works = fake("aoe-ok", "#!/bin/sh\nexit 0\n");
-        let broken = fake(
+        let works = fake_aoe(&orch, "aoe-ok", "#!/bin/sh\nexit 0\n");
+        let broken = fake_aoe(
+            &orch,
             "aoe-old",
             "#!/bin/sh\necho 'unknown subcommand' >&2\nexit 1\n",
         );
@@ -566,8 +578,11 @@ mod tests {
             telemetry: TelemetryPolicy::ForceOn,
             ..spec_for(1)
         };
-        assert!(apply_force_on(&spec, &works, &home).is_ok());
-        let err = apply_force_on(&spec, &broken, &home)
+        assert!(apply_force_on(&spec, &works, &home, FORCE_ON_TIMEOUT)
+            .await
+            .is_ok());
+        let err = apply_force_on(&spec, &broken, &home, FORCE_ON_TIMEOUT)
+            .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("telemetry enable"), "{err}");
@@ -583,8 +598,48 @@ mod tests {
                 telemetry: policy,
                 ..spec_for(1)
             };
-            assert!(apply_force_on(&spec, &missing, &home).is_ok());
+            assert!(apply_force_on(&spec, &missing, &home, FORCE_ON_TIMEOUT)
+                .await
+                .is_ok());
         }
+    }
+
+    /// aoe locks the data dir it is about to write, so a concurrent aoe holding
+    /// that lock makes this command wait. Unbounded it would hold a runtime
+    /// worker and hang the start with nothing to read; the deadline turns that
+    /// into a start failure that says what is likely wrong.
+    #[tokio::test]
+    async fn a_hung_telemetry_enable_hits_the_deadline() {
+        let orch = scratch("telemetry-hang");
+        let home = orch.user_dir(1).join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let hangs = fake_aoe(&orch, "aoe-hangs", "#!/bin/sh\nsleep 30\n");
+
+        let spec = WorkspaceSpec {
+            telemetry: TelemetryPolicy::ForceOn,
+            ..spec_for(1)
+        };
+        let err = apply_force_on(&spec, &hangs, &home, Duration::from_millis(100))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not finish"), "{err}");
+        // `kill_on_drop` reaps the child when the expired timeout drops it, so
+        // no `sleep` is left behind holding the workspace's lock.
+        assert!(
+            err.contains("config lock"),
+            "must name the likely cause: {err}"
+        );
+    }
+
+    /// An executable stand-in for the aoe binary.
+    fn fake_aoe(orch: &ProcessOrchestrator, name: &str, body: &str) -> PathBuf {
+        let path = orch.root.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
     }
 
     fn spec_for(user_id: i32) -> WorkspaceSpec {
