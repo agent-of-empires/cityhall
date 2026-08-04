@@ -257,8 +257,7 @@ until it is upgraded.
 
 **The reference image ships no coding agent.** It carries the aoe binary, git,
 tmux, and a Node runtime, and nothing else. Which agent a workspace runs is the
-user's choice, made per session in aoe's own session wizard, so CityHall does not
-duplicate that as a setting.
+user's choice, made per session in aoe's own session wizard.
 
 A user installs the agent they want from a terminal session inside their
 workspace. aoe prints the exact command when a chosen agent is missing, so
@@ -282,36 +281,74 @@ symlinks: `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`,
 structured-view agent, so an env-based approach would work in a terminal session
 and quietly fail in structured view.
 
-CityHall does not own agent versions. An install without a pinned version tracks
-whatever the registry serves.
+#### Handing users a workspace that is already set up
 
-To set the default agent for every workspace, put it in the workspace config
-document (**Settings → Workspaces**):
+Tick the agents under **Settings → Workspaces** and a workspace installs them
+itself, so a user opens one that is ready to use instead of installing something
+first. Leave them all unticked and nothing is installed, which is the behaviour
+above.
+
+Four things are worth knowing before turning it on.
+
+**The install happens at boot, in the background.** CityHall gives a workspace
+15 seconds to answer HTTP before it treats the start as failed, and an
+`npm install -g` takes minutes, so the workspace comes up first and the agents
+land shortly after. A user who opens a brand new workspace within the first
+minute or so may still find an agent missing; it appears without them doing
+anything. Progress and failures are logged inside the workspace, at
+`~/.config/agent-of-empires/cityhall-agents/provision.log`.
+
+**It adds a network dependency to a cold start.** A registry outage means the
+workspace starts without the agent it was supposed to have rather than failing
+to start. The cost is paid once per user, because the install lands on the
+persistent volume, so later starts install nothing. An operator who wants a
+fixed set with no boot-time network at all builds a derived image instead; see
+below.
+
+**A change reaches an existing workspace when that workspace is next created**,
+which is a restart, an idle stop, or a first launch, exactly like a credential
+change. Saving the setting deliberately does not disturb anyone's running
+session. Versions are not pinned: an install tracks whatever the registry serves,
+the same as a user running the command by hand.
+
+**An agent a user removes stays removed.** CityHall records that it installed a
+default once, and does not reinstall it on every start. Unticking an agent does
+not uninstall anything either; it only stops new workspaces from getting it.
+
+To set which agent a new session picks by default, put it in the workspace config
+document (**Settings → Workspace config**):
 
 ```toml
 [settings.acp]
 default_agent = "claude"
 ```
 
-**An operator cannot force a workspace to use a particular agent.** aoe applies
-no allowlist to the agents a session may pick, and a terminal session can run
-whatever is installed regardless, so the set of installed binaries is the only
-real lever. Build a derived image to fix that set:
+**The installed set is a default, not a restriction.** aoe applies no allowlist
+to the agents a session may pick, and a terminal session can run whatever is on
+`PATH` regardless, so an admin choosing the set decides what a workspace *arrives
+with*, not what it is *limited to*. A user can install and run anything else.
+Making a restriction actually hold needs an aoe-side allowlist, tracked in
+[agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241),
+and separately a decision about terminal access, since a shell defeats an
+allowlist that only covers the structured view.
+
+For a fixed set with no boot-time install at all, build a derived image:
 
 ```dockerfile
 FROM cityhall/aoe:v0.5.0
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.64.2
 ```
 
-Point the image template at it, and users get exactly those agents. Having
-CityHall install an admin-chosen set instead of a derived image is tracked in
-[#57](https://github.com/agent-of-empires/cityhall/issues/57); the aoe-side
-allowlist that would make a restriction actually hold is
-[agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241).
+Point the image template at it and every workspace starts with exactly that,
+pinned, with nothing fetched at boot. The install prefixes come first on `PATH`,
+so a user can still upgrade a baked-in agent for themselves. This is the right
+choice for a deployment that wants reproducible workspaces; the setting above is
+the right choice for convenience.
 
-The `process` backend has no image and no entrypoint, so agents are installed on
-the host by the operator; each user's `HOME` is already a persistent directory,
-so logins persist there without any of the above.
+The `process` backend has no image and no entrypoint, so **the agent setting does
+nothing there** and agents are installed on the host by the operator; each user's
+`HOME` is already a persistent directory, so logins persist there without any of
+the above.
 
 ### Agent credentials
 
@@ -497,10 +534,11 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 
 - Agent credentials only reach structured-view agents for Claude. See
   [Agent credentials](#agent-credentials).
-- An operator cannot restrict which agent a workspace runs, and cannot have
-  CityHall install a chosen set; the image is the only lever
-  ([#57](https://github.com/agent-of-empires/cityhall/issues/57)). See
-  [Coding agents](#coding-agents).
+- An operator can choose which agents a workspace arrives with, but cannot
+  restrict it to them: a session may pick any agent, and a terminal session can
+  run any binary on `PATH`. Enforcement needs an aoe-side allowlist
+  ([agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241)).
+  See [Coding agents](#coding-agents).
 - An SSH key only reaches a workspace running an aoe new enough to install one.
   An older aoe ignores it and `git@` remotes keep failing. See
   [SSH keys](#ssh-keys).

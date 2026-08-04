@@ -496,18 +496,36 @@ one call.
 
 Requires `settings.read`.
 
+`agents` is the coding agents a workspace is set up to arrive with, and
+`available_agents` is the whole selectable catalog, so a client lists that rather
+than hardcoding one.
+
 ```json
 {
   "image_template": "cityhall/aoe:{version}",
   "default_version": "v0.5.0",
-  "idle_stop_minutes": 30
+  "idle_stop_minutes": 30,
+  "agents": ["claude"],
+  "available_agents": [
+    { "name": "claude", "label": "Claude" },
+    { "name": "codex", "label": "Codex" },
+    { "name": "gemini", "label": "Gemini" },
+    { "name": "opencode", "label": "OpenCode" }
+  ]
 }
 ```
 
 ### `PUT /api/settings/workspaces`
 
-Requires `settings.write`. Same shape as `GET`. `image_template` is required;
-`idle_stop_minutes` must be at least 1.
+Requires `settings.write`. Same shape as `GET` minus `available_agents`, which is
+the server's catalog rather than a setting and is ignored if sent.
+`image_template` is required; `idle_stop_minutes` must be at least 1. A name in
+`agents` that is not in the catalog is rejected with 400 and nothing is stored.
+
+`agents` is optional, and the three cases differ: omitting it preserves the
+stored set, `[]` clears it, and a list replaces it. Omission preserves rather
+than clears so a client that predates the field cannot wipe the selection just by
+saving the idle timeout.
 
 ### `GET /api/me/agent-credentials`
 
