@@ -11,7 +11,8 @@ get the message composer and the structured (chat) view only, with terminal
 and diff panes, project management, and advanced settings hidden in the UI and
 refused server-side. The flag requires an aoe version that supports it;
 starting a workspace on an older version fails with an unknown-argument error
-from `aoe serve`.
+from `aoe serve`. If no release has it yet, see
+[Unreleased aoe](#unreleased-aoe).
 
 ## How it works
 
@@ -28,7 +29,8 @@ from `aoe serve`.
   (or a selected group) to a specific version. A version change recreates the
   container on its next start, keeping the volume. The image used is the
   settings' image template with `{version}` substituted, e.g.
-  `cityhall/aoe:v0.5.0`.
+  `cityhall/aoe:v0.5.0`. A version is normally a release tag, and can also be
+  an unreleased commit ([Unreleased aoe](#unreleased-aoe)).
 
 ## Setup
 
@@ -56,6 +58,48 @@ is a problem). On a first startup the default version is pre-filled with the
 latest release (skipped when offline); adjust it under **Settings →
 Workspaces** if needed. Starting a workspace with no default version set
 fails with a descriptive error.
+
+### Unreleased aoe
+
+A version field also accepts `git:<ref>`, where the ref is a branch, tag, or
+commit sha in the aoe repository. CityHall then provisions that workspace by
+compiling aoe rather than downloading a release, which is what makes a change
+that has landed on `main` but is not released yet testable. Experimental,
+docker backend only, and slow.
+
+The ref is resolved to the commit it points at when you save, and what gets
+stored is `git-<sha>`. That sha, not the ref, is the version identity: it is the
+image tag, the container's version label, and what the admin Workspaces page
+shows, so it is always visible that a workspace is not on a release.
+Consequences worth knowing:
+
+- The ref is not tracked. Advancing `main` changes nothing on its own; save
+  `git:main` again and the newly resolved sha recreates the container on its
+  next start. Nothing rebuilds a workspace someone is using behind their back.
+- Re-saving an already-resolved `git-<sha>` does not resolve or rebuild
+  anything, so saving a form twice is free.
+- Only public commits resolve. CityHall reads the ref through the GitHub API
+  (with `GITHUB_TOKEN` when one is set) and the build clones over HTTPS with no
+  credentials.
+
+The build runs in the same background provisioning flow as an image pull, so it
+survives a closed browser tab, runs once per image no matter how many requests
+arrive, and reports progress on the admin Workspaces page. It compiles at
+`opt-level=1` without LTO and with two parallel rustc jobs, because aoe's own
+`.cargo/config.toml` asks for eight and that exhausts memory in a small Docker
+VM. The binary is slower than a release build; this is for testing, not for a
+deployment to settle on. Both knobs are build args if you pre-build by hand:
+
+```sh
+SHA=$(git -C ../agent-of-empires rev-parse main)
+docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
+  --build-arg CARGO_BUILD_JOBS=8 -t "cityhall/aoe:git-$SHA" deploy/aoe-image/
+```
+
+The other backends do not build. The process backend refuses a `git-` version,
+since a commit has no release tarball to download. The kubernetes backend can
+run one, but only if you build the image with the command above and push it
+where the cluster can pull it.
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
@@ -349,8 +393,9 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Version
   binaries live at `$WORKSPACE_PROCESS_DIR/versions/<version>/aoe`,
   downloaded automatically from the release tarball (or installed there
-  manually). Processes survive CityHall restarts. This isolates data, not
-  security: every workspace runs as the CityHall OS user.
+  manually), so released versions only. Processes survive CityHall restarts.
+  This isolates data, not security: every workspace runs as the CityHall OS
+  user.
 
 ## Current limitations
 
@@ -362,3 +407,6 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   [Coding agents](#coding-agents).
 - Git credentials are HTTPS tokens only; there is no way to supply an SSH key
   ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
+- A workspace built from an unreleased commit does not follow the ref it came
+  from, and only the docker backend can build one. See
+  [Unreleased aoe](#unreleased-aoe).
