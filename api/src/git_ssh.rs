@@ -61,7 +61,12 @@ pub fn validate_key(key: &str) -> Result<String, AppError> {
         ));
     }
 
-    if is_encrypted(&key, &label)? {
+    // Decoded for every format, not only OpenSSH. Without this an `RSA PRIVATE
+    // KEY` block whose body is `!!!!` passes every check above and is stored,
+    // and the user finds out when a clone fails inside their workspace.
+    let body = pem_body(&key)?;
+
+    if is_encrypted(&key, &label, &body)? {
         return Err(AppError::BadRequest(
             "that key is protected by a passphrase, and nothing in a workspace can prompt for one. Store a key with no passphrase, kept for this purpose only, or strip it with `ssh-keygen -p`",
         ));
@@ -137,14 +142,39 @@ fn pem_label(key: &str) -> Option<String> {
     label.ends_with("PRIVATE KEY").then(|| label.to_string())
 }
 
+/// The base64 between the BEGIN and END lines, decoded.
+///
+/// Header lines are dropped rather than decoded: traditional PEM puts
+/// `Proc-Type:` and `DEK-Info:` before the body, and base64 has no `:`, so a
+/// line carrying one is metadata and not key bytes.
+fn pem_body(key: &str) -> Result<Vec<u8>, AppError> {
+    let encoded: String = key
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN "))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END "))
+        .filter(|l| !l.contains(':'))
+        .flat_map(str::chars)
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if encoded.is_empty() {
+        return Err(AppError::BadRequest(
+            "the key has no body between its BEGIN and END lines",
+        ));
+    }
+    B64.decode(encoded.as_bytes()).map_err(|_| {
+        AppError::BadRequest("the key's body is not valid base64, so it is damaged or truncated")
+    })
+}
+
 /// Whether the key needs a passphrase, by the encoding's own statement.
 ///
 /// - PKCS#8 says so in the label (`ENCRYPTED PRIVATE KEY`).
 /// - Traditional PEM (`RSA PRIVATE KEY` and friends) says so in a `Proc-Type:
 ///   4,ENCRYPTED` header before the body.
-/// - OpenSSH's own format names its cipher inside the body, so that one has to
-///   be decoded. `none` is the only unencrypted value.
-fn is_encrypted(key: &str, label: &str) -> Result<bool, AppError> {
+/// - OpenSSH's own format names its cipher inside the body. `none` is the only
+///   unencrypted value.
+fn is_encrypted(key: &str, label: &str, body: &[u8]) -> Result<bool, AppError> {
     if label.contains("ENCRYPTED") {
         return Ok(true);
     }
@@ -155,19 +185,7 @@ fn is_encrypted(key: &str, label: &str) -> Result<bool, AppError> {
         return Ok(false);
     }
 
-    let body: String = key
-        .lines()
-        .skip_while(|l| !l.starts_with("-----BEGIN "))
-        .skip(1)
-        .take_while(|l| !l.starts_with("-----END "))
-        .flat_map(str::chars)
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let decoded = B64.decode(body.as_bytes()).map_err(|_| {
-        AppError::BadRequest("the key's body is not valid base64, so it is damaged or truncated")
-    })?;
-
-    let rest = decoded.strip_prefix(OPENSSH_MAGIC).ok_or(AppError::BadRequest(
+    let rest = body.strip_prefix(OPENSSH_MAGIC).ok_or(AppError::BadRequest(
         "the key says it is an OpenSSH key but does not start like one, so it is damaged or truncated",
     ))?;
     // A uint32 length then that many bytes of cipher name.
@@ -255,6 +273,26 @@ mod tests {
         assert!(validate_key(
             "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----"
         )
+        .is_err());
+        // A body that is not base64 in a format whose contents are never
+        // inspected. Before the body was decoded for every label this was
+        // stored, and the user found out when a clone failed in the workspace.
+        assert!(validate_key(
+            "-----BEGIN RSA PRIVATE KEY-----\n!!!!\n-----END RSA PRIVATE KEY-----"
+        )
+        .is_err());
+        // BEGIN and END with nothing between them.
+        assert!(
+            validate_key("-----BEGIN RSA PRIVATE KEY-----\n-----END RSA PRIVATE KEY-----").is_err()
+        );
+        // An OpenSSH body that stops inside the cipher name it declares.
+        let mut truncated = Vec::from(OPENSSH_MAGIC);
+        truncated.extend_from_slice(&(10u32).to_be_bytes());
+        truncated.extend_from_slice(b"aes");
+        assert!(validate_key(&format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----",
+            B64.encode(&truncated)
+        ))
         .is_err());
         assert!(validate_key(&"x".repeat(MAX_KEY_LEN + 1)).is_err());
     }
