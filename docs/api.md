@@ -25,8 +25,8 @@ Every user has a role, and a role holds a set of permission keys (the wildcard
 `*` grants all). Endpoints require a specific permission; a caller lacking it
 gets `403 Forbidden` with `{"error":"insufficient permissions"}`. The current
 keys are `users.read`, `users.write`, `roles.read`, `roles.write`,
-`settings.read`, `settings.write`, `workspaces.use`, `workspaces.read`, and
-`workspaces.write`. `GET /api/auth/me` returns the caller's effective
+`settings.read`, `settings.write`, `workspaces.use`, `workspaces.read`,
+`workspaces.write`, and `dashboard.read`. `GET /api/auth/me` returns the caller's effective
 permission list so a client can gate its UI. Built-in roles are `admin` (all
 permissions) and `member` (`users.read`, `workspaces.use`).
 
@@ -415,6 +415,94 @@ Requires `settings.write`. Updates the self-signup configuration (same shape as
 unknown `signup_default_role_id` returns `400`. Enabling signup while SMTP is
 unconfigured returns `400` (verification email cannot be sent). Returns the
 updated settings.
+
+### `GET /api/dashboard`
+
+Requires `dashboard.read`, which also exposes CityHall's own system metrics and
+not only workspace state. Unrelated to the aoe telemetry policy in
+[Workspaces](workspaces.md#telemetry), which governs what workspaces report
+upstream.
+
+Served from a snapshot a background task refreshes every 10 seconds, so the
+figures are near-real-time rather than instantaneous and the endpoint costs the
+same however many workspaces exist. `sampled_at` is `null` until the first
+sample completes; `stale` means the sampler looks stuck rather than merely
+between ticks. `errors` lists sources that failed on the last attempt, and the
+values beside them are the last ones collected successfully.
+
+`usage` is per-workspace CPU and memory, keyed by `user_id`, and is only
+populated on the docker backend; `usage_supported` is `false` where the backend
+has no metrics source, which is different from nothing running. `cpu_percent` is
+a share of one CPU, so a workspace using two cores reports `200`.
+
+`system` describes the machine as CityHall sees it, which is not necessarily the
+machine running the workspaces: `scope` is `host` or `cityhall_container`.
+`cgroup_memory` is CityHall's own limit when it is narrower than the system's,
+and never replaces the totals. `disk` is `null` unless
+`SYSTEM_METRICS_DISK_PATH` is configured (see
+[Configuration](configuration.md)).
+
+```json
+{
+  "sampled_at": "2026-08-04T18:44:11Z",
+  "stale": false,
+  "errors": [],
+  "system": {
+    "scope": "host",
+    "cpu_percent": 40.2,
+    "cpu_count": 12,
+    "memory_used_bytes": 25886179328,
+    "memory_total_bytes": 34359738368,
+    "cgroup_memory": null,
+    "disk": { "path": "/", "mount_point": "/", "used_bytes": 973773684736, "total_bytes": 994662584320 }
+  },
+  "usage_supported": true,
+  "usage": [{ "user_id": 2, "cpu_percent": 12.3, "memory_bytes": 1572864, "memory_limit_bytes": 8160437862 }],
+  "workspaces": [
+    {
+      "user_id": 2,
+      "username": "bob",
+      "status": "running",
+      "effective_version": "v0.5.0",
+      "running_version": "v0.5.0",
+      "last_active_at": "2026-07-15T09:20:50Z",
+      "provisioning": null
+    }
+  ],
+  "summary": {
+    "total_users": 1,
+    "running": 1,
+    "stopped": 0,
+    "not_created": 0,
+    "unknown": 0,
+    "provisioning": 0,
+    "usage_available": 1
+  },
+  "versions": [{ "version": "v0.5.0", "count": 1 }]
+}
+```
+
+### `GET /api/me/dashboard-layout`
+
+Requires `dashboard.read`. The caller's saved dashboard widget arrangement, or
+`{"layout": null}` when they have never customized it. A stored layout from an
+incompatible schema version reads as `null` rather than failing.
+
+### `PUT /api/me/dashboard-layout`
+
+Requires `dashboard.read`. Saves the caller's own arrangement and returns `204`.
+
+```json
+{
+  "schema_version": 1,
+  "items": [{ "id": "system-usage", "x": 0, "y": 0, "w": 6, "h": 7 }],
+  "hidden": ["versions"]
+}
+```
+
+At most 32 items and 32 hidden ids, widget ids matching
+`[a-z][a-z0-9-]{0,63}`, no duplicates, and `x + w` within the 12-column grid;
+anything else returns `400`. Concurrent saves are last-write-wins.
 
 ### `GET /api/workspaces`
 

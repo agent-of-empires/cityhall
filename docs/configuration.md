@@ -69,6 +69,25 @@ connections from outside the container. `STATIC_DIR` is where the server looks
 for the built frontend (`index.html` plus assets); requests that do not match
 `/api/*` fall back to `index.html` so client-side routes resolve on refresh.
 
+## Dashboard system metrics
+
+The Dashboard's system card reports the machine as the CityHall process sees it.
+When CityHall runs in a container that is usually the host's CPU and memory
+rather than its own, so the card is labelled with what it is showing.
+
+`SYSTEM_METRICS_SCOPE` overrides that label with `host` or `container`.
+CityHall detects it from `/.dockerenv` and PID 1's cgroup, which covers docker,
+compose, podman, containerd, and kubernetes; set it when the guess is wrong.
+
+`SYSTEM_METRICS_DISK_PATH` names a filesystem to report, for example
+`/var/lib/docker`. There is deliberately no default and the disk figure is
+omitted when it is unset: under an overlay filesystem the obvious choice, `/`,
+measures CityHall's own image layers rather than the storage workspaces use, so
+a default would put a confidently wrong number on the page. The mount point
+actually holding the path is shown beside it. Measuring a docker volume's
+backing storage from inside a container requires mounting that host path into
+CityHall.
+
 ## Logging
 
 CityHall logs with [`tracing`](https://docs.rs/tracing). There are two ways to

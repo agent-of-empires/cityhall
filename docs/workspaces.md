@@ -117,7 +117,16 @@ Notes on that build, all learned the hard way:
 
 Members hold the `workspaces.use` permission by default and can open their own
 workspace. `workspaces.read` / `workspaces.write` gate the admin Workspaces
-page and its actions.
+page and its actions. `dashboard.read` gates the Dashboard page, and grants
+more than workspace state: it also exposes CityHall's own CPU, memory, and
+disk figures.
+
+Two things about the Dashboard are not visible from the page itself. Its
+numbers come from a snapshot refreshed every 10 seconds, not from a live read,
+so they lag actions by up to that long; the page shows how old the sample is.
+And per-workspace CPU and memory come from `docker stats`, so they are only
+available on the docker backend. The kubernetes and process backends report
+status without usage rather than reporting zeros.
 
 `workspaces.impersonate` (never implied by `workspaces.read`) lets an admin
 open another user's workspace for support: the Open action mints a short-lived
