@@ -197,6 +197,23 @@ impl Orchestrator for KubectlOrchestrator {
         );
         self.run(&["apply", "-f", "-"], Some(manifests.to_string()))
             .await?;
+        // `apply` only reconciles the objects it is handed, so dropping the
+        // Secret from the manifest does not remove it. A user who deletes their
+        // last credential would otherwise leave it sitting in a live Secret,
+        // unreferenced by any pod and invisible in the UI. Deleting it here is
+        // what keeps the object from outliving the values it holds.
+        if env_values(spec).is_empty() {
+            self.run(
+                &[
+                    "delete",
+                    "secret",
+                    &secret_name(spec.user_id),
+                    "--ignore-not-found=true",
+                ],
+                None,
+            )
+            .await?;
+        }
         self.wait_ready_or_diagnose(spec).await?;
         Ok(self.addr(spec.user_id))
     }
@@ -500,9 +517,42 @@ mod tests {
         );
     }
 
+    /// Also the condition `ensure_started` deletes the Secret on: emptiness here
+    /// is what says the object has nothing left to hold. A user who deletes their
+    /// last credential lands back on exactly this spec, since `AgentEnv` with no
+    /// pairs fingerprints empty, so it is indistinguishable from never having had
+    /// one.
     #[test]
     fn env_values_is_empty_with_nothing_to_inject() {
         assert!(env_values(&spec()).is_empty());
+    }
+
+    /// The other side of that branch. With the config bundle configured, its URL
+    /// and token alone keep the Secret populated, so reconciling a user who has
+    /// no agent credentials must leave it in place. Getting this wrong would
+    /// delete the bundle token on every reconcile rather than in the one case the
+    /// deletion is for.
+    #[test]
+    fn a_bundle_with_no_agent_credentials_still_needs_a_secret() {
+        let spec = WorkspaceSpec {
+            bundle: Some(super::super::BundleAccess {
+                url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
+                token: "tok".to_string(),
+            }),
+            ..spec()
+        };
+        let values = env_values(&spec);
+        assert!(!values.is_empty(), "the bundle alone must keep the Secret");
+        assert!(!values.contains_key("ANTHROPIC_API_KEY"));
+
+        let m = render_manifests(&spec, "cityhall", "5Gi", None);
+        let items = m["items"].as_array().unwrap();
+        assert!(items.iter().any(|i| i["kind"] == "Secret"));
+        let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
+        assert_eq!(
+            dep["spec"]["template"]["spec"]["containers"][0]["envFrom"][0]["secretRef"]["name"],
+            "cityhall-workspace-u42-env"
+        );
     }
 
     #[test]
