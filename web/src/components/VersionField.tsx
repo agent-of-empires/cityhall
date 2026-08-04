@@ -1,6 +1,19 @@
 import { useState } from "react";
 import { Input, Select } from "./ui";
 
+export type VersionMode = "release" | "custom";
+
+/// Which mode the field is in: the user's choice once they have made one, and
+/// otherwise inferred from the current value.
+///
+/// Inferred per render rather than seeded once, because `value` and `versions`
+/// both arrive from requests that land after mount. Seeding left a saved custom
+/// tag sitting in the release dropdown with the checkbox unticked.
+export function versionMode(value: string, versions: string[], override: VersionMode | null): VersionMode {
+  if (override) return override;
+  return value && !versions.includes(value) ? "custom" : "release";
+}
+
 export function VersionField({
   value,
   onChange,
@@ -16,14 +29,17 @@ export function VersionField({
   noneLabel: string;
   className?: string;
 }) {
-  // Initialized from value, but the user can toggle freely afterward; it must
-  // not snap back to "release" just because a save round-trips the value.
-  const [mode, setMode] = useState<"release" | "custom">(() =>
-    value && !versions.includes(value) ? "custom" : "release",
-  );
+  // Null until the user touches the checkbox, so the mode follows the props
+  // until then. A `useState` initializer runs once, on mount, and both `value`
+  // and `versions` arrive from requests that land after it: a saved custom tag
+  // would show up in the release dropdown with the box unticked. Once the user
+  // has chosen, their choice wins and a save that round-trips the value must not
+  // snap the box back.
+  const [modeOverride, setModeOverride] = useState<VersionMode | null>(null);
+  const mode = versionMode(value, versions, modeOverride);
 
   function toggleCustom(checked: boolean) {
-    setMode(checked ? "custom" : "release");
+    setModeOverride(checked ? "custom" : "release");
     // A release tag and a hand-typed tag are not interchangeable, so
     // switching clears rather than leaving a value behind that the other
     // mode does not account for.
