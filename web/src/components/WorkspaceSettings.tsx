@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type WorkspaceSettings } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
-import { Button, ErrorText, Field, Input, Select } from "./ui";
+import { Button, ErrorText, Field, Input } from "./ui";
+import { VersionField } from "./VersionField";
 
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -79,23 +80,13 @@ export function WorkspaceSettingsSection() {
             />
           </Field>
           <Field label="Default version">
-            {versions.length > 0 ? (
-              <Select value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)}>
-                <option value="">none</option>
-                {/* A previously saved version can predate the discovered list. */}
-                {defaultVersion && !versions.includes(defaultVersion) && (
-                  <option value={defaultVersion}>{defaultVersion}</option>
-                )}
-                {versions.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                    {v === latest ? " (latest)" : ""}
-                  </option>
-                ))}
-              </Select>
-            ) : (
-              <Input value={defaultVersion} onChange={(e) => setDefaultVersion(e.target.value)} placeholder="v0.1.0" />
-            )}
+            <VersionField
+              value={defaultVersion}
+              onChange={setDefaultVersion}
+              versions={versions}
+              latest={latest ?? undefined}
+              noneLabel="none"
+            />
           </Field>
           <Field label="Idle stop (minutes)">
             <Input

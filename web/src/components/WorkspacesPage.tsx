@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ExternalLink, KeyRound, Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
-import { isOlderVersion } from "../lib/versions";
+import { isGitVersion, isOlderVersion } from "../lib/versions";
 import { AgentCredentialsEditor } from "./AgentCredentials";
 import { TopBar } from "./TopBar";
-import { Button, Input, Select } from "./ui";
+import { Button, Select } from "./ui";
+import { VersionField } from "./VersionField";
 
 const STATUS_STYLES: Record<WorkspaceItem["status"], string> = {
   running: "text-status-running",
@@ -166,24 +167,14 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                 />
                 restart running now
               </label>
-              {versions.length > 0 ? (
-                <Select value={version} onChange={(e) => setVersion(e.target.value)} className="w-52">
-                  <option value="">follow default</option>
-                  {versions.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                      {v === latest ? " (latest)" : ""}
-                    </option>
-                  ))}
-                </Select>
-              ) : (
-                <Input
-                  value={version}
-                  onChange={(e) => setVersion(e.target.value)}
-                  placeholder="version, empty = default"
-                  className="w-52"
-                />
-              )}
+              <VersionField
+                value={version}
+                onChange={setVersion}
+                versions={versions}
+                latest={latest ?? undefined}
+                noneLabel="follow default"
+                className="w-52"
+              />
               <Button variant="primary" disabled={busy || selected.size === 0} onClick={applyVersion}>
                 Set version ({selected.size})
               </Button>
@@ -263,6 +254,14 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                             <option value="">
                               {item.effective_version ? `default (${item.effective_version})` : "default"}
                             </option>
+                            {/* A previously saved version can predate the discovered list. */}
+                            {item.pinned_version && !versions.includes(item.pinned_version) && (
+                              <option value={item.pinned_version} title={item.pinned_version}>
+                                {isGitVersion(item.pinned_version)
+                                  ? item.pinned_version.slice(0, 16)
+                                  : item.pinned_version}
+                              </option>
+                            )}
                             {versions.map((v) => (
                               <option key={v} value={v}>
                                 {v}
