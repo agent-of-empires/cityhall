@@ -44,6 +44,10 @@ pub fn api_router(state: AppState) -> Router {
             get(users::get).patch(users::update).delete(users::delete),
         )
         .route("/dashboard", get(dashboard::overview))
+        .route(
+            "/me/dashboard-layout",
+            get(dashboard::get_layout).put(dashboard::put_layout),
+        )
         .route("/roles", get(roles::list).post(roles::create))
         .route("/roles/{id}", patch(roles::update).delete(roles::delete))
         .route("/permissions", get(roles::permissions))

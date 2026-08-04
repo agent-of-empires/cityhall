@@ -6,13 +6,14 @@
 //! or how many admins are watching.
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use sea_orm::EntityTrait;
-use serde::Serialize;
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
-use crate::entities::workspace;
+use crate::entities::{dashboard_layout, workspace};
 use crate::error::AppError;
 use crate::handlers::workspaces::{runtime_status, ProvisioningInfo};
 use crate::metrics::SystemUsage;
@@ -145,6 +146,151 @@ pub async fn overview(
         usage,
         workspaces: items,
     }))
+}
+
+/// The one layout shape this build understands. Bumped only on a breaking
+/// change; a stored row at any other version is ignored and the caller gets
+/// the catalog defaults, which is why old rows can simply be left in place.
+const LAYOUT_SCHEMA_VERSION: u32 = 1;
+/// Enough for every widget the catalog is ever likely to hold, and small
+/// enough that a row cannot be used as storage.
+const MAX_LAYOUT_ITEMS: usize = 32;
+/// Applies to the serialized form, checked after parsing so the limit is on
+/// what actually gets stored.
+const MAX_LAYOUT_BYTES: usize = 8 * 1024;
+/// The grid width the frontend lays out against.
+const LAYOUT_COLUMNS: u32 = 12;
+
+/// A saved widget arrangement.
+///
+/// Validated rather than stored opaquely. Only its own author reads it back, so
+/// this is not a breach vector; what it prevents is a caller persisting a
+/// payload that breaks their dashboard on every load, or using the row as
+/// unbounded storage. `deny_unknown_fields` keeps a future field from being
+/// silently accepted by an older build that would then drop it on the next
+/// save.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DashboardLayout {
+    pub schema_version: u32,
+    pub items: Vec<LayoutItem>,
+    /// Widgets the user turned off. Kept separate from `items` so hiding one
+    /// and re-showing it does not lose where it used to sit.
+    #[serde(default)]
+    pub hidden: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutItem {
+    pub id: String,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Widget ids come from the frontend catalog and are compared as strings, so
+/// the charset is pinned rather than left to whatever a caller sends.
+fn valid_widget_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Structural checks only. Geometry is clamped by the frontend merge, which has
+/// to be defensive anyway; what matters here is that nothing unbounded or
+/// self-contradictory reaches the database.
+fn validate_layout(layout: &DashboardLayout) -> Result<(), AppError> {
+    if layout.schema_version != LAYOUT_SCHEMA_VERSION {
+        return Err(AppError::BadRequest("unsupported layout schema version"));
+    }
+    if layout.items.len() > MAX_LAYOUT_ITEMS || layout.hidden.len() > MAX_LAYOUT_ITEMS {
+        return Err(AppError::BadRequest("too many layout widgets"));
+    }
+    for item in &layout.items {
+        if !valid_widget_id(&item.id) {
+            return Err(AppError::BadRequest("invalid layout widget id"));
+        }
+        if item.w == 0 || item.h == 0 {
+            return Err(AppError::BadRequest("layout widgets need a size"));
+        }
+        // Saturating: `x + w` on the raw values overflows for an `x` near
+        // `u32::MAX`, which panics in debug and wraps past this check in
+        // release.
+        if item.x.saturating_add(item.w) > LAYOUT_COLUMNS {
+            return Err(AppError::BadRequest("layout widget exceeds the grid width"));
+        }
+    }
+    if layout.hidden.iter().any(|id| !valid_widget_id(id)) {
+        return Err(AppError::BadRequest("invalid layout widget id"));
+    }
+    // A duplicate id would make the merge nondeterministic: which of the two
+    // rectangles wins depends on iteration order.
+    let mut ids: Vec<&str> = layout.items.iter().map(|i| i.id.as_str()).collect();
+    ids.sort_unstable();
+    let count = ids.len();
+    ids.dedup();
+    if ids.len() != count {
+        return Err(AppError::BadRequest("duplicate layout widget id"));
+    }
+    Ok(())
+}
+
+/// GET /api/me/dashboard-layout: the caller's saved layout, or `null` when
+/// they have never customized it.
+pub async fn get_layout(
+    State(state): State<AppState>,
+    caller: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    caller.require("dashboard.read")?;
+    let row = dashboard_layout::Entity::find_by_id(caller.user.id)
+        .one(&state.db)
+        .await?;
+    // A row written by a newer build, or hand-edited into nonsense, must not
+    // break the dashboard: it reads as "no saved layout" and the next save
+    // replaces it.
+    let layout = row
+        .and_then(|r| serde_json::from_str::<DashboardLayout>(&r.layout).ok())
+        .filter(|l| validate_layout(l).is_ok());
+    Ok(Json(serde_json::json!({ "layout": layout })))
+}
+
+/// PUT /api/me/dashboard-layout
+pub async fn put_layout(
+    State(state): State<AppState>,
+    caller: AuthUser,
+    Json(layout): Json<DashboardLayout>,
+) -> Result<StatusCode, AppError> {
+    caller.require("dashboard.read")?;
+    validate_layout(&layout)?;
+
+    // Serialized from the parsed value, not echoed from the request body, so
+    // only the shape above is ever stored.
+    let encoded = serde_json::to_string(&layout)
+        .map_err(|_| AppError::BadRequest("layout could not be stored"))?;
+    if encoded.len() > MAX_LAYOUT_BYTES {
+        return Err(AppError::BadRequest("layout is too large"));
+    }
+
+    let model = dashboard_layout::ActiveModel {
+        user_id: Set(caller.user.id),
+        layout: Set(encoded),
+        updated_at: Set(Utc::now()),
+    };
+    if dashboard_layout::Entity::find_by_id(caller.user.id)
+        .one(&state.db)
+        .await?
+        .is_some()
+    {
+        model.update(&state.db).await?;
+    } else {
+        model.insert(&state.db).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The runtime state belonging to a user, which is none at all unless they
@@ -297,6 +443,109 @@ mod tests {
             owned.and_then(|r| r.version.clone()),
             Some("main-20260804".to_string())
         );
+    }
+
+    fn layout(items: Vec<(&str, u32, u32)>) -> DashboardLayout {
+        DashboardLayout {
+            schema_version: LAYOUT_SCHEMA_VERSION,
+            items: items
+                .into_iter()
+                .map(|(id, x, w)| LayoutItem {
+                    id: id.to_string(),
+                    x,
+                    y: 0,
+                    w,
+                    h: 3,
+                })
+                .collect(),
+            hidden: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_well_formed_layout_is_accepted() {
+        let mut ok = layout(vec![("system-usage", 0, 6), ("fleet-status", 6, 6)]);
+        assert!(validate_layout(&ok).is_ok());
+        ok.hidden = vec!["version-spread".to_string()];
+        assert!(validate_layout(&ok).is_ok());
+        // A widget may span the full grid, just not exceed it.
+        assert!(validate_layout(&layout(vec![("system-usage", 0, 12)])).is_ok());
+    }
+
+    #[test]
+    fn a_layout_from_another_schema_version_is_refused() {
+        let mut wrong = layout(vec![("system-usage", 0, 6)]);
+        wrong.schema_version = LAYOUT_SCHEMA_VERSION + 1;
+        assert!(validate_layout(&wrong).is_err());
+        wrong.schema_version = 0;
+        assert!(validate_layout(&wrong).is_err());
+    }
+
+    /// A saved row is only ever read back by its own author, so this is not
+    /// about a breach: it stops a caller persisting something that breaks
+    /// their own dashboard on every load, or using the row as storage.
+    #[test]
+    fn unbounded_and_self_contradictory_layouts_are_refused() {
+        let many: Vec<(&str, u32, u32)> = (0..MAX_LAYOUT_ITEMS + 1)
+            .map(|_| ("system-usage", 0, 1))
+            .collect();
+        assert!(validate_layout(&layout(many)).is_err());
+
+        let mut hidden = layout(vec![("system-usage", 0, 6)]);
+        hidden.hidden = (0..MAX_LAYOUT_ITEMS + 1).map(|_| "w".to_string()).collect();
+        assert!(validate_layout(&hidden).is_err());
+
+        // Two rectangles for one widget: which one wins would depend on
+        // iteration order.
+        assert!(validate_layout(&layout(vec![
+            ("system-usage", 0, 6),
+            ("system-usage", 6, 6)
+        ]))
+        .is_err());
+
+        // Off the grid, and zero-sized.
+        assert!(validate_layout(&layout(vec![("system-usage", 8, 6)])).is_err());
+        assert!(validate_layout(&layout(vec![("system-usage", 0, 0)])).is_err());
+
+        // Extreme coordinates must be rejected, not overflow the bounds check
+        // into passing it.
+        assert!(validate_layout(&layout(vec![("system-usage", u32::MAX, 1)])).is_err());
+        assert!(validate_layout(&layout(vec![("system-usage", 1, u32::MAX)])).is_err());
+        let mut tall = layout(vec![("system-usage", 0, 6)]);
+        tall.items[0].y = u32::MAX;
+        // A huge `y` only makes a very long page for its own author, so it is
+        // the frontend merge that clamps it; it must at least not panic here.
+        assert!(validate_layout(&tall).is_ok());
+    }
+
+    #[test]
+    fn widget_ids_are_restricted_to_the_catalog_charset() {
+        assert!(valid_widget_id("system-usage"));
+        assert!(valid_widget_id("w1"));
+        assert!(!valid_widget_id(""));
+        assert!(!valid_widget_id("System-Usage"));
+        assert!(!valid_widget_id("1widget"));
+        assert!(!valid_widget_id("-widget"));
+        assert!(!valid_widget_id("widget_name"));
+        assert!(!valid_widget_id("../../etc/passwd"));
+        assert!(!valid_widget_id(&"w".repeat(65)));
+
+        assert!(validate_layout(&layout(vec![("Bad Id", 0, 6)])).is_err());
+        let mut bad_hidden = layout(vec![("system-usage", 0, 6)]);
+        bad_hidden.hidden = vec!["Bad Id".to_string()];
+        assert!(validate_layout(&bad_hidden).is_err());
+    }
+
+    /// An older build must not silently accept and then drop a field a newer
+    /// one added, which is what turns a forward-compatible save into data loss.
+    #[test]
+    fn an_unknown_layout_field_is_refused_at_parse() {
+        let json = r#"{"schema_version":1,"items":[],"hidden":[],"columns":24}"#;
+        assert!(serde_json::from_str::<DashboardLayout>(json).is_err());
+        // `hidden` is genuinely optional, though.
+        let json = r#"{"schema_version":1,"items":[]}"#;
+        let parsed: DashboardLayout = serde_json::from_str(json).unwrap();
+        assert!(parsed.hidden.is_empty());
     }
 
     #[test]

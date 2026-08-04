@@ -16,6 +16,7 @@ mod m0013_create_agent_credentials;
 mod m0014_create_git_ssh_keys;
 mod m0015_add_workspace_telemetry_policy;
 mod m0016_add_agents_to_workspace_settings;
+mod m0017_create_dashboard_layouts;
 
 pub struct Migrator;
 
@@ -39,6 +40,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0014_create_git_ssh_keys::Migration),
             Box::new(m0015_add_workspace_telemetry_policy::Migration),
             Box::new(m0016_add_agents_to_workspace_settings::Migration),
+            Box::new(m0017_create_dashboard_layouts::Migration),
         ]
     }
 }
