@@ -301,8 +301,13 @@ fn render_manifests(
     let mut container = json!({
         "name": "aoe",
         "image": spec.image,
-        "command": ["aoe"],
+        // No `command`: that would override the image's entrypoint, which is
+        // where the reference image relocates each agent's config directory
+        // onto the volume. Passing the whole command as `args` instead matches
+        // what the docker backend does, and an image with no entrypoint runs
+        // these as the command anyway.
         "args": [
+            "aoe",
             "serve",
             "--host", "0.0.0.0",
             "--port", AOE_PORT.to_string(),
@@ -541,6 +546,14 @@ mod tests {
         );
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
+        // The whole command travels in `args`, and `command` stays absent so the
+        // image entrypoint still runs. Setting `command` would override it, and
+        // the reference image relocates each agent's config directory onto the
+        // volume from there, so a workspace would silently stop persisting an
+        // installed agent and its login.
+        assert!(container.get("command").is_none());
+        assert_eq!(container["args"][0], "aoe");
+        assert_eq!(container["args"][1], "serve");
         // Nothing to inject: no envFrom referencing a Secret that does not exist.
         assert!(container.get("envFrom").is_none());
         assert_eq!(
