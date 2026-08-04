@@ -133,10 +133,13 @@ Without the key set, saving any of them is rejected. Values supplied through the
 environment instead (`SMTP_PASSWORD`, `OIDC_CLIENT_SECRET`) are read straight
 from it and do not need the key.
 
-Each stored value is bound to the row that holds it, so a value copied to another
-row, or to another user, no longer decrypts. Without that binding, anyone who
-could write to the database could move one user's encrypted provider key into
-another user's row and CityHall would hand it over.
+Each value written with the authenticated envelope is bound to the row that holds
+it, so a value copied to another row, or to another user, no longer decrypts.
+Without that binding, anyone who could write to the database could move one user's
+encrypted provider key into another user's row and CityHall would hand it over.
+Values written by a CityHall older than the envelope are not bound until
+`cityhall secrets rotate` rewrites them; see
+[Upgrading secrets stored by an older CityHall](#upgrading-secrets-stored-by-an-older-cityhall).
 
 Check what the current key can read at any time:
 

@@ -70,7 +70,7 @@ latest release (skipped when offline); adjust it under **Settings →
 Workspaces** if needed. Starting a workspace with no default version set
 fails with a descriptive error.
 
-### Custom versions and unreleased aoe
+### Unreleased aoe
 
 A version does not have to be one of the discovered releases. Tick **custom
 version** on any version field and type anything; it is substituted into the

@@ -91,7 +91,7 @@ Report what `CITYHALL_SECRET_KEY` can read, per store.
 cargo run -- secrets status
 ```
 
-```
+```text
 STORE                 ROWS  CURRENT  NEEDS-PREVIOUS  LEGACY  UNREADABLE
 SMTP password            1        1               0       0           0
 OIDC client secret       0        0               0       0           0
