@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type TelemetryPolicy, type WorkspaceSettings } from "../lib/api";
+import { api, ApiError, type AvailableAgent, type TelemetryPolicy, type WorkspaceSettings } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
 import { Button, ErrorText, Field, Input, Select } from "./ui";
 import { VersionField } from "./VersionField";
@@ -38,6 +38,18 @@ export function effectiveTelemetryPolicy(selected: string, override: TelemetryPo
   return isKnownTelemetryPolicy(selected) ? selected : "user_choice";
 }
 
+/// Tick or untick one agent, keeping the selection in the catalog's order.
+///
+/// Order matters because the server stores a canonical set: sending the same
+/// agents in a different order would otherwise read as a change and recreate
+/// every workspace for nothing.
+export function toggleAgent(selected: string[], catalog: AvailableAgent[], name: string, on: boolean): string[] {
+  const next = new Set(selected);
+  if (on) next.add(name);
+  else next.delete(name);
+  return catalog.filter((a) => next.has(a.name)).map((a) => a.name);
+}
+
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -49,6 +61,8 @@ export function WorkspaceSettingsSection() {
   const [telemetryPolicy, setTelemetryPolicy] = useState<string>("user_choice");
   const [telemetryOverride, setTelemetryOverride] = useState<TelemetryPolicy | null>(null);
   const [restartRunning, setRestartRunning] = useState(false);
+  const [agents, setAgents] = useState<string[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<AvailableAgent[]>([]);
   const [versions, setVersions] = useState<string[]>([]);
   const [latest, setLatest] = useState<string | null>(null);
 
@@ -62,6 +76,11 @@ export function WorkspaceSettingsSection() {
     setIdleStopMinutes(s.idle_stop_minutes);
     setTelemetryPolicy(s.telemetry_policy);
     setTelemetryOverride(s.telemetry_policy_override);
+    // Defaulted rather than trusted: a response missing either list would
+    // otherwise throw during render and take the whole settings page down,
+    // including the sections that have nothing to do with workspaces.
+    setAgents(s.agents ?? []);
+    setAvailableAgents(s.available_agents ?? []);
   }, []);
 
   const load = useCallback(async () => {
@@ -97,6 +116,7 @@ export function WorkspaceSettingsSection() {
           idle_stop_minutes: idleStopMinutes,
           telemetry_policy: telemetryPolicy,
           restart_running: restartRunning,
+          agents,
         }),
       );
       setSaved(true);
@@ -189,6 +209,29 @@ export function WorkspaceSettingsSection() {
           The image for a user is the template with <code className="text-text-primary">{"{version}"}</code> replaced by
           their pinned version (or the default). Idle workspaces are stopped automatically; their data volume is kept.
         </p>
+
+        <div className="space-y-1.5 border-t border-surface-700 pt-4">
+          <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Coding agents</span>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {availableAgents.map((agent) => (
+              <label key={agent.name} className="flex items-center gap-2 text-sm text-text-primary">
+                <input
+                  type="checkbox"
+                  checked={agents.includes(agent.name)}
+                  onChange={(e) => setAgents(toggleAgent(agents, availableAgents, agent.name, e.target.checked))}
+                  className="h-4 w-4 accent-brand-500"
+                />
+                {agent.label}
+              </label>
+            ))}
+          </div>
+          <p className="text-sm text-text-secondary">
+            Installed the first time a workspace starts, so a user gets one that is ready to use. Leave all of them
+            unticked and users install their own instead. A change reaches an existing workspace the next time it is
+            created, which is a restart, an idle stop, or a first launch. This is a default and not a restriction: a
+            user can still install and run any agent they like.
+          </p>
+        </div>
 
         {/* Only releases are comparable: a custom tag's digits are not a
             version, so "dev-0" would otherwise read as behind the latest. */}

@@ -129,6 +129,13 @@ export interface MyWorkspace {
 /// newer CityHall may have written one that is none of these.
 export type TelemetryPolicy = "user_choice" | "force_on" | "force_off";
 
+/// One coding agent a workspace can be set up to arrive with. The server owns
+/// this catalog; the client lists whatever comes back rather than hardcoding it.
+export interface AvailableAgent {
+  name: string;
+  label: string;
+}
+
 export interface WorkspaceSettings {
   image_template: string;
   default_version: string | null;
@@ -143,6 +150,10 @@ export interface WorkspaceSettings {
   telemetry_policy_override: TelemetryPolicy | null;
   /// What workspaces actually run under: the override, or the stored policy.
   effective_telemetry_policy: TelemetryPolicy;
+  /// Selected agents. Empty means users install their own.
+  agents: string[];
+  /// Everything selectable. Response only, so it is not part of a save.
+  available_agents: AvailableAgent[];
 }
 
 /// What a save sends: the settings an admin owns, without the two fields the
@@ -157,6 +168,10 @@ export interface WorkspaceSettingsUpdate {
   /// Recreate every running workspace so a saved policy applies now, which ends
   /// whatever their users are running. Stopped workspaces never need it.
   restart_running: boolean;
+  /// The agents a workspace should arrive with. Absent would preserve whatever is
+  /// stored, which is what an older client relies on; this one always sends the
+  /// selection, so it is required here.
+  agents: string[];
 }
 
 /// The aoe config bundle every workspace is provisioned with. Opaque TOML:
