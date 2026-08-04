@@ -151,6 +151,26 @@ export interface GitCredential {
   secret_key_available: boolean;
 }
 
+/// One agent-facing credential variable, whether or not a value is stored for
+/// it. The server owns this catalog: the client renders whatever comes back
+/// rather than hardcoding the variable list.
+export interface AgentCredential {
+  env_var: string;
+  label: string;
+  structured_view: boolean;
+  // Non-null means this variable does not reach structured-view agents; the
+  // string is the explanation to show the user.
+  limitation: string | null;
+  value_set: boolean;
+  // false with value_set true means the stored value no longer decrypts.
+  usable: boolean;
+}
+
+export interface AgentCredentials {
+  secret_key_available: boolean;
+  credentials: AgentCredential[];
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -300,4 +320,23 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   deleteGitCredential: () => request<GitCredential>("/me/git-credential", { method: "DELETE" }),
+  getAgentCredentials: () => request<AgentCredentials>("/me/agent-credentials"),
+  getUserAgentCredentials: (userId: number) => request<AgentCredentials>(`/users/${userId}/agent-credentials`),
+  updateAgentCredential: (envVar: string, value: string) =>
+    request<AgentCredentials>(`/me/agent-credentials/${encodeURIComponent(envVar)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    }),
+  updateUserAgentCredential: (userId: number, envVar: string, value: string) =>
+    request<AgentCredentials>(`/users/${userId}/agent-credentials/${encodeURIComponent(envVar)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    }),
+  deleteAgentCredential: (envVar: string) =>
+    request<AgentCredentials>(`/me/agent-credentials/${encodeURIComponent(envVar)}`, { method: "DELETE" }),
+  deleteUserAgentCredential: (userId: number, envVar: string) =>
+    request<AgentCredentials>(`/users/${userId}/agent-credentials/${encodeURIComponent(envVar)}`, {
+      method: "DELETE",
+    }),
+  restartMyWorkspace: () => request<void>("/workspaces/me/restart", { method: "POST" }),
 };
