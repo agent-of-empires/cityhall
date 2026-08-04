@@ -227,12 +227,13 @@ pub async fn set_version(
 ) -> Result<Json<serde_json::Value>, AppError> {
     caller.require("workspaces.write")?;
     ensure_user_exists(&state, user_id).await?;
-    pin_version(&state, user_id, body.pinned_version.clone()).await?;
+    let pinned_version = workspaces::resolve_version(body.pinned_version).await?;
+    pin_version(&state, user_id, pinned_version.clone()).await?;
     if body.restart {
         spawn_restarts(state.clone(), vec![user_id]);
     }
     Ok(Json(
-        serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
+        serde_json::json!({ "pinned_version": pinned_version }),
     ))
 }
 
@@ -260,14 +261,17 @@ pub async fn bulk_set_version(
     for user_id in &body.user_ids {
         ensure_user_exists(&state, *user_id).await?;
     }
+    // Resolved once, not per user: a `git:<ref>` would otherwise cost one
+    // GitHub call each and could land different users on different commits.
+    let pinned_version = workspaces::resolve_version(body.pinned_version).await?;
     for user_id in &body.user_ids {
-        pin_version(&state, *user_id, body.pinned_version.clone()).await?;
+        pin_version(&state, *user_id, pinned_version.clone()).await?;
     }
     if body.restart {
         spawn_restarts(state.clone(), body.user_ids);
     }
     Ok(Json(
-        serde_json::json!({ "pinned_version": normalize(body.pinned_version) }),
+        serde_json::json!({ "pinned_version": pinned_version }),
     ))
 }
 
@@ -285,12 +289,6 @@ fn spawn_restarts(state: AppState, user_ids: Vec<i32>) {
     });
 }
 
-fn normalize(version: Option<String>) -> Option<String> {
-    version
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
 async fn ensure_user_exists(state: &AppState, user_id: i32) -> Result<(), AppError> {
     crate::entities::user::Entity::find_by_id(user_id)
         .one(&state.db)
@@ -306,7 +304,7 @@ async fn pin_version(
 ) -> Result<(), AppError> {
     let row = workspaces::get_or_create(&state.db, user_id).await?;
     let mut active: workspace::ActiveModel = row.into();
-    active.pinned_version = Set(normalize(version));
+    active.pinned_version = Set(version);
     active.updated_at = Set(Utc::now());
     active.update(&state.db).await?;
     Ok(())
@@ -353,7 +351,7 @@ pub async fn update_settings(
     if body.idle_stop_minutes < 1 {
         return Err(AppError::BadRequest("idle stop must be at least 1 minute"));
     }
-    let default_version = normalize(body.default_version);
+    let default_version = workspaces::resolve_version(body.default_version).await?;
 
     let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
         .one(&state.db)
