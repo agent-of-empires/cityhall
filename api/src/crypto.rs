@@ -1,7 +1,7 @@
-//! Symmetric encryption for secrets stored in the database (currently the SMTP
-//! password). Uses AES-256-GCM with a key supplied via `CITYHALL_SECRET_KEY`
-//! (base64-encoded, 32 bytes). Ciphertext is stored as base64 of
-//! `nonce (12 bytes) || ciphertext`.
+//! Symmetric encryption for secrets stored in the database: the SMTP password,
+//! the OIDC client secret, git credentials, and agent credentials. Uses
+//! AES-256-GCM with a key supplied via `CITYHALL_SECRET_KEY` (base64-encoded,
+//! 32 bytes). Ciphertext is stored as base64 of `nonce (12 bytes) || ciphertext`.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -16,9 +16,7 @@ const NONCE_LEN: usize = 12;
 /// Load and validate the 32-byte key from the environment.
 fn cipher() -> Result<Aes256Gcm, AppError> {
     let raw = std::env::var(KEY_ENV).map_err(|_| {
-        AppError::BadRequest(
-            "CITYHALL_SECRET_KEY is not set; it is required to store SMTP credentials",
-        )
+        AppError::BadRequest("CITYHALL_SECRET_KEY is not set; it is required to store secrets")
     })?;
     let bytes = B64
         .decode(raw.trim())
@@ -32,6 +30,32 @@ fn cipher() -> Result<Aes256Gcm, AppError> {
 /// read or write encrypted secrets before attempting them.
 pub fn key_available() -> bool {
     cipher().is_ok()
+}
+
+/// A decrypted secret, wrapped so it cannot be printed by accident.
+///
+/// Plaintext secrets travel through `WorkspaceSpec`, which derives `Debug` and
+/// is a natural thing for a future `tracing` call to log. A bare `String` there
+/// would make that a credential leak; this type renders as `[REDACTED]` and has
+/// no `Display`, so reaching the value takes an explicit [`Secret::expose`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// The plaintext. Named to make a review notice every call site.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
 }
 
 pub fn encrypt(plaintext: &str) -> Result<String, AppError> {
@@ -88,5 +112,13 @@ mod tests {
         assert_ne!(encrypt("same").unwrap(), encrypt("same").unwrap());
 
         std::env::remove_var(KEY_ENV);
+    }
+
+    #[test]
+    fn secret_never_prints_its_value() {
+        let s = Secret::new("sk-do-not-log-me".to_string());
+        assert_eq!(format!("{s:?}"), "[REDACTED]");
+        assert!(!format!("{:?}", vec![("K".to_string(), s.clone())]).contains("sk-"));
+        assert_eq!(s.expose(), "sk-do-not-log-me");
     }
 }

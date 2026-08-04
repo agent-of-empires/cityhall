@@ -35,6 +35,8 @@ sea-orm = { version = "1.1.20", features = ["sqlx-sqlite", "sqlx-postgres", "sql
 sea-orm-migration = { version = "1.1.20", features = ["runtime-tokio-rustls", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# Fingerprints the agent-credential set so a backend can detect drift.
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
 # The workspace config bundle is aoe-owned TOML. CityHall shape-checks it and
 # splices in the per-user `[git]` table; both need a real parser.
