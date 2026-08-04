@@ -7,8 +7,11 @@
 # To run an aoe that has no release yet, compile a commit instead of
 # downloading a tarball, and tag it as a version you then pin users to:
 #
-#   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<sha> \
+#   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<full-commit-sha> \
 #     -t cityhall/aoe:main-20260804 deploy/aoe-image/
+#
+# A full commit id, not a branch or a tag: the build refuses anything else, so
+# one image tag keeps meaning one build.
 #
 # CityHall never runs that path itself; it only ever pulls an image or builds
 # the release path below. A source build is slow and memory hungry, so it is a
@@ -67,13 +70,22 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # A commit, not a ref: CityHall resolves the ref before it ever gets here, so
-# the image tag and the version drift label name one immutable build.
+# the image tag and the version drift label name one immutable build. That is
+# enforced rather than assumed, because `checkout` would happily take a branch
+# or a tag from an operator building this by hand, and then the same image tag
+# means something different next week. Requiring the resolved object id to equal
+# what was passed rejects branches, tags, and abbreviated revisions in one test.
 # --filter=blob:none fetches every commit (any sha stays checkout-able) while
 # leaving the history's file contents on the server.
 RUN test -n "$AOE_GIT_SHA" || (echo "AOE_GIT_SHA build arg is required when AOE_SOURCE=git" && exit 1) \
     && git clone --filter=blob:none --no-checkout \
        https://github.com/agent-of-empires/agent-of-empires.git /src \
-    && git -C /src checkout --detach "$AOE_GIT_SHA"
+    && AOE_GIT_COMMIT="$(git -C /src rev-parse --verify "${AOE_GIT_SHA}^{commit}")" \
+    && { test "$AOE_GIT_COMMIT" = "$AOE_GIT_SHA" \
+         || { echo "AOE_GIT_SHA must be a full 40-character commit id, not a branch," \
+                   "a tag, or an abbreviated sha. Got '$AOE_GIT_SHA', which resolves" \
+                   "to '$AOE_GIT_COMMIT'." >&2; exit 1; }; } \
+    && git -C /src checkout --detach "$AOE_GIT_COMMIT"
 
 RUN cd /src/web && npm ci && npm run build
 

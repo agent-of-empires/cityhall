@@ -84,6 +84,9 @@ docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
   -t cityhall/aoe:main-20260804 deploy/aoe-image/
 ```
 
+`AOE_GIT_SHA` has to be a full commit id. The build refuses a branch or a tag,
+because either would let the same image tag mean a different build next week.
+
 Then set the version to `main-20260804`, as the default or for one pinned user.
 CityHall finds the image already present and runs it. Tag it however you like;
 the tag is the version string and nothing parses it.
