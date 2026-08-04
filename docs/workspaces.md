@@ -410,10 +410,14 @@ What each state does to a workspace:
   Works with any workspace image.
 - **On for everyone** runs `aoe telemetry enable` in the workspace before the
   server starts, which is what also records the consent as answered, so no prompt
-  appears. It needs an image with a shell and an aoe new enough to have that
-  subcommand; on an image without either, the workspace fails to start rather
-  than coming up with the policy unapplied, and the reason is in the container
-  log (`docker logs cityhall-workspace-u<id>`).
+  appears. On the container backends it needs an image with a shell and an aoe new
+  enough to have that subcommand; without either, the workspace fails to start
+  rather than coming up with the policy unapplied. The reason is in that
+  workspace's own backend log: `docker logs cityhall-workspace-u<id>` on the
+  docker backend, `kubectl logs deploy/cityhall-workspace-u<id>` on kubernetes,
+  and `$WORKSPACE_PROCESS_DIR/u<id>/serve.log` on the process backend (which runs
+  the command directly, needing no shell, and reports the failure through the
+  API instead).
 - **Let each user choose** injects nothing. aoe's own prompt reaches the user and
   CityHall never marks the consent as answered on their behalf.
 
