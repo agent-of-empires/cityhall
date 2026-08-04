@@ -18,6 +18,17 @@ export function telemetryOverrideNote(override: TelemetryPolicy | null): string 
   return `Pinned to "${TELEMETRY_LABELS[override]}" by WORKSPACE_TELEMETRY_POLICY in this deployment's environment. A saved choice is stored for when that variable is removed, and does not apply while it is set.`;
 }
 
+/// The policy workspaces would run under: the environment override when there is
+/// one, otherwise whatever is currently selected.
+///
+/// Selected, not saved, so the force-on disclosure appears while the admin is
+/// choosing it rather than only after the fact. The server computes the same
+/// thing from the stored value; reading its answer here instead would be a
+/// save behind whatever the form shows.
+export function effectiveTelemetryPolicy(selected: TelemetryPolicy, override: TelemetryPolicy | null): TelemetryPolicy {
+  return override ?? selected;
+}
+
 export function WorkspaceSettingsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -134,7 +145,7 @@ export function WorkspaceSettingsSection() {
 
         {telemetryOverride && <p className="text-sm text-status-waiting">{telemetryOverrideNote(telemetryOverride)}</p>}
 
-        {telemetryPolicy === "force_on" && (
+        {effectiveTelemetryPolicy(telemetryPolicy, telemetryOverride) === "force_on" && (
           <p className="text-sm text-status-waiting">
             Turning telemetry on for everyone suppresses aoe's consent prompt and records the choice as answered in each
             user's workspace, so disclosing the collection to your users is your deployment's responsibility. Reverting
