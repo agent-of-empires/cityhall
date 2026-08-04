@@ -209,6 +209,29 @@ the push level, and deleting an account revokes exactly that person's access. A
 user who has not set one can still work with public repos; a private clone fails
 with git's own error in the workspace.
 
+#### SSH keys
+
+A token cannot authenticate a `git@host:...` remote, so **Account** also takes an
+SSH private key, stored and served the same way. Two rules the form enforces
+rather than leaving to fail inside the container:
+
+- **The key must have no passphrase.** Nothing in a workspace can prompt for one,
+  so a protected key would turn every clone into a hang. A key kept for this
+  purpose only is the answer, not the key on your laptop.
+- **Host keys are required with it.** Paste the output of `ssh-keyscan <host>`,
+  run on a machine you trust, into the known hosts field. The workspace connects
+  with strict host key checking, so it refuses anything not listed there rather
+  than trusting whatever answers. Shipping a key without them would trade a
+  credential problem for a machine-in-the-middle one.
+
+Host keys are public, so unlike the key itself they are shown back to the user
+and can be edited without re-entering it.
+
+Installing the key is aoe's half of the job, from the same `[git]` table it
+already reads the token out of. An aoe too old to know about the two keys ignores
+them, so nothing breaks on an older workspace; `git@` remotes simply keep failing
+until it is upgraded.
+
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `WORKSPACE_BUNDLE_ORIGIN` | _(unset)_ | Origin a workspace uses to reach CityHall. Unset disables config provisioning. |
@@ -419,8 +442,9 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   CityHall install a chosen set; the image is the only lever
   ([#57](https://github.com/agent-of-empires/cityhall/issues/57)). See
   [Coding agents](#coding-agents).
-- Git credentials are HTTPS tokens only; there is no way to supply an SSH key
-  ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
+- An SSH key only reaches a workspace running an aoe new enough to install one.
+  An older aoe ignores it and `git@` remotes keep failing. See
+  [SSH keys](#ssh-keys).
 - A workspace built from an unreleased commit does not follow the ref it came
   from, and only the docker backend can build one. See
   [Unreleased aoe](#unreleased-aoe).

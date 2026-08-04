@@ -18,29 +18,34 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 
 use crate::crypto::{self, Aad, Provenance};
-use crate::entities::{agent_credential, git_credential, oidc_settings, smtp_settings};
+use crate::entities::{
+    agent_credential, git_credential, git_ssh_key, oidc_settings, smtp_settings,
+};
 use crate::error::AppError;
 use crate::{agent_credentials, mailer, oidc};
 
 /// Every store, so one holding no secrets still reports a zero row rather than
 /// vanishing from the output and reading as forgotten.
-const STORES: [&str; 4] = [
+const STORES: [&str; 5] = [
     "SMTP password",
     "OIDC client secret",
     "git credentials",
+    "git SSH keys",
     "agent credentials",
 ];
 
 /// One encrypted value in the database, identified well enough to classify it,
 /// name it to an operator, and write it back.
 ///
-/// The four stores have four shapes, and only what happens to the ciphertext is
-/// common, so the shape-specific part is this enum and everything else is shared.
+/// The stores have as many shapes as there are stores, and only what happens to
+/// the ciphertext is common, so the shape-specific part is this enum and
+/// everything else is shared.
 #[derive(Clone, Debug)]
 enum Slot {
     SmtpPassword,
     OidcClientSecret,
     GitCredential { user_id: i32 },
+    GitSshKey { user_id: i32 },
     AgentCredential { user_id: i32, env_var: String },
 }
 
@@ -50,7 +55,8 @@ impl Slot {
             Self::SmtpPassword => STORES[0],
             Self::OidcClientSecret => STORES[1],
             Self::GitCredential { .. } => STORES[2],
-            Self::AgentCredential { .. } => STORES[3],
+            Self::GitSshKey { .. } => STORES[3],
+            Self::AgentCredential { .. } => STORES[4],
         }
     }
 
@@ -60,6 +66,7 @@ impl Slot {
             Self::SmtpPassword => "SMTP password".to_string(),
             Self::OidcClientSecret => "OIDC client secret".to_string(),
             Self::GitCredential { user_id } => format!("git credential (user {user_id})"),
+            Self::GitSshKey { user_id } => format!("git SSH key (user {user_id})"),
             Self::AgentCredential { user_id, env_var } => format!("{env_var} (user {user_id})"),
         }
     }
@@ -69,6 +76,7 @@ impl Slot {
             Self::SmtpPassword => Aad::SmtpPassword,
             Self::OidcClientSecret => Aad::OidcClientSecret,
             Self::GitCredential { user_id } => Aad::GitCredential { user_id: *user_id },
+            Self::GitSshKey { user_id } => Aad::GitSshKey { user_id: *user_id },
             // Through the store's own helper, so rotation cannot bind a value to
             // something the workspace path will not recognise.
             Self::AgentCredential { user_id, env_var } => agent_credentials::aad(*user_id, env_var),
@@ -117,6 +125,15 @@ impl Slot {
                     .await?
                     .rows_affected
             }
+            Self::GitSshKey { user_id } => {
+                git_ssh_key::Entity::update_many()
+                    .col_expr(git_ssh_key::Column::KeyEncrypted, Expr::value(new))
+                    .filter(git_ssh_key::Column::UserId.eq(*user_id))
+                    .filter(git_ssh_key::Column::KeyEncrypted.eq(old))
+                    .exec(db)
+                    .await?
+                    .rows_affected
+            }
             Self::AgentCredential { user_id, env_var } => {
                 agent_credential::Entity::update_many()
                     .col_expr(agent_credential::Column::ValueEncrypted, Expr::value(new))
@@ -161,6 +178,18 @@ async fn slots(db: &DatabaseConnection) -> Result<Vec<(Slot, String)>, AppError>
                 user_id: row.user_id,
             },
             row.token_encrypted,
+        ));
+    }
+    for row in git_ssh_key::Entity::find()
+        .order_by_asc(git_ssh_key::Column::UserId)
+        .all(db)
+        .await?
+    {
+        out.push((
+            Slot::GitSshKey {
+                user_id: row.user_id,
+            },
+            row.key_encrypted,
         ));
     }
     for row in agent_credential::Entity::find()
@@ -408,6 +437,16 @@ mod tests {
         .await
         .unwrap();
 
+        git_ssh_key::ActiveModel {
+            user_id: Set(user_id),
+            key_encrypted: Set(crypto::encrypt("ssh-key", &Aad::GitSshKey { user_id }).unwrap()),
+            known_hosts: Set("github.com ssh-ed25519 AAAA\n".to_string()),
+            updated_at: Set(Utc::now()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+
         agent_credential::ActiveModel {
             user_id: Set(user_id),
             env_var: Set("ANTHROPIC_API_KEY".to_string()),
@@ -460,23 +499,23 @@ mod tests {
             seed(&db, user_id).await;
 
             // Before: one legacy row, the rest bound and current.
-            assert_eq!(totals(&status(&db).await.unwrap()), (4, 3, 0, 1, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (5, 4, 0, 1, 0));
             assert_eq!(legacy_count(&db).await.unwrap(), 1);
 
             // The new key becomes current, the old one decrypt-only.
             std::env::set_var("CITYHALL_SECRET_KEY", B64.encode(KEY_B));
             std::env::set_var("CITYHALL_SECRET_KEY_PREVIOUS", B64.encode(KEY_A));
-            assert_eq!(totals(&status(&db).await.unwrap()), (4, 0, 3, 1, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (5, 0, 4, 1, 0));
 
             let report = rotate(&db).await.unwrap();
-            assert_eq!(report.rotated, 4);
+            assert_eq!(report.rotated, 5);
             assert!(report.unreadable.is_empty());
             assert!(report.skipped.is_empty());
-            assert_eq!(totals(&report.after), (4, 4, 0, 0, 0));
+            assert_eq!(totals(&report.after), (5, 5, 0, 0, 0));
 
             // The point of the exercise: the old key can now go away.
             std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
-            assert_eq!(totals(&status(&db).await.unwrap()), (4, 4, 0, 0, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (5, 5, 0, 0, 0));
             assert_eq!(legacy_count(&db).await.unwrap(), 0);
 
             // And the plaintexts survived the round trip.
@@ -542,7 +581,7 @@ mod tests {
             );
             // The legacy SMTP row was still upgraded.
             assert_eq!(report.rotated, 1);
-            assert_eq!(totals(&report.after), (4, 3, 0, 0, 1));
+            assert_eq!(totals(&report.after), (5, 4, 0, 0, 1));
         });
     }
 
@@ -594,7 +633,7 @@ mod tests {
                 .await
                 .unwrap()
                 .into_iter()
-                .find(|r| r.store == STORES[3])
+                .find(|r| r.store == STORES[4])
                 .unwrap();
             assert_eq!((agents.rows, agents.current, agents.unreadable), (2, 1, 1));
         });

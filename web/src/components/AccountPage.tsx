@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, can, type GitCredential, type Me } from "../lib/api";
 import { AgentCredentialsEditor } from "./AgentCredentials";
+import { GitSshKeyEditor } from "./GitSshKey";
 import { TopBar } from "./TopBar";
 import { Button, ErrorText, Field, Input } from "./ui";
 
@@ -180,6 +181,8 @@ export function AccountPage({ me, onLogout }: { me: Me; onLogout: () => Promise<
                 </Button>
               </div>
             </form>
+
+            <GitSshKeyEditor />
 
             <AgentCredentialsEditor
               load={api.getAgentCredentials}

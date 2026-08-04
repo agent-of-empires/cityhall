@@ -5,6 +5,7 @@ mod crypto;
 mod db;
 mod entities;
 mod error;
+mod git_ssh;
 mod handlers;
 mod mailer;
 mod migration;

@@ -119,8 +119,9 @@ security, which also determines the default port:
 
 ### Secret key
 
-Four kinds of secret are stored in the database: the SMTP password, the OIDC
-client secret, each user's git credential, and each user's agent credentials.
+Five kinds of secret are stored in the database: the SMTP password, the OIDC
+client secret, each user's git credential and git SSH key, and each user's agent
+credentials.
 All of them are encrypted with AES-256-GCM using `CITYHALL_SECRET_KEY`, a
 base64-encoded 32-byte key. Generate one with:
 

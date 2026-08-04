@@ -1,6 +1,7 @@
 //! Symmetric encryption for secrets stored in the database: the SMTP password,
-//! the OIDC client secret, git credentials, and agent credentials. Also the
-//! transient admin workspace-access token, which is not stored anywhere.
+//! the OIDC client secret, git credentials (HTTPS token and SSH key), and agent
+//! credentials. Also the transient admin workspace-access token, which is not
+//! stored anywhere.
 //!
 //! AES-256-GCM under `CITYHALL_SECRET_KEY` (base64, 32 bytes), plus any number of
 //! decrypt-only keys in `CITYHALL_SECRET_KEY_PREVIOUS` so the current key can be
@@ -65,6 +66,12 @@ pub enum Aad {
     GitCredential {
         user_id: i32,
     },
+    /// `git_ssh_keys`. Distinct from [`Aad::GitCredential`] even though both are
+    /// keyed by user, so the HTTPS token and the SSH key cannot be swapped for
+    /// each other.
+    GitSshKey {
+        user_id: i32,
+    },
     AgentCredential {
         user_id: i32,
         env_var: String,
@@ -86,6 +93,7 @@ impl Aad {
             Self::SmtpPassword => b"smtp-password:1".to_vec(),
             Self::OidcClientSecret => b"oidc-client-secret:1".to_vec(),
             Self::GitCredential { user_id } => format!("git-credential:{user_id}").into_bytes(),
+            Self::GitSshKey { user_id } => format!("git-ssh-key:{user_id}").into_bytes(),
             Self::AgentCredential { user_id, env_var } => {
                 format!("agent-credential:{user_id}:{env_var}").into_bytes()
             }
@@ -457,6 +465,10 @@ mod tests {
             Aad::OidcClientSecret,
             Aad::GitCredential { user_id: 1 },
             Aad::GitCredential { user_id: 2 },
+            // Same user, other half of their git credentials: an HTTPS token
+            // must not decrypt as that user's SSH key.
+            Aad::GitSshKey { user_id: 1 },
+            Aad::GitSshKey { user_id: 2 },
             agent(1),
             agent(2),
             Aad::AgentCredential {
