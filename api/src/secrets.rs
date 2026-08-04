@@ -478,8 +478,11 @@ mod tests {
     /// the key guard is a std mutex, so holding it across an `.await` inside an
     /// async fn would block a whole executor thread. Taking it outside the async
     /// block keeps the serialization without that hazard.
+    ///
+    /// The guard restores whatever the key variables held when it was taken, so
+    /// a panicking body does not leave its keys for the next test to read.
     fn with_key_env<F: std::future::Future<Output = ()>>(body: impl FnOnce() -> F) {
-        let _guard = crypto::lock_key_env();
+        let _guard = crypto::guard_key_env();
         std::env::set_var("CITYHALL_SECRET_KEY", B64.encode(KEY_A));
         std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
         tokio::runtime::Builder::new_current_thread()
@@ -487,8 +490,6 @@ mod tests {
             .build()
             .unwrap()
             .block_on(body());
-        std::env::remove_var("CITYHALL_SECRET_KEY");
-        std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
     }
 
     #[test]

@@ -739,7 +739,8 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
     fn an_ssh_key_reaches_its_owner_and_nobody_else() {
         // A std mutex guard held across an await would block the executor, so the
         // key env is set outside the async block, like `crate::secrets`' tests.
-        let _guard = crypto::lock_key_env();
+        // The guard puts the previous values back even if the body panics.
+        let _guard = crypto::guard_key_env();
         std::env::set_var("CITYHALL_SECRET_KEY", B64.encode([7u8; 32]));
         std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
 
@@ -793,8 +794,6 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
                 // which is what would break his whole workspace.
                 assert_eq!(theirs.get("user_name").and_then(|v| v.as_str()), Some("bob"));
             });
-
-        std::env::remove_var("CITYHALL_SECRET_KEY");
     }
 
     async fn make_user(db: &DatabaseConnection, username: &str) -> user::Model {

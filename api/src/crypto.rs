@@ -320,6 +320,46 @@ pub(crate) fn lock_key_env() -> std::sync::MutexGuard<'static, ()> {
     KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The lock, plus whatever the key variables held when it was taken, put back
+/// when the guard drops.
+///
+/// Restoring on drop rather than at the end of the test body: a panic unwinds
+/// past any cleanup written after the body, and the values a test leaves behind
+/// are then read by whichever test takes the lock next, which turns one failure
+/// into a confusing cascade. Restoring rather than removing also means a value
+/// inherited from the test process survives.
+#[cfg(test)]
+pub(crate) fn guard_key_env() -> KeyEnvGuard {
+    KeyEnvGuard {
+        lock: lock_key_env(),
+        key: std::env::var_os(KEY_ENV),
+        previous: std::env::var_os(PREVIOUS_KEY_ENV),
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct KeyEnvGuard {
+    // Held so no other test reads the variables mid-restore: `Drop::drop` below
+    // runs before any field is dropped, so the restore lands while this is still
+    // held and the lock frees only afterwards.
+    #[allow(dead_code)]
+    lock: std::sync::MutexGuard<'static, ()>,
+    key: Option<std::ffi::OsString>,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(test)]
+impl Drop for KeyEnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in [(KEY_ENV, &self.key), (PREVIOUS_KEY_ENV, &self.previous)] {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
 /// Encode a value the way CityHall did before the envelope existed: bare base64
 /// of `nonce || ciphertext`, with no associated data.
 ///
