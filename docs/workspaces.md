@@ -165,6 +165,58 @@ with git's own error in the workspace.
 | -------- | ------- | ------- |
 | `WORKSPACE_BUNDLE_ORIGIN` | _(unset)_ | Origin a workspace uses to reach CityHall. Unset disables config provisioning. |
 
+### Agent credentials
+
+Coding agents inside a workspace need their own provider credentials. A user
+sets theirs under **Account**; an admin can also set them for someone else from
+**Workspaces**, which is how a workspace can be handed over ready to use. They
+are optional: a workspace with none configured starts exactly as before, and the
+user can add theirs the first time they need one.
+
+Only these variables can be stored, and nothing else:
+
+| Variable | Agent | Reaches structured-view agents |
+| -------- | ----- | ------------------------------ |
+| `ANTHROPIC_API_KEY` | Claude, API billing | yes |
+| `ANTHROPIC_AUTH_TOKEN` | Claude through a gateway | yes |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude, subscription login | yes |
+| `OPENAI_API_KEY` | Codex | no |
+| `GEMINI_API_KEY` | Gemini | no |
+| `OPENROUTER_API_KEY` | OpenCode, OpenRouter | no |
+
+The list is closed rather than free-form because these values become the
+workspace's environment, so an arbitrary name would be a way to reconfigure the
+workspace from a credential form.
+
+**The last three reach terminal sessions but not structured-view agents.** aoe
+starts a structured-view agent with a cleared environment and forwards a fixed
+set of variables into it, which currently covers the Claude ones only. A key
+outside that set is still available to anything you run in a terminal session.
+The UI marks these, and widening the set is tracked in
+[agent-of-empires#3238](https://github.com/agent-of-empires/agent-of-empires/issues/3238).
+
+Values are encrypted with `CITYHALL_SECRET_KEY`, are never returned to a client
+once stored, and are removed with the user's account. Changing that key leaves
+stored credentials unreadable; the account page then shows them as needing to be
+re-entered, and a workspace starts without them rather than failing.
+
+**A change applies when the workspace is next created**, because credentials are
+part of a container's environment rather than something injected into a running
+one. Saving one deliberately does not disturb a running workspace, so a form
+save cannot end a session mid-task. **Restart workspace** on the account page
+applies pending changes; an idle stop or a first launch picks them up too.
+
+Where the values are visible, stated plainly so a deployment can judge it:
+CityHall passes them to the docker CLI through a mode-`0600` file that is
+deleted as soon as the command returns, which keeps them out of argv, the host
+process list, and CityHall's logs, but `docker inspect` on a running container
+still shows them. On kubernetes they live in a per-user Secret referenced with
+`envFrom`, so they stay out of the Deployment; note a Secret is not encrypted at
+rest unless the cluster is configured for that. With the `process` backend they
+are readable through `/proc/<pid>/environ` by the CityHall OS user, which is the
+same user every workspace runs as. In every case, anyone who can administer the
+runtime can read a workspace's credentials.
+
 ## The workspace proxy
 
 Workspaces are served through a dedicated listener (default
@@ -224,5 +276,11 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 
 ## Current limitations
 
-- Agent credentials are not forwarded into workspaces yet
-  ([#16](https://github.com/agent-of-empires/cityhall/issues/16)).
+- Agent credentials only reach structured-view agents for Claude. See
+  [Agent credentials](#agent-credentials).
+- CityHall's reference workspace image (`deploy/aoe-image/Dockerfile`) installs
+  the `aoe` binary but no agent CLIs, so credentials there have nothing to
+  authenticate until the image is extended
+  ([#53](https://github.com/agent-of-empires/cityhall/issues/53)).
+- Git credentials are HTTPS tokens only; there is no way to supply an SSH key
+  ([#52](https://github.com/agent-of-empires/cityhall/issues/52)).
