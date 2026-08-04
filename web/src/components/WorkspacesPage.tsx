@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ExternalLink, KeyRound, Play, Square, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
-import { isGitVersion, isOlderVersion } from "../lib/versions";
+import { formatVersion, isGitVersion, isOlderVersion } from "../lib/versions";
 import { AgentCredentialsEditor } from "./AgentCredentials";
 import { TopBar } from "./TopBar";
 import { Button, Select } from "./ui";
@@ -67,6 +67,9 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
     const timer = setInterval(() => void load(), 3000);
     return () => clearInterval(timer);
   }, [anyProvisioning, load]);
+
+  // Paired up so the banner can read the message without re-narrowing it.
+  const provisioning = items.flatMap((item) => (item.provisioning ? [{ item, info: item.provisioning }] : []));
 
   // Statuses change outside this tab (the proxy auto-starts workspaces on
   // access), so refresh when the tab regains focus and poll slowly while
@@ -151,34 +154,10 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
       <main className="mx-auto w-full max-w-4xl flex-1 space-y-4 overflow-auto p-6">
         <div className="flex items-center justify-between">
           <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">Workspaces</h2>
-          {canWrite && (
-            <div className="flex items-end gap-2">
-              {items.some(outdated) && (
-                <Button variant="ghost" disabled={busy} onClick={selectOutdated}>
-                  Select outdated
-                </Button>
-              )}
-              <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                <input
-                  type="checkbox"
-                  checked={restart}
-                  onChange={(e) => setRestart(e.target.checked)}
-                  className="h-4 w-4 accent-brand-500"
-                />
-                restart running now
-              </label>
-              <VersionField
-                value={version}
-                onChange={setVersion}
-                versions={versions}
-                latest={latest ?? undefined}
-                noneLabel="follow default"
-                className="w-52"
-              />
-              <Button variant="primary" disabled={busy || selected.size === 0} onClick={applyVersion}>
-                Set version ({selected.size})
-              </Button>
-            </div>
+          {canWrite && items.some(outdated) && (
+            <Button variant="ghost" disabled={busy} onClick={selectOutdated}>
+              Select outdated
+            </Button>
           )}
         </div>
 
@@ -192,6 +171,49 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
             </a>
             ; each signed-in user reaches their own workspace there. Containers listen on internal loopback ports
             managed automatically.
+          </div>
+        )}
+
+        {provisioning.length > 0 && (
+          <div className="space-y-1.5 rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm">
+            {provisioning.map(({ item, info }) => (
+              <p key={item.user_id} className={info.failed ? "text-status-error" : "text-status-waiting"}>
+                <span className="font-medium text-text-primary">{item.username}</span>: {info.message}
+              </p>
+            ))}
+            <p className="text-xs text-text-muted">
+              An image pull takes a few minutes and a source build compiles aoe, which can take well over ten. Either
+              way it continues if this page is closed.
+            </p>
+          </div>
+        )}
+
+        {canWrite && selected.size > 0 && (
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-surface-700 bg-surface-850 px-4 py-3">
+            <span className="text-sm text-text-secondary">{selected.size} selected</span>
+            <VersionField
+              value={version}
+              onChange={setVersion}
+              versions={versions}
+              latest={latest ?? undefined}
+              noneLabel="follow default"
+              className="w-52"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={restart}
+                onChange={(e) => setRestart(e.target.checked)}
+                className="h-4 w-4 accent-brand-500"
+              />
+              restart running now
+            </label>
+            <Button variant="primary" disabled={busy} onClick={applyVersion}>
+              Set version
+            </Button>
+            <Button variant="ghost" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
           </div>
         )}
 
@@ -229,9 +251,6 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                           title={item.provisioning.message}
                         >
                           {item.provisioning.failed ? "provisioning failed" : "provisioning"}
-                          <span className="block max-w-56 truncate text-xs text-text-muted">
-                            {item.provisioning.message}
-                          </span>
                         </span>
                       ) : (
                         <span className={STATUS_STYLES[item.status]}>{STATUS_LABELS[item.status]}</span>
@@ -252,14 +271,14 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                             className="w-44"
                           >
                             <option value="">
-                              {item.effective_version ? `default (${item.effective_version})` : "default"}
+                              {item.effective_version
+                                ? `default (${formatVersion(item.effective_version)})`
+                                : "default"}
                             </option>
                             {/* A previously saved version can predate the discovered list. */}
                             {item.pinned_version && !versions.includes(item.pinned_version) && (
                               <option value={item.pinned_version} title={item.pinned_version}>
-                                {isGitVersion(item.pinned_version)
-                                  ? item.pinned_version.slice(0, 16)
-                                  : item.pinned_version}
+                                {formatVersion(item.pinned_version)}
                               </option>
                             )}
                             {versions.map((v) => (
@@ -271,8 +290,16 @@ export function WorkspacesPage({ me, onLogout }: { me: Me; onLogout: () => Promi
                           </Select>
                         ) : (
                           <span>
-                            {item.pinned_version ??
-                              (item.effective_version ? `default (${item.effective_version})` : "-")}
+                            {item.pinned_version
+                              ? formatVersion(item.pinned_version)
+                              : item.effective_version
+                                ? `default (${formatVersion(item.effective_version)})`
+                                : "-"}
+                          </span>
+                        )}
+                        {item.effective_version && isGitVersion(item.effective_version) && (
+                          <span className="text-xs font-medium text-text-secondary" title={item.effective_version}>
+                            source build
                           </span>
                         )}
                         {outdated(item) && (

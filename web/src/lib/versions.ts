@@ -14,6 +14,12 @@ export function versionKey(tag: string): number[] {
     .map((s) => Number(s));
 }
 
+// A 40-char sha is meaningless to a human in a table cell or option label, so
+// anywhere a version is shown it should go through this first.
+export function formatVersion(version: string): string {
+  return isGitVersion(version) ? `commit ${version.slice(4, 16)}` : version;
+}
+
 export function isOlderVersion(tag: string, latest: string): boolean {
   // A source build's sha is not a release ordering; digits inside it would
   // otherwise be parsed as version components and compared as garbage.

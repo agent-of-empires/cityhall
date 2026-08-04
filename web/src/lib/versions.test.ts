@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isGitVersion, isOlderVersion } from "./versions";
+import { formatVersion, isGitVersion, isOlderVersion } from "./versions";
 
 describe("isGitVersion", () => {
   it("recognizes a source build", () => {
@@ -45,5 +45,15 @@ describe("isOlderVersion", () => {
     expect(
       isOlderVersion("git-abc123def0abc123def0abc123def0abc123de", "git-999999999999999999999999999999999999999"),
     ).toBe(false);
+  });
+});
+
+describe("formatVersion", () => {
+  it("shortens a source build to its first 12 sha characters", () => {
+    expect(formatVersion("git-abc123def0abc123def0abc123def0abc123de")).toBe("commit abc123def0ab");
+  });
+
+  it("leaves a release tag unchanged", () => {
+    expect(formatVersion("v1.13.2")).toBe("v1.13.2");
   });
 });

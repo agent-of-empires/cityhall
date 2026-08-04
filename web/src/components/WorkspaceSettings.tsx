@@ -79,7 +79,12 @@ export function WorkspaceSettingsSection() {
               placeholder="cityhall/aoe:{version}"
             />
           </Field>
-          <Field label="Default version">
+          {/* Deliberately not a Field: that wraps its children in a label with
+              no `for`, which binds to the first control inside it, and here that
+              would be VersionField's experimental checkbox rather than the
+              version control. */}
+          <div className="block space-y-1.5">
+            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Default version</span>
             <VersionField
               value={defaultVersion}
               onChange={setDefaultVersion}
@@ -87,7 +92,7 @@ export function WorkspaceSettingsSection() {
               latest={latest ?? undefined}
               noneLabel="none"
             />
-          </Field>
+          </div>
           <Field label="Idle stop (minutes)">
             <Input
               type="number"

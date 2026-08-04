@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { isGitVersion } from "../lib/versions";
+import { formatVersion, isGitVersion } from "../lib/versions";
 import { Input, Select } from "./ui";
 
 export function VersionField({
@@ -31,7 +31,7 @@ export function VersionField({
 
   return (
     <div className={className}>
-      <label className="mb-1.5 flex items-center gap-1.5 text-xs text-text-secondary">
+      <label className="flex items-center gap-1.5 text-xs text-text-secondary">
         <input
           type="checkbox"
           checked={mode === "git"}
@@ -40,24 +40,24 @@ export function VersionField({
         />
         unreleased git ref (experimental)
       </label>
-      {mode === "release" ? (
-        versions.length > 0 ? (
-          <Select value={value} onChange={(e) => onChange(e.target.value)}>
-            <option value="">{noneLabel}</option>
-            {/* A previously saved version can predate the discovered list. */}
-            {value && !versions.includes(value) && <option value={value}>{value}</option>}
-            {versions.map((v) => (
-              <option key={v} value={v}>
-                {v}
-                {v === latest ? " (latest)" : ""}
-              </option>
-            ))}
-          </Select>
+      <div className="mt-1.5">
+        {mode === "release" ? (
+          versions.length > 0 ? (
+            <Select value={value} onChange={(e) => onChange(e.target.value)}>
+              <option value="">{noneLabel}</option>
+              {/* A previously saved version can predate the discovered list. */}
+              {value && !versions.includes(value) && <option value={value}>{formatVersion(value)}</option>}
+              {versions.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                  {v === latest ? " (latest)" : ""}
+                </option>
+              ))}
+            </Select>
+          ) : (
+            <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="v0.1.0" />
+          )
         ) : (
-          <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="v0.1.0" />
-        )
-      ) : (
-        <div className="space-y-1">
           <Input
             value={gitRef}
             onChange={(e) => {
@@ -67,16 +67,18 @@ export function VersionField({
             }}
             placeholder="main"
           />
-          {isGitVersion(value) && (
-            <p className="text-xs text-text-muted" title={value}>
-              Currently saved build: {value.slice(4, 16)}
-            </p>
-          )}
-          <p className="text-xs text-text-muted">
-            A source build compiles aoe from source, which can take several minutes on first launch.
+        )}
+      </div>
+      {mode === "git" &&
+        (isGitVersion(value) ? (
+          <p className="mt-1 text-xs text-text-muted" title={value}>
+            Currently {formatVersion(value)}.
           </p>
-        </div>
-      )}
+        ) : (
+          <p className="mt-1 text-xs text-text-muted">
+            Compiles aoe from source; first launch can take several minutes.
+          </p>
+        ))}
     </div>
   );
 }
