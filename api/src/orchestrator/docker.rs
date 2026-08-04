@@ -335,10 +335,16 @@ fn log_tail(path: &std::path::Path) -> String {
                 tail.insert(0, '\n');
             }
             let tail = tail.trim();
-            if tail.is_empty() {
+            if !tail.is_empty() {
+                tail.to_string()
+            } else if s.trim().is_empty() {
                 "command failed (no output)".to_string()
             } else {
-                tail.to_string()
+                // The loop breaks before adding a line that would not fit, so a
+                // single line longer than the budget leaves the tail empty even
+                // though the log has content. Saying "no output" there sends an
+                // admin looking for a log that is sitting right there.
+                format!("command failed (last log line exceeds {MAX_BYTES} bytes)")
             }
         }
         Err(_) => "command failed (no log available)".to_string(),
@@ -842,10 +848,22 @@ mod tests {
         std::fs::write(&path, &body).unwrap();
         let tail = log_tail(&path);
         assert!(tail.lines().count() <= 12);
+        assert!(tail.len() <= 2000, "unbounded: {} bytes", tail.len());
         assert!(tail.starts_with("step "), "cut mid-line: {tail}");
         assert!(tail.ends_with("some"));
 
+        // One line that cannot fit at all. Keeping whole lines means the tail
+        // comes back empty here, and reporting that as "no output" would send an
+        // admin looking for a log that does exist.
+        std::fs::write(&path, format!("{}\n", "x".repeat(2001))).unwrap();
+        let oversized = log_tail(&path);
+        assert_ne!(oversized, "command failed (no output)");
+        assert!(oversized.contains("2000 bytes"), "{oversized}");
+
         std::fs::write(&path, "").unwrap();
+        assert_eq!(log_tail(&path), "command failed (no output)");
+        // Whitespace only is still nothing to show.
+        std::fs::write(&path, "\n  \n").unwrap();
         assert_eq!(log_tail(&path), "command failed (no output)");
         assert_eq!(
             log_tail(&dir.join("absent")),
