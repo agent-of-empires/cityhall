@@ -12,6 +12,7 @@ mod oidc;
 mod orchestrator;
 mod proxy;
 mod rbac;
+mod secrets;
 mod seed;
 mod server;
 mod service;
