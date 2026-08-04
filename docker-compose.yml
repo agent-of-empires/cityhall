@@ -1,9 +1,12 @@
-# Local stack for developing and testing CityHall, including email flows.
+# Local stack for developing and testing CityHall, including email flows and
+# workspaces.
 #
 #   docker compose up --build
 #
 # Then open http://localhost:3000 (the admin password is printed in the
-# `cityhall` logs on first launch). SMTP is pre-configured via environment
+# `cityhall` logs on first launch). Workspaces are served from
+# http://localhost:3001 and run as sibling containers on the host daemon; note
+# that a workspace needs an aoe version whose `serve` accepts `--cityhall`. SMTP is pre-configured via environment
 # variables to point at the bundled Mailpit instance, so email works out of the
 # box; view captured mail at http://localhost:8025. Because it is env-managed,
 # the Settings form is read-only. To exercise the settings-page path instead,
@@ -36,7 +39,24 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      # The docker workspace backend drives the host daemon through this. It
+      # grants the container root-equivalent access to the host, which is
+      # acceptable for a local dev stack and is not a pattern to copy into a
+      # deployment; there, run CityHall on the host or use the kubernetes
+      # backend. Comment this out to develop without workspaces.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      # Workspace containers are started as siblings on the host, so they are
+      # not in this project's network by default and could not resolve
+      # `cityhall` to fetch their config bundle. Naming the network (below)
+      # rather than relying on the `<directory>_default` default keeps this
+      # working whatever the checkout is called.
+      WORKSPACE_DOCKER_NETWORK: cityhall
+      WORKSPACE_BUNDLE_ORIGIN: http://cityhall:3000
+      # Workspaces are served from their own listener, not the main origin.
+      WORKSPACE_PROXY_BIND_ADDR: 0.0.0.0:3001
+      WORKSPACE_PROXY_PUBLIC_ORIGIN: http://localhost:3001
       DATABASE_URL: postgres://cityhall:cityhall@db:5432/cityhall
       BIND_ADDR: 0.0.0.0:3000
       # Required to store the SMTP password set via the settings page.
@@ -59,6 +79,12 @@ services:
       # OIDC_ALLOWED_DOMAINS: example.com
     ports:
       - "3000:3000"
+      - "3001:3001" # workspace proxy
 
 volumes:
   pgdata:
+
+networks:
+  default:
+    # Fixed so WORKSPACE_DOCKER_NETWORK above can name it.
+    name: cityhall
