@@ -31,6 +31,7 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `CONTAINER_CLI` | `docker`                         | Container CLI used by the docker backend (e.g. `podman`). |
 | `WORKSPACE_DOCKER_NETWORK` | _(unset)_             | Docker network workspaces join (no published ports); for CityHall-in-compose. |
 | `WORKSPACE_BUNDLE_ORIGIN` | _(unset)_              | Origin a *workspace* uses to reach CityHall, for fetching its config bundle (see [Workspaces](workspaces.md#workspace-configuration)). Unset means workspaces start unconfigured. |
+| `WORKSPACE_TELEMETRY_POLICY` | _(the stored setting)_ | Pins aoe telemetry for every workspace: `user_choice`, `force_on`, or `force_off` (see [Workspaces](workspaces.md#telemetry)). Any other value fails startup. |
 | `WORKSPACE_K8S_NAMESPACE` | _(pod namespace)_      | Namespace workspace objects are created in. |
 | `WORKSPACE_K8S_VOLUME_SIZE` | `5Gi`                | PVC size per workspace. |
 | `WORKSPACE_K8S_STORAGE_CLASS` | _(cluster default)_ | Storage class for workspace PVCs. |
