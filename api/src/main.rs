@@ -9,6 +9,7 @@ mod error;
 mod git_ssh;
 mod handlers;
 mod mailer;
+mod metrics;
 mod migration;
 mod oidc;
 mod orchestrator;

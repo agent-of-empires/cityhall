@@ -32,6 +32,12 @@ pub const CATALOG: &[(&str, &str)] = &[
         "workspaces.impersonate",
         "Open other users' workspaces (audited)",
     ),
+    // Spelled out because granting it exposes operational metrics, not just
+    // another page: a role editor should be able to see that from the label.
+    (
+        "dashboard.read",
+        "View fleet status, workspace resource usage, and CityHall system metrics",
+    ),
 ];
 
 /// Built-in roles seeded on startup: (name, description, permission keys).

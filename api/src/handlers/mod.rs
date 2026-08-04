@@ -1,5 +1,6 @@
 pub mod agent_credentials;
 pub mod auth;
+pub mod dashboard;
 pub mod oidc;
 pub mod roles;
 pub mod settings;

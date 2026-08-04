@@ -10,7 +10,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
 use crate::handlers::{
-    agent_credentials, auth, oidc, roles, settings, signup, users, workspace_config, workspaces,
+    agent_credentials, auth, dashboard, oidc, roles, settings, signup, users, workspace_config,
+    workspaces,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -42,6 +43,7 @@ pub fn api_router(state: AppState) -> Router {
             "/users/{id}",
             get(users::get).patch(users::update).delete(users::delete),
         )
+        .route("/dashboard", get(dashboard::overview))
         .route("/roles", get(roles::list).post(roles::create))
         .route("/roles/{id}", patch(roles::update).delete(roles::delete))
         .route("/permissions", get(roles::permissions))
@@ -145,6 +147,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         endpoints: Arc::default(),
         provisioning,
         versions: Arc::default(),
+        metrics: Arc::default(),
         proxy_client,
     })
 }
@@ -153,6 +156,7 @@ pub async fn serve(db: DatabaseConnection) -> Result<(), Box<dyn std::error::Err
     let state = build_state(db)?;
     crate::workspaces::seed_default_version(&state.db).await?;
     tokio::spawn(crate::workspaces::idle_sweeper(state.clone()));
+    tokio::spawn(crate::metrics::sampler(state.clone()));
 
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;

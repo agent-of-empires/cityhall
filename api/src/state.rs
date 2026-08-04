@@ -21,6 +21,9 @@ pub struct AppState {
     pub provisioning: Arc<ProvisioningRegistry>,
     /// Cached aoe release discovery feeding the version dropdowns.
     pub versions: Arc<crate::workspaces::VersionCache>,
+    /// Last fleet and system sample, published by the background sampler. The
+    /// dashboard reads it instead of shelling out per request.
+    pub metrics: Arc<crate::metrics::Metrics>,
     /// Client for proxied HTTP requests to workspaces (no redirects, HTTP/1.1
     /// so WebSocket upgrades tunnel through).
     pub proxy_client: reqwest::Client,

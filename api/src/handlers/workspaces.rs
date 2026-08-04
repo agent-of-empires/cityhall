@@ -84,7 +84,7 @@ impl Fleet {
 
 /// A batch runtime row as a status string. Absent means no runtime object
 /// exists, which is the same thing `status()` reports as `NotCreated`.
-fn runtime_status(runtime: Option<&WorkspaceRuntime>) -> &'static str {
+pub(crate) fn runtime_status(runtime: Option<&WorkspaceRuntime>) -> &'static str {
     match runtime {
         Some(rt) if rt.running => "running",
         Some(_) => "stopped",
