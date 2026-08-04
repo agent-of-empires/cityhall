@@ -221,13 +221,10 @@ async fn set_credential(
         AppError::BadRequestOwned(format!("unknown agent credential `{env_var}`"))
     })?;
     let value = agent_credentials::validate_value(value)?;
-    let encrypted = crypto::encrypt(
-        &value,
-        &crypto::Aad::AgentCredential {
-            user_id,
-            env_var: env_var.to_string(),
-        },
-    )?;
+    // Through the store's own helper, like every read of one of these: the
+    // encoding lives in one place, so the write cannot drift from what the
+    // workspace path will accept.
+    let encrypted = crypto::encrypt(&value, &agent_credentials::aad(user_id, env_var))?;
 
     // One upsert statement, like the git credential's: two concurrent saves
     // for the same user and variable cannot then both see no row and race to
