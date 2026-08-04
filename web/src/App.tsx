@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { api, ApiError, type Me } from "./lib/api";
+import { api, ApiError, can, type Me } from "./lib/api";
+import { DashboardPage } from "./components/DashboardPage";
 import { LoginPage } from "./components/LoginPage";
 import { ChangePasswordPage } from "./components/ChangePasswordPage";
 import { UsersPage } from "./components/UsersPage";
@@ -59,8 +60,36 @@ export function App() {
           )
         }
       />
+      {/* `/` redirects rather than rendering a different component per role, so
+          every page keeps one stable URL that bookmarks and history can hold. */}
       <Route
         path="/"
+        element={
+          !me ? (
+            <Navigate to="/login" replace />
+          ) : me.must_change_password ? (
+            <Navigate to="/change-password" replace />
+          ) : (
+            <Navigate to={can(me, "dashboard.read") ? "/dashboard" : "/users"} replace />
+          )
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          !me ? (
+            <Navigate to="/login" replace />
+          ) : me.must_change_password ? (
+            <Navigate to="/change-password" replace />
+          ) : !can(me, "dashboard.read") ? (
+            <Navigate to="/users" replace />
+          ) : (
+            <DashboardPage me={me} onLogout={refresh} />
+          )
+        }
+      />
+      <Route
+        path="/users"
         element={
           !me ? (
             <Navigate to="/login" replace />

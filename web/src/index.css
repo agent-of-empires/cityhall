@@ -39,6 +39,11 @@
 
 @import "tailwindcss";
 
+/* Grid positioning and resize handles for the dashboard's widget layout.
+   Imported after Tailwind so its preflight reset cannot flatten the handles. */
+@import "react-grid-layout/css/styles.css";
+@import "react-resizable/css/styles.css";
+
 /* Zinc theme, mirrored from Agent of Empires' default web palette. */
 @theme {
   /* Brand -- amber/copper, used sparingly (focus rings, active accents) */
