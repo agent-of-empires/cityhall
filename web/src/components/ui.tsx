@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { Check, ChevronDown, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -321,7 +321,19 @@ export function Modal({
   className?: string;
   children: ReactNode;
 }) {
-  // Backdrop click and Escape both dismiss, so a dialog is never a trap.
+  const panel = useRef<HTMLDivElement>(null);
+  /** Only a press that started on the backdrop may dismiss: a `click` fires on
+   *  the nearest ancestor of its press and release, so releasing a text
+   *  selection outside the panel would otherwise discard a filled-in form. */
+  const pressedBackdrop = useRef(false);
+  /** Captured during render, which is the last moment the trigger still holds
+   *  focus: React applies a child's `autoFocus` while committing, so reading
+   *  this from an effect would return a field inside the dialog and restore
+   *  focus to a node that no longer exists. */
+  const trigger = useRef<HTMLElement | null>(null);
+  if (trigger.current === null) trigger.current = document.activeElement as HTMLElement | null;
+
+  // Escape dismisses, so a dialog is never a trap for the keyboard either.
   useEffect(() => {
     if (!onClose) return;
     const onKey = (e: KeyboardEvent) => {
@@ -331,19 +343,68 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // `aria-modal` promises the rest of the page is inert, so focus has to move
+  // in, stay in, and go back where it came from. Without this, Tab walks the
+  // page behind an overlay that already swallows the pointer.
+  useEffect(() => {
+    const previous = trigger.current;
+    // Only when nothing inside has claimed it already, so a field with
+    // `autoFocus` keeps the focus it asked for.
+    if (panel.current && !panel.current.contains(document.activeElement)) {
+      panel.current.focus();
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !panel.current) return;
+      const focusable = panel.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (!e.shiftKey && (active === last || active === panel.current)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && (active === first || active === panel.current)) {
+        e.preventDefault();
+        last.focus();
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      // Restored a frame later: this cleanup runs after React has already
+      // removed the panel, which resets focus to the body, and a focus() call
+      // in the same flush does not survive that.
+      requestAnimationFrame(() => {
+        if (previous?.isConnected) previous.focus();
+      });
+    };
+  }, []);
+
   return (
     <div
       className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-[rgba(2,6,23,0.65)] p-6"
-      onClick={onClose}
+      onMouseDown={(e) => (pressedBackdrop.current = e.target === e.currentTarget)}
+      onClick={(e) => {
+        if (onClose && pressedBackdrop.current && e.target === e.currentTarget) onClose();
+      }}
     >
       <div
+        ref={panel}
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
-        onClick={(e) => e.stopPropagation()}
+        tabIndex={-1}
         className={clsx(
           "animate-slide-up flex max-h-[calc(100dvh-48px)] w-full max-w-[520px] flex-col overflow-hidden",
           "rounded-xl border border-border-soft bg-surface shadow-[0_24px_64px_rgba(0,0,0,0.5)]",
+          "focus:outline-none",
           className,
         )}
       >
