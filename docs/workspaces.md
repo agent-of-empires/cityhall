@@ -391,6 +391,48 @@ are readable through `/proc/<pid>/environ` by the CityHall OS user, which is the
 same user every workspace runs as. In every case, anyone who can administer the
 runtime can read a workspace's credentials.
 
+## Telemetry
+
+aoe's usage telemetry is opt-in, and aoe asks each user for that opt-in inside
+their own workspace. In a CityHall deployment that is the wrong person to ask, so
+**Settings → Workspaces → aoe telemetry** decides it for everyone: off for
+everyone, on for everyone, or let each user choose (the default, and how it
+behaved before this setting existed).
+
+`WORKSPACE_TELEMETRY_POLICY` (`user_choice`, `force_on`, `force_off`) pins the
+policy for the whole deployment. While it is set it wins, and a choice saved on
+the page is stored for when the variable is removed rather than applied.
+
+What each state does to a workspace:
+
+- **Off for everyone** sets `DO_NOT_TRACK=1`, which aoe treats as absolute:
+  nothing is sent, no install id is generated, and no consent prompt appears.
+  Works with any workspace image.
+- **On for everyone** runs `aoe telemetry enable` in the workspace before the
+  server starts, which is what also records the consent as answered, so no prompt
+  appears. On the container backends it needs an image with a shell and an aoe new
+  enough to have that subcommand; without either, the workspace fails to start
+  rather than coming up with the policy unapplied. The reason is in that
+  workspace's own backend log: `docker logs cityhall-workspace-u<id>` on the
+  docker backend, `kubectl logs deploy/cityhall-workspace-u<id>` on kubernetes,
+  and `$WORKSPACE_PROCESS_DIR/u<id>/serve.log` on the process backend (which runs
+  the command directly, needing no shell, and reports the failure through the
+  API instead).
+- **Let each user choose** injects nothing. aoe's own prompt reaches the user and
+  CityHall never marks the consent as answered on their behalf.
+
+A change reaches a workspace the next time it starts, which for a stopped one is
+automatic. Tick **restart running workspaces on save** to apply it to running
+ones immediately; that recreates their containers, ending whatever their users
+are running, which is why it is not the default.
+
+Two things worth knowing before forcing telemetry on. Suppressing the consent
+prompt makes disclosing the collection to your users your deployment's
+responsibility, not aoe's. And the opt-in is recorded in each user's data volume,
+so relaxing the policy back to "let each user choose" stops CityHall enforcing
+anything but leaves those users opted in until they turn it off themselves;
+CityHall does not rewrite aoe's stored consent to undo it.
+
 ## The workspace proxy
 
 Workspaces are served through a dedicated listener (default

@@ -14,6 +14,11 @@ pub struct Model {
     /// unset.
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
+    /// Deployment-wide aoe telemetry policy, as one of
+    /// [`crate::orchestrator::TelemetryPolicy`]'s wire values. Kept as a string
+    /// here so a value written by a newer CityHall round-trips through an older
+    /// one instead of failing the whole row's deserialization.
+    pub telemetry_policy: String,
     pub updated_at: DateTimeUtc,
 }
 

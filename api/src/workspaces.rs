@@ -10,7 +10,8 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
-    bundle_url, render_image, BundleAccess, OrchestratorError, WorkspaceSpec, WorkspaceStatus,
+    bundle_url, render_image, telemetry_policy_override, BundleAccess, OrchestratorError,
+    TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
 };
 use crate::state::AppState;
 
@@ -27,8 +28,23 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
             image_template: "cityhall/aoe:{version}".to_string(),
             default_version: None,
             idle_stop_minutes: 30,
+            telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
             updated_at: Utc::now(),
         }))
+}
+
+/// The telemetry policy workspaces actually run under: the deployment-level
+/// override when one is set, otherwise the stored setting.
+///
+/// The override's own validity was settled at startup (see
+/// [`crate::orchestrator::from_env`]), so an `Err` here cannot happen; reading
+/// it as "no override" if it somehow did would be the same lenient direction as
+/// [`TelemetryPolicy::from_stored`].
+pub fn effective_telemetry_policy(settings: &workspace_settings::Model) -> TelemetryPolicy {
+    telemetry_policy_override()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| TelemetryPolicy::from_stored(&settings.telemetry_policy))
 }
 
 /// On a first startup (no settings row saved yet), pre-fill the default
@@ -67,6 +83,7 @@ async fn apply_seeded_version(db: &DatabaseConnection, version: String) -> Resul
         image_template: Set(defaults.image_template),
         default_version: Set(Some(version)),
         idle_stop_minutes: Set(defaults.idle_stop_minutes),
+        telemetry_policy: Set(defaults.telemetry_policy),
         updated_at: Set(Utc::now()),
     }
     .insert(db)
@@ -280,6 +297,7 @@ pub fn build_spec(
         version,
         bundle,
         agent_env: crate::agent_credentials::AgentEnv::default(),
+        telemetry: effective_telemetry_policy(settings),
     })
 }
 
@@ -510,6 +528,7 @@ mod tests {
             image_template: "cityhall/aoe:{version}".to_string(),
             default_version: default_version.map(String::from),
             idle_stop_minutes: 30,
+            telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
             updated_at: Utc::now(),
         }
     }
@@ -534,6 +553,7 @@ mod tests {
             image_template: Set("cityhall/aoe:{version}".to_string()),
             default_version: Set(None),
             idle_stop_minutes: Set(30),
+            telemetry_policy: Set(TelemetryPolicy::default().as_str().to_string()),
             updated_at: Set(Utc::now()),
         }
         .insert(&db)

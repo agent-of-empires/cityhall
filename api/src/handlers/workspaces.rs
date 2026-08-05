@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::entities::{workspace, workspace_settings};
 use crate::error::AppError;
-use crate::orchestrator::{binary_key, render_image, WorkspaceStatus};
+use crate::orchestrator::{
+    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceStatus,
+};
 use crate::proxy;
 use crate::state::AppState;
 use crate::workspaces::{self, SETTINGS_ID};
@@ -321,6 +323,20 @@ pub struct WorkspaceSettingsResponse {
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
+    /// The stored telemetry policy, verbatim, which is what takes effect once any
+    /// override is removed.
+    ///
+    /// Raw rather than parsed, so a value only a newer CityHall understands can
+    /// be echoed back on a save and survive it (see [`policy_to_store`]).
+    /// `effective_telemetry_policy` is where such a value reads as `user_choice`.
+    pub telemetry_policy: String,
+    /// The deployment-level override, when `WORKSPACE_TELEMETRY_POLICY` is set.
+    /// Reported separately from the stored value so the page can say the policy
+    /// is pinned by the environment instead of showing a control that silently
+    /// does nothing.
+    pub telemetry_policy_override: Option<&'static str>,
+    /// What workspaces actually run under: the override, or the stored value.
+    pub effective_telemetry_policy: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -328,6 +344,36 @@ pub struct UpdateWorkspaceSettingsRequest {
     pub image_template: String,
     pub default_version: Option<String>,
     pub idle_stop_minutes: i32,
+    pub telemetry_policy: String,
+    /// Recreate every RUNNING workspace so the saved policy applies now.
+    /// Off by default, and the same opt-in the version rollout uses: a recreate
+    /// ends whatever the user is running. Stopped workspaces do not need it;
+    /// they come back on the new policy at their next start.
+    #[serde(default)]
+    pub restart_running: bool,
+}
+
+/// The telemetry policy value a save should store.
+///
+/// A submitted value identical to what is already stored is a retention, not a
+/// choice, and is kept verbatim. That is what stops a save made by an older
+/// CityHall from flattening a policy a newer one wrote: this build reads such a
+/// value as `user_choice` and shows it that way, but it never overwrites it
+/// unless the admin actually picks something else.
+///
+/// Anything else is an explicit selection, so it has to be a policy this build
+/// knows. Rejected rather than coerced: silently storing `user_choice` for a
+/// value the admin believed forced telemetry off is the failure worth avoiding.
+fn policy_to_store(submitted: &str, stored: Option<&str>) -> Result<String, AppError> {
+    let submitted = submitted.trim();
+    if stored == Some(submitted) {
+        return Ok(submitted.to_string());
+    }
+    TelemetryPolicy::parse(submitted)
+        .map(|policy| policy.as_str().to_string())
+        .ok_or(AppError::BadRequest(
+            "telemetry policy must be user_choice, force_on, or force_off",
+        ))
 }
 
 /// GET /api/settings/workspaces
@@ -337,7 +383,13 @@ pub async fn get_settings(
 ) -> Result<Json<WorkspaceSettingsResponse>, AppError> {
     caller.require("settings.read")?;
     let cfg = workspaces::settings(&state.db).await?;
+    // Unwrapped rather than propagated: an invalid override already failed
+    // CityHall's startup, so this cannot be an error by the time a request runs.
+    let policy_override = telemetry_policy_override().unwrap_or_default();
     Ok(Json(WorkspaceSettingsResponse {
+        telemetry_policy_override: policy_override.map(TelemetryPolicy::as_str),
+        effective_telemetry_policy: workspaces::effective_telemetry_policy(&cfg).as_str(),
+        telemetry_policy: cfg.telemetry_policy,
         image_template: cfg.image_template,
         default_version: cfg.default_version,
         idle_stop_minutes: cfg.idle_stop_minutes,
@@ -362,11 +414,16 @@ pub async fn update_settings(
     let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
         .one(&state.db)
         .await?;
+    let telemetry_policy = policy_to_store(
+        &body.telemetry_policy,
+        existing.as_ref().map(|r| r.telemetry_policy.as_str()),
+    )?;
     let model = workspace_settings::ActiveModel {
         id: Set(SETTINGS_ID),
         image_template: Set(body.image_template.trim().to_string()),
         default_version: Set(default_version),
         idle_stop_minutes: Set(body.idle_stop_minutes),
+        telemetry_policy: Set(telemetry_policy),
         updated_at: Set(Utc::now()),
     };
     if existing.is_some() {
@@ -374,5 +431,54 @@ pub async fn update_settings(
     } else {
         model.insert(&state.db).await?;
     }
+    if body.restart_running {
+        let user_ids = workspace::Entity::find()
+            .all(&state.db)
+            .await?
+            .into_iter()
+            .map(|r| r.user_id)
+            .collect();
+        spawn_restarts(state.clone(), user_ids);
+    }
     get_settings(State(state), caller).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of keeping the stored policy a raw string: an admin on an
+    /// older CityHall, which reads a policy it does not know as `user_choice`,
+    /// must not flatten it just by saving the settings form.
+    #[test]
+    fn an_unknown_stored_policy_survives_a_save_that_does_not_change_it() {
+        assert_eq!(
+            policy_to_store("force_maybe", Some("force_maybe")).unwrap(),
+            "force_maybe"
+        );
+    }
+
+    /// Choosing a policy this build knows replaces whatever was there.
+    #[test]
+    fn an_explicit_choice_replaces_the_stored_value() {
+        assert_eq!(
+            policy_to_store("force_off", Some("force_maybe")).unwrap(),
+            "force_off"
+        );
+        assert_eq!(
+            policy_to_store(" force_on ", Some("user_choice")).unwrap(),
+            "force_on"
+        );
+    }
+
+    /// An unknown value that is not simply what is already stored has no
+    /// provenance to preserve, so it is a bad request rather than a way to write
+    /// arbitrary strings into the column.
+    #[test]
+    fn an_unknown_value_cannot_be_introduced() {
+        assert!(policy_to_store("force_maybe", Some("user_choice")).is_err());
+        // Including on the very first save, when there is no row yet.
+        assert!(policy_to_store("force_maybe", None).is_err());
+        assert!(policy_to_store("", None).is_err());
+    }
 }

@@ -124,10 +124,39 @@ export interface MyWorkspace {
   proxy_origin: string;
 }
 
+/// Who decides whether a workspace sends aoe telemetry. The three values this
+/// CityHall knows and can select; a stored policy is a plain string because a
+/// newer CityHall may have written one that is none of these.
+export type TelemetryPolicy = "user_choice" | "force_on" | "force_off";
+
 export interface WorkspaceSettings {
   image_template: string;
   default_version: string | null;
   idle_stop_minutes: number;
+  /// The stored policy, verbatim. Usually a `TelemetryPolicy`, but an opaque
+  /// value written by a newer CityHall is returned as-is so a save can echo it
+  /// back rather than flattening it; `effective_telemetry_policy` is where such
+  /// a value reads as `user_choice`.
+  telemetry_policy: string;
+  /// Set when WORKSPACE_TELEMETRY_POLICY pins the policy for the deployment, in
+  /// which case it wins over the stored one.
+  telemetry_policy_override: TelemetryPolicy | null;
+  /// What workspaces actually run under: the override, or the stored policy.
+  effective_telemetry_policy: TelemetryPolicy;
+}
+
+/// What a save sends: the settings an admin owns, without the two fields the
+/// server derives.
+export interface WorkspaceSettingsUpdate {
+  image_template: string;
+  default_version: string | null;
+  idle_stop_minutes: number;
+  /// A `TelemetryPolicy`, or the stored value echoed back unchanged to keep an
+  /// opaque one. The server rejects any other string.
+  telemetry_policy: string;
+  /// Recreate every running workspace so a saved policy applies now, which ends
+  /// whatever their users are running. Stopped workspaces never need it.
+  restart_running: boolean;
 }
 
 /// The aoe config bundle every workspace is provisioned with. Opaque TOML:
@@ -311,7 +340,7 @@ export const api = {
   workspaceAccessUrl: (userId: number) =>
     request<{ url: string }>(`/workspaces/${userId}/access-url`, { method: "POST" }),
   getWorkspaceSettings: () => request<WorkspaceSettings>("/settings/workspaces"),
-  updateWorkspaceSettings: (patch: WorkspaceSettings) =>
+  updateWorkspaceSettings: (patch: WorkspaceSettingsUpdate) =>
     request<WorkspaceSettings>("/settings/workspaces", {
       method: "PUT",
       body: JSON.stringify(patch),

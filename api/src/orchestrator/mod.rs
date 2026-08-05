@@ -31,6 +31,129 @@ pub struct WorkspaceSpec {
     /// safe; a bare `Vec<(String, String)>` here would be a leak waiting for a
     /// future tracing call.
     pub agent_env: crate::agent_credentials::AgentEnv,
+    /// The deployment's telemetry policy, applied at every start.
+    pub telemetry: TelemetryPolicy,
+}
+
+/// Who decides whether a workspace sends aoe telemetry (#40).
+///
+/// aoe stores consent per user inside the workspace's own volume, which in a
+/// CityHall deployment puts the decision on a non-technical end user (and shows
+/// them aoe's consent modal, exactly the kind of prompt CityHall client mode
+/// exists to remove). This is the deployment operator's answer instead.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TelemetryPolicy {
+    /// CityHall injects nothing: aoe's own consent flow reaches the user, and
+    /// nothing marks their consent as answered on their behalf.
+    #[default]
+    UserChoice,
+    /// Telemetry on for everyone. Enforced by running `aoe telemetry enable`
+    /// against the workspace's data before `aoe serve` starts, which is what
+    /// also records the consent as answered and so suppresses the modal.
+    ForceOn,
+    /// Telemetry off for everyone, through `DO_NOT_TRACK`, which aoe treats as
+    /// absolute: no sends, no install id, and no consent modal.
+    ForceOff,
+}
+
+/// Environment variable holding the deployment-level override.
+pub const TELEMETRY_POLICY_ENV: &str = "WORKSPACE_TELEMETRY_POLICY";
+
+/// The script [`TelemetryPolicy::wrap_command`] runs a force-on workspace
+/// through. A fixed constant with nothing interpolated into it, taking the real
+/// command through `"$0"` / `"$@"` so every argument stays a separate argv
+/// element and none of them is ever reparsed as shell source.
+///
+/// `&&`, not `;` or `|| true`: on an aoe too old for the subcommand the
+/// container must die rather than come up pretending the policy applied. `exec`
+/// so the shell is replaced and aoe remains the container's main process, with
+/// its signals and logs unchanged.
+const FORCE_ON_SCRIPT: &str = r#"aoe telemetry enable && exec "$0" "$@""#;
+
+impl TelemetryPolicy {
+    /// The stored / wire value. Also what a backend records as drift metadata,
+    /// so changing one of these strings would recreate every workspace once.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TelemetryPolicy::UserChoice => "user_choice",
+            TelemetryPolicy::ForceOn => "force_on",
+            TelemetryPolicy::ForceOff => "force_off",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "user_choice" => Some(TelemetryPolicy::UserChoice),
+            "force_on" => Some(TelemetryPolicy::ForceOn),
+            "force_off" => Some(TelemetryPolicy::ForceOff),
+            _ => None,
+        }
+    }
+
+    /// A stored value, read leniently. An unrecognized string (a policy a newer
+    /// CityHall wrote, a hand-edited row) reads as `UserChoice`: of the three
+    /// this is the one that touches nothing, so a value nobody here understands
+    /// cannot silently start forcing a decision on every user.
+    pub fn from_stored(raw: &str) -> Self {
+        TelemetryPolicy::parse(raw).unwrap_or_else(|| {
+            tracing::warn!(
+                policy = %raw,
+                "unknown stored telemetry policy, treating it as user_choice"
+            );
+            TelemetryPolicy::UserChoice
+        })
+    }
+
+    /// Variables to inject into the workspace environment for this policy.
+    ///
+    /// Owned by CityHall, never by the user: the agent-credential catalog is a
+    /// closed allowlist, so a credential form cannot supply `DO_NOT_TRACK` and
+    /// escape a force-on policy that way.
+    pub fn env_pairs(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            TelemetryPolicy::ForceOff => &[("DO_NOT_TRACK", "1")],
+            TelemetryPolicy::UserChoice | TelemetryPolicy::ForceOn => &[],
+        }
+    }
+
+    /// `command` as the container should actually run it.
+    ///
+    /// Only force-on rewrites anything, and it wraps rather than replaces, so
+    /// the image's own ENTRYPOINT still runs first (in the reference image that
+    /// is what relocates each agent's config onto the volume). Enforcing the
+    /// policy here rather than in the image means it also holds for an image
+    /// built before this feature, and for a third-party one; an image with no
+    /// shell fails loudly instead of ignoring the policy.
+    pub fn wrap_command(self, command: Vec<String>) -> Vec<String> {
+        if self != TelemetryPolicy::ForceOn {
+            return command;
+        }
+        let mut wrapped = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            FORCE_ON_SCRIPT.to_string(),
+        ];
+        wrapped.extend(command);
+        wrapped
+    }
+}
+
+/// The deployment-level policy override, or `None` when unset.
+///
+/// `Err` names the offending value: [`from_env`] fails CityHall's startup on it
+/// rather than falling back, because a typo in a deployment that means to force
+/// telemetry off must not quietly become "let the user choose".
+pub fn telemetry_policy_override() -> Result<Option<TelemetryPolicy>, String> {
+    let raw = std::env::var(TELEMETRY_POLICY_ENV).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    TelemetryPolicy::parse(raw).map(Some).ok_or_else(|| {
+        format!(
+            "invalid {TELEMETRY_POLICY_ENV} '{raw}' (expected user_choice, force_on, or force_off)"
+        )
+    })
 }
 
 /// How a workspace reaches its own config bundle.
@@ -110,6 +233,9 @@ pub trait Orchestrator: Send + Sync {
 /// provisioning registry it reports slow artifact jobs through. Invalid
 /// values fail CityHall startup instead of surfacing on first workspace use.
 pub fn from_env() -> Result<(Arc<dyn Orchestrator>, Arc<ProvisioningRegistry>), String> {
+    // Validated here so an unusable telemetry override is a startup failure,
+    // not a surprise on the first workspace start.
+    telemetry_policy_override()?;
     let registry = Arc::new(ProvisioningRegistry::default());
     let backend = std::env::var("WORKSPACE_BACKEND").unwrap_or_else(|_| "docker".to_string());
     let orchestrator: Arc<dyn Orchestrator> = match backend.as_str() {
@@ -338,6 +464,129 @@ mod tests {
             allowed_host_from_origin("http://localhost:3001"),
             "localhost:3001"
         );
+    }
+
+    #[test]
+    fn telemetry_policy_round_trips_and_rejects_anything_else() {
+        for policy in [
+            TelemetryPolicy::UserChoice,
+            TelemetryPolicy::ForceOn,
+            TelemetryPolicy::ForceOff,
+        ] {
+            assert_eq!(TelemetryPolicy::parse(policy.as_str()), Some(policy));
+        }
+        // What `WORKSPACE_TELEMETRY_POLICY` rejects at startup, rather than
+        // reading as "let the user choose" and undoing a deployment's force-off.
+        for raw in ["on", "off", "user", "true", "forceon", ""] {
+            assert_eq!(TelemetryPolicy::parse(raw), None, "{raw}");
+        }
+    }
+
+    /// The two behaviors layered on top of `parse`, and what the rest of the
+    /// feature leans on: an unset or blank variable means "no override" so the
+    /// stored setting decides, and a bad value is an error naming itself so
+    /// `from_env` can refuse to start rather than quietly serving `user_choice`
+    /// to a deployment that meant to force telemetry off.
+    #[test]
+    fn the_telemetry_override_is_optional_and_strict() {
+        let _guard = TelemetryEnvGuard::acquire();
+
+        for unset in ["", "   "] {
+            std::env::set_var(TELEMETRY_POLICY_ENV, unset);
+            assert_eq!(telemetry_policy_override(), Ok(None), "{unset:?}");
+        }
+        std::env::remove_var(TELEMETRY_POLICY_ENV);
+        assert_eq!(telemetry_policy_override(), Ok(None));
+
+        std::env::set_var(TELEMETRY_POLICY_ENV, " force_off ");
+        assert_eq!(
+            telemetry_policy_override(),
+            Ok(Some(TelemetryPolicy::ForceOff))
+        );
+
+        std::env::set_var(TELEMETRY_POLICY_ENV, "off");
+        let err = telemetry_policy_override().unwrap_err();
+        assert!(err.contains("off"), "must name the value: {err}");
+        assert!(err.contains(TELEMETRY_POLICY_ENV), "{err}");
+    }
+
+    /// Serializes the tests that write `WORKSPACE_TELEMETRY_POLICY` and restores
+    /// what was there, the same shape as `crypto::guard_key_env`. Restoring on
+    /// drop rather than at the end of a test body, because a panic unwinds past
+    /// cleanup written after it and the next test would read the leftovers.
+    struct TelemetryEnvGuard {
+        #[allow(dead_code)]
+        lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TelemetryEnvGuard {
+        fn acquire() -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            TelemetryEnvGuard {
+                lock,
+                previous: std::env::var_os(TELEMETRY_POLICY_ENV),
+            }
+        }
+    }
+
+    impl Drop for TelemetryEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(TELEMETRY_POLICY_ENV, value),
+                None => std::env::remove_var(TELEMETRY_POLICY_ENV),
+            }
+        }
+    }
+
+    /// A stored value is read leniently in the one safe direction: a policy this
+    /// build does not know cannot start forcing anything on users.
+    #[test]
+    fn an_unknown_stored_policy_reads_as_user_choice() {
+        assert_eq!(
+            TelemetryPolicy::from_stored("force_maybe"),
+            TelemetryPolicy::UserChoice
+        );
+        assert_eq!(
+            TelemetryPolicy::from_stored("force_off"),
+            TelemetryPolicy::ForceOff
+        );
+    }
+
+    #[test]
+    fn only_force_off_injects_do_not_track() {
+        assert_eq!(
+            TelemetryPolicy::ForceOff.env_pairs(),
+            &[("DO_NOT_TRACK", "1")]
+        );
+        assert!(TelemetryPolicy::ForceOn.env_pairs().is_empty());
+        assert!(TelemetryPolicy::UserChoice.env_pairs().is_empty());
+    }
+
+    /// The force-on wrapper must leave every `aoe serve` argument its own argv
+    /// element (nothing is interpolated into the script, so nothing an operator
+    /// configures is ever reparsed as shell source), and must not touch the
+    /// command for the other two policies.
+    #[test]
+    fn force_on_wraps_the_command_without_rewriting_its_arguments() {
+        let command: Vec<String> = ["aoe", "serve", "--allowed-host", "ws.example.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let wrapped = TelemetryPolicy::ForceOn.wrap_command(command.clone());
+        assert_eq!(wrapped[..2], ["sh".to_string(), "-c".to_string()]);
+        assert!(
+            wrapped[2].contains("aoe telemetry enable &&") && wrapped[2].contains(r#"exec "$0""#),
+            "{}",
+            wrapped[2]
+        );
+        assert_eq!(wrapped[3..], command[..]);
+
+        for policy in [TelemetryPolicy::UserChoice, TelemetryPolicy::ForceOff] {
+            assert_eq!(policy.wrap_command(command.clone()), command);
+        }
     }
 
     #[test]
