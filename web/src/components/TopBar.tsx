@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Boxes, ExternalLink, LogOut, Settings, Shield, User, Users } from "lucide-react";
+import { Boxes, ExternalLink, LayoutDashboard, LogOut, Settings, Shield, User, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api, can, type Me } from "../lib/api";
@@ -33,7 +33,13 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout: () => Promise<void>
       <div className="flex items-center gap-4">
         <span className="font-mono text-sm font-medium tracking-wider text-text-bright">CityHall</span>
         <nav className="flex items-center gap-1">
-          <NavLink to="/" end className={navLinkClass}>
+          {can(me, "dashboard.read") && (
+            <NavLink to="/dashboard" className={navLinkClass}>
+              <LayoutDashboard size={14} />
+              Dashboard
+            </NavLink>
+          )}
+          <NavLink to="/users" className={navLinkClass}>
             <Users size={14} />
             Users
           </NavLink>

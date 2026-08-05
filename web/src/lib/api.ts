@@ -117,6 +117,86 @@ export interface WorkspaceItem {
   provisioning: { message: string; failed: boolean } | null;
 }
 
+/// What the system figures describe. CityHall often runs in a container beside
+/// the workspaces it reports on, so the scope is shown rather than assumed.
+export type MetricScope = "host" | "cityhall_container";
+
+export interface DiskUsage {
+  path: string;
+  mount_point: string;
+  used_bytes: number;
+  total_bytes: number;
+}
+
+export interface SystemUsage {
+  scope: MetricScope;
+  cpu_percent: number;
+  cpu_count: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+  /// CityHall's own cgroup limit when it is narrower than the system's. Never a
+  /// replacement for the totals above.
+  cgroup_memory: { used_bytes: number; limit_bytes: number } | null;
+  /// Only set when SYSTEM_METRICS_DISK_PATH is configured.
+  disk: DiskUsage | null;
+}
+
+export interface WorkspaceUsage {
+  user_id: number;
+  /// Share of one CPU, so a container on two cores reads 200. Not clamped.
+  cpu_percent: number;
+  memory_bytes: number;
+  memory_limit_bytes: number | null;
+}
+
+export interface DashboardWorkspace {
+  user_id: number;
+  username: string;
+  status: "not_created" | "stopped" | "running" | "unknown";
+  effective_version: string | null;
+  running_version: string | null;
+  last_active_at: string | null;
+  provisioning: { message: string; failed: boolean } | null;
+}
+
+export interface DashboardSummary {
+  total_users: number;
+  running: number;
+  stopped: number;
+  not_created: number;
+  unknown: number;
+  provisioning: number;
+  usage_available: number;
+}
+
+export interface Dashboard {
+  /// Null until the sampler's first tick, which reads as "collecting".
+  sampled_at: string | null;
+  stale: boolean;
+  errors: string[];
+  system: SystemUsage | null;
+  /// False when the backend has no metrics source at all.
+  usage_supported: boolean;
+  usage: WorkspaceUsage[];
+  workspaces: DashboardWorkspace[];
+  summary: DashboardSummary;
+  versions: { version: string; count: number }[];
+}
+
+export interface DashboardLayoutItem {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface DashboardLayout {
+  schema_version: number;
+  items: DashboardLayoutItem[];
+  hidden: string[];
+}
+
 export interface MyWorkspace {
   status: "not_created" | "stopped" | "running" | "unknown";
   pinned_version: string | null;
@@ -335,6 +415,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(patch),
     }),
+  dashboard: () => request<Dashboard>("/dashboard"),
+  getDashboardLayout: () => request<{ layout: DashboardLayout | null }>("/me/dashboard-layout"),
+  saveDashboardLayout: (layout: DashboardLayout) =>
+    request<void>("/me/dashboard-layout", { method: "PUT", body: JSON.stringify(layout) }),
   listWorkspaces: () => request<WorkspaceItem[]>("/workspaces"),
   myWorkspace: () => request<MyWorkspace>("/workspaces/me"),
   startWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/start`, { method: "POST" }),

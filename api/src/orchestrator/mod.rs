@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::Serialize;
 
 /// Everything a backend needs to materialize a user's workspace.
 #[derive(Clone, Debug)]
@@ -182,6 +183,42 @@ pub struct BundleAccess {
     pub token: String,
 }
 
+/// Runtime state of every managed workspace, from one backend round-trip.
+///
+/// Deliberately carries no address. Resolving one costs an extra call per
+/// container (`docker port`) and only the proxy ever dials a workspace; every
+/// status *display* throws the address away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRuntime {
+    pub user_id: i32,
+    pub running: bool,
+    /// The version the runtime object was created with, when the backend
+    /// records one.
+    pub version: Option<String>,
+}
+
+/// Instantaneous resource usage of one workspace.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WorkspaceUsage {
+    pub user_id: i32,
+    /// Share of one CPU, so a container using two cores flat reports 200.
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
+    pub memory_limit_bytes: Option<u64>,
+}
+
+/// Whether a backend can report per-workspace usage at all.
+///
+/// A named enum rather than `Option<Vec<_>>`: "this backend has no metrics
+/// source" and "nothing is running right now" are different things to render,
+/// and `Some(vec![])` versus `None` reads as a mistake at the call site.
+/// Transient collection failures are neither, and stay an `Err`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UsageReport {
+    Unsupported,
+    Sampled(Vec<WorkspaceUsage>),
+}
+
 /// Runtime state of a workspace as reported by the backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceStatus {
@@ -238,6 +275,23 @@ pub trait Orchestrator: Send + Sync {
 
     /// Current runtime state.
     async fn status(&self, user_id: i32) -> Result<WorkspaceStatus, OrchestratorError>;
+
+    /// Runtime state of every managed workspace in ONE round-trip, for callers
+    /// that would otherwise call [`Orchestrator::status`] once per user.
+    ///
+    /// `None` means this backend has no batch path, and the caller should fall
+    /// back to that per-user loop. An optional capability rather than a
+    /// required method so a backend gains it when someone can actually test
+    /// the batch command against a live runtime, instead of shipping an
+    /// unverified translation of it.
+    async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {
+        Ok(None)
+    }
+
+    /// Per-workspace CPU and memory, when the backend has a metrics source.
+    async fn usage(&self) -> Result<UsageReport, OrchestratorError> {
+        Ok(UsageReport::Unsupported)
+    }
 }
 
 /// The backend selected by `WORKSPACE_BACKEND` (default `docker`), plus the
