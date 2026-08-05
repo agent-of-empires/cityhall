@@ -71,6 +71,10 @@ export function toggleAgent(selected: string[], catalog: AvailableAgent[], name:
 /// save; `section` only picks which fields it renders.
 export function WorkspaceSettingsSection({ section }: { section: "defaults" | "advanced" }) {
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Saving sends every field, so until the first read lands the form holds
+  // defaults (no image template, no agents, user_choice) that would overwrite a
+  // real deployment's settings on an eager click.
+  const [loaded, setLoaded] = useState(false);
 
   const [imageTemplate, setImageTemplate] = useState("");
   const [defaultVersion, setDefaultVersion] = useState("");
@@ -105,6 +109,7 @@ export function WorkspaceSettingsSection({ section }: { section: "defaults" | "a
   const load = useCallback(async () => {
     try {
       apply(await api.getWorkspaceSettings());
+      setLoaded(true);
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof ApiError ? e.message : "could not load workspace settings");
@@ -176,7 +181,7 @@ export function WorkspaceSettingsSection({ section }: { section: "defaults" | "a
             {saved && <p className="text-sm text-running">Settings saved.</p>}
 
             <div className="flex justify-end">
-              <Button type="submit" variant="primary" disabled={saving}>
+              <Button type="submit" variant="primary" disabled={saving || !loaded}>
                 {saving ? "Saving..." : "Save settings"}
               </Button>
             </div>
@@ -257,7 +262,7 @@ export function WorkspaceSettingsSection({ section }: { section: "defaults" | "a
           {saved && <p className="text-sm text-running">Settings saved.</p>}
 
           <div className="flex justify-end">
-            <Button type="submit" variant="primary" disabled={saving}>
+            <Button type="submit" variant="primary" disabled={saving || !loaded}>
               {saving ? "Saving..." : "Save settings"}
             </Button>
           </div>
