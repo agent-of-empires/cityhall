@@ -282,6 +282,7 @@ fi
 
 exec "$@"
 SH
+
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Installs the agents named in CITYHALL_AGENTS. Runs detached from the
@@ -373,6 +374,7 @@ for agent in $CITYHALL_AGENTS; do
     done_already "$agent" || install_agent "$agent"
 done
 SH
+
 RUN chmod +x /usr/local/bin/provision-agents.sh
 
 USER aoe
