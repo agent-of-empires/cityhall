@@ -237,6 +237,9 @@ mod tests {
         assert!(lookup("LD_PRELOAD").is_none());
         assert!(lookup("HOME").is_none());
         assert!(lookup("AOE_CITYHALL_BUNDLE_TOKEN").is_none());
+        // Storable would mean a user could choose what their own workspace
+        // installs at boot, which is the operator's setting, not theirs.
+        assert!(lookup(crate::agents::ENV_VAR).is_none());
         // Case-sensitive, so a lowercase spelling is not a way in.
         assert!(lookup("anthropic_api_key").is_none());
     }

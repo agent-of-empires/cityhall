@@ -20,6 +20,10 @@ pub struct Model {
     /// one instead of failing the whole row's deserialization.
     pub telemetry_policy: String,
     pub updated_at: DateTimeUtc,
+    /// Coding agents a workspace should arrive with, as the comma-joined
+    /// canonical form produced by `crate::agents::canonicalize`. Empty means
+    /// users install their own, which is the behaviour without this setting.
+    pub agents: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

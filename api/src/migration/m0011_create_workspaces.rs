@@ -81,4 +81,6 @@ pub enum WorkspaceSettings {
     UpdatedAt,
     /// Added by m0015; declared here so the iden stays with its table.
     TelemetryPolicy,
+    /// Added by m0016; declared here so the iden stays with its table.
+    Agents,
 }

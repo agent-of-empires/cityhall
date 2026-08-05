@@ -1,4 +1,5 @@
 mod agent_credentials;
+mod agents;
 mod auth;
 mod cli;
 mod crypto;

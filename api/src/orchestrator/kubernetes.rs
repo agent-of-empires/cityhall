@@ -349,6 +349,14 @@ fn render_manifests(
         "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
     });
 
+    // Which coding agents to install is not a secret, so it goes straight on the
+    // container rather than into the per-user Secret the credentials use. Only
+    // emitted when something is configured, so a pod template without the
+    // feature in use is byte-identical to what it was before.
+    if !spec.agents.is_empty() {
+        container["env"] = json!([{ "name": crate::agents::ENV_VAR, "value": spec.agents }]);
+    }
+
     let env_values = env_values(spec);
     let mut items = vec![
         json!({
@@ -402,6 +410,14 @@ fn render_manifests(
     // every pod in the namespace for a setting nobody has touched yet.
     if spec.telemetry != TelemetryPolicy::UserChoice {
         annotations["cityhall.workspace/telemetry-policy"] = json!(spec.telemetry.as_str());
+    }
+    // The agent set already changes the pod template through the container's
+    // `env` above, so this is not what makes a change roll. It is here so the
+    // applied set is readable on the Deployment without diffing container
+    // environments, the way the version annotation is. Written only when a set is
+    // configured, for the same reason the telemetry annotation is.
+    if !spec.agents.is_empty() {
+        annotations["cityhall.workspace/agents"] = json!(spec.agents);
     }
 
     items.push(json!({
@@ -490,6 +506,7 @@ mod tests {
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
+            agents: String::new(),
         }
     }
 
@@ -621,6 +638,13 @@ mod tests {
         assert_eq!(container["args"][1], "serve");
         // Nothing to inject: no envFrom referencing a Secret that does not exist.
         assert!(container.get("envFrom").is_none());
+        // No agents configured: neither the env nor the annotation is written, so
+        // a pod template for an install not using the feature is byte-identical
+        // to what it was before the feature existed and no pod rolls on upgrade.
+        assert!(container.get("env").is_none());
+        assert!(dep["spec"]["template"]["metadata"]["annotations"]
+            .get("cityhall.workspace/agents")
+            .is_none());
         assert_eq!(
             container["volumeMounts"][0]["mountPath"],
             "/home/aoe/.config/agent-of-empires"
@@ -747,6 +771,31 @@ mod tests {
             .find(|i| i["kind"] == "Secret")
             .expect("force-off has a variable to inject, so a Secret is emitted");
         assert_eq!(secret["stringData"]["DO_NOT_TRACK"], "1");
+    }
+
+    /// The agent set is not a credential: it belongs on the container, not in
+    /// the per-user Secret. It still has to change the pod template, or an
+    /// admin's change would apply to nothing that already exists.
+    #[test]
+    fn the_agent_set_is_plain_pod_environment_and_rolls_the_deployment() {
+        let spec = WorkspaceSpec {
+            agents: "claude,codex".to_string(),
+            ..spec()
+        };
+        let m = render_manifests(&spec, "cityhall", "5Gi", None);
+        let items = m["items"].as_array().unwrap();
+        // Agents alone are not a reason to emit a Secret.
+        assert!(!items.iter().any(|i| i["kind"] == "Secret"));
+
+        let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
+        let container = &dep["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(container["env"][0]["name"], "CITYHALL_AGENTS");
+        assert_eq!(container["env"][0]["value"], "claude,codex");
+        assert!(container.get("envFrom").is_none());
+        assert_eq!(
+            dep["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace/agents"],
+            "claude,codex"
+        );
     }
 
     #[test]

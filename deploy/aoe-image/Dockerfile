@@ -27,8 +27,13 @@
 #
 # The image ships no coding agent. A user installs the one they want from
 # inside their workspace, and `entrypoint.sh` keeps that install and the
-# agent's login on the volume so both survive a container recreate. An operator
-# who wants a fixed set builds a derived image; see docs/workspaces.md.
+# agent's login on the volume so both survive a container recreate.
+#
+# An operator can instead name a set in CityHall's workspace settings, which
+# arrives as `CITYHALL_AGENTS` and is installed at boot by
+# `provision-agents.sh` below. That still installs at run time; an operator who
+# wants the set baked in, with no boot-time network at all, builds a derived
+# image. See docs/workspaces.md.
 
 # Which stage supplies /out/aoe: `release` downloads a published tarball,
 # `git` compiles a commit from source. Declared before the first FROM so a
@@ -160,8 +165,12 @@ FROM aoe-${AOE_SOURCE} AS aoe-binary
 # gemini, pi). aoe's floor is Node 20 and its own container image uses 22.
 FROM node:22-bookworm-slim
 
+# tini is PID 1 so a coding-agent install kicked off at boot has something to
+# reap it. It is deliberately orphaned before aoe starts (see
+# `provision-agents.sh` below), and an orphan is adopted by PID 1, which aoe is
+# not equipped to be.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tmux \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tini tmux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=aoe-binary /out/aoe /usr/local/bin/aoe
@@ -239,9 +248,134 @@ link npm           .npm-global           dir
 link local-bin     .local/bin            dir
 link opencode-home .opencode             dir
 
+# Install the coding agents CityHall was told this workspace should arrive with,
+# if any. Deliberately not in the foreground: CityHall gives a workspace 15
+# seconds to answer HTTP before it calls the start failed, and an `npm install
+# -g` takes minutes, so installing here before `exec` would make every first
+# start fail. Backgrounded, the workspace is usable immediately and the agents
+# appear shortly after.
+#
+# The extra subshell is what makes it safe to leave running. `cmd &` alone would
+# leave the installer a child of this shell, whose pid becomes aoe's after the
+# `exec` below, and aoe does not reap children. Backgrounding inside a subshell
+# that exits immediately orphans the installer, so PID 1 adopts it, and PID 1 is
+# tini.
+#
+# The environment is scrubbed rather than inherited. These installers are
+# third-party code, and this container's environment holds the user's provider
+# API keys and the bearer token that fetches their whole CityHall config bundle,
+# including their decrypted git token. None of that is needed to install a
+# package.
+if [ -n "${CITYHALL_AGENTS:-}" ]; then
+    mkdir -p "$STORE"
+    (
+        env -i \
+            HOME="$HOME" \
+            PATH="$PATH" \
+            NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-}" \
+            CITYHALL_AGENTS="$CITYHALL_AGENTS" \
+            STORE="$STORE" \
+            /usr/local/bin/provision-agents.sh \
+            </dev/null >>"$STORE/provision.log" 2>&1 &
+    )
+fi
+
 exec "$@"
 SH
+
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Installs the agents named in CITYHALL_AGENTS. Runs detached from the
+# entrypoint, so nothing here can delay or fail the workspace's start.
+#
+# A name is never interpolated into a command: the `case` below is the whole
+# name-to-command map, and a name that matches no branch installs nothing. That
+# is what makes it safe for the set to come from a CityHall setting.
+#
+# Success is recorded in a marker file on the volume, and only after the binary
+# is actually on PATH. Two things follow. An install that was cut short (an idle
+# stop mid-download) leaves no marker and is retried on the next start, where
+# checking the binary alone could see a bin symlink over an unusable tree and
+# skip it forever. And an agent a user later removes stays removed: this
+# installs a default once, it does not police what the user does afterwards.
+COPY <<"SH" /usr/local/bin/provision-agents.sh
+#!/bin/sh
+# No `set -e`: one agent failing to install must not skip the rest, and must
+# never be the reason a workspace is short of the others.
+
+MARKERS="$STORE/provisioned"
+
+done_already() {
+    [ -f "$MARKERS" ] && grep -qx "$1" "$MARKERS"
+}
+
+# Bounded so a hung download, or an installer that decides to prompt on a
+# terminal that is not there, cannot sit in the container for its whole life.
+run() {
+    timeout 10m sh -c "$1" </dev/null
+}
+
+install_agent() {
+    case "$1" in
+    claude)
+        binary=claude-agent-acp
+        command='npm install -g @agentclientprotocol/claude-agent-acp@latest'
+        ;;
+    codex)
+        binary=codex-acp
+        command='npm install -g @agentclientprotocol/codex-acp@latest'
+        ;;
+    gemini)
+        binary=gemini
+        command='npm install -g @google/gemini-cli'
+        ;;
+    opencode)
+        binary=opencode
+        # Downloaded and then run, rather than piped into a shell: a pipe hides
+        # whether the download itself failed, so a truncated script or an error
+        # page would be executed as an installer. It is still a script fetched
+        # at install time, which is what upstream publishes.
+        #
+        # bash, not sh: the script upstream serves uses `set -o pipefail`, which
+        # dash rejects, so running it with /bin/sh fails on its second line.
+        command='curl -fsSL -o /tmp/opencode-install.sh https://opencode.ai/install \
+                 && bash /tmp/opencode-install.sh; rc=$?; rm -f /tmp/opencode-install.sh; exit $rc'
+        ;;
+    *)
+        echo "unknown coding agent '$1', skipping it"
+        return 0
+        ;;
+    esac
+
+    if command -v "$binary" >/dev/null 2>&1; then
+        # Already there, from an earlier boot, a derived image, or the user's own
+        # install. Recorded so a later removal is not undone on the next start.
+        echo "$1 is already installed"
+        echo "$1" >>"$MARKERS"
+        return 0
+    fi
+
+    echo "installing $1"
+    if ! run "$command"; then
+        echo "could not install $1; the workspace is running without it"
+        return 0
+    fi
+    if ! command -v "$binary" >/dev/null 2>&1; then
+        echo "installing $1 reported success but left no $binary on PATH"
+        return 0
+    fi
+    echo "$1" >>"$MARKERS"
+    echo "installed $1"
+}
+
+echo "--- $(date -u '+%Y-%m-%dT%H:%M:%SZ') provisioning: $CITYHALL_AGENTS"
+IFS=,
+for agent in $CITYHALL_AGENTS; do
+    done_already "$agent" || install_agent "$agent"
+done
+SH
+
+RUN chmod +x /usr/local/bin/provision-agents.sh
 
 USER aoe
 ENV HOME=/home/aoe
@@ -253,6 +387,10 @@ ENV PATH=/home/aoe/.npm-global/bin:/home/aoe/.local/bin:/home/aoe/.opencode/bin:
 
 # CityHall passes the full `aoe serve ...` command as arguments, so the
 # entrypoint runs first and then execs it.
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+#
+# tini is in front so PID 1 reaps the orphaned agent install; `-g` sends a stop
+# signal to the whole process group rather than aoe alone, so an install still
+# running is torn down with the container instead of being left to race it.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint.sh"]
 
 EXPOSE 8080

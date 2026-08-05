@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { effectiveTelemetryPolicy, isKnownTelemetryPolicy, telemetryOverrideNote } from "./WorkspaceSettings";
+import {
+  effectiveTelemetryPolicy,
+  isKnownTelemetryPolicy,
+  telemetryOverrideNote,
+  toggleAgent,
+} from "./WorkspaceSettings";
+import type { AvailableAgent } from "../lib/api";
+
+const CATALOG: AvailableAgent[] = [
+  { name: "claude", label: "Claude" },
+  { name: "codex", label: "Codex" },
+  { name: "gemini", label: "Gemini" },
+  { name: "opencode", label: "OpenCode" },
+];
 
 // There is no @testing-library/react in this repo, so this covers the one
 // non-obvious predicate behind the settings form: an environment-pinned policy
@@ -40,5 +53,34 @@ describe("effectiveTelemetryPolicy", () => {
     expect(effectiveTelemetryPolicy("force_maybe", null)).toBe("user_choice");
     expect(isKnownTelemetryPolicy("force_maybe")).toBe(false);
     expect(isKnownTelemetryPolicy("force_off")).toBe(true);
+  });
+});
+
+// There is no @testing-library/react in this repo, so this covers the one piece
+// of logic behind the checkbox list rather than rendering it.
+describe("toggleAgent", () => {
+  it("adds an agent", () => {
+    expect(toggleAgent([], CATALOG, "codex", true)).toEqual(["codex"]);
+  });
+
+  it("removes an agent", () => {
+    expect(toggleAgent(["claude", "codex"], CATALOG, "claude", false)).toEqual(["codex"]);
+  });
+
+  // The server stores a canonical set, so a selection sent in a different order
+  // would read as a change and recreate every workspace for nothing.
+  it("keeps the selection in catalog order however it was built", () => {
+    let selected = toggleAgent([], CATALOG, "opencode", true);
+    selected = toggleAgent(selected, CATALOG, "claude", true);
+    selected = toggleAgent(selected, CATALOG, "gemini", true);
+    expect(selected).toEqual(["claude", "gemini", "opencode"]);
+  });
+
+  it("does not duplicate an agent that is already selected", () => {
+    expect(toggleAgent(["claude"], CATALOG, "claude", true)).toEqual(["claude"]);
+  });
+
+  it("unticking the last one clears the selection", () => {
+    expect(toggleAgent(["claude"], CATALOG, "claude", false)).toEqual([]);
   });
 });

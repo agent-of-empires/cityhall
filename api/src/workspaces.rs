@@ -30,6 +30,7 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
             idle_stop_minutes: 30,
             telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
             updated_at: Utc::now(),
+            agents: String::new(),
         }))
 }
 
@@ -85,6 +86,7 @@ async fn apply_seeded_version(db: &DatabaseConnection, version: String) -> Resul
         idle_stop_minutes: Set(defaults.idle_stop_minutes),
         telemetry_policy: Set(defaults.telemetry_policy),
         updated_at: Set(Utc::now()),
+        agents: Set(defaults.agents),
     }
     .insert(db)
     .await?;
@@ -298,6 +300,10 @@ pub fn build_spec(
         bundle,
         agent_env: crate::agent_credentials::AgentEnv::default(),
         telemetry: effective_telemetry_policy(settings),
+        // Already canonical on the way in, so it is passed through rather than
+        // re-derived: the backends compare this exact string against what a
+        // running workspace was created with.
+        agents: settings.agents.clone(),
     })
 }
 
@@ -530,6 +536,7 @@ mod tests {
             idle_stop_minutes: 30,
             telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
             updated_at: Utc::now(),
+            agents: String::new(),
         }
     }
 
@@ -555,6 +562,7 @@ mod tests {
             idle_stop_minutes: Set(30),
             telemetry_policy: Set(TelemetryPolicy::default().as_str().to_string()),
             updated_at: Set(Utc::now()),
+            agents: Set(String::new()),
         }
         .insert(&db)
         .await
@@ -592,6 +600,27 @@ mod tests {
         let s = settings(&db).await.unwrap();
         assert_eq!(s.image_template, "cityhall/aoe:{version}");
         assert_eq!(s.idle_stop_minutes, 30);
+        // No agents by default: an install that has never configured this keeps
+        // shipping a workspace the user installs their own agent into.
+        assert_eq!(s.agents, "");
+    }
+
+    /// The workspace has to be told which agents to arrive with, and it is told
+    /// through the spec, so a settings value that stopped reaching it here would
+    /// silently turn the whole feature off.
+    #[tokio::test]
+    async fn spec_carries_the_configured_agents() {
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        assert_eq!(build_spec(&cfg(Some("v1.0.0")), &row).unwrap().agents, "");
+
+        let mut with_agents = cfg(Some("v1.0.0"));
+        with_agents.agents = "claude,codex".to_string();
+        assert_eq!(
+            build_spec(&with_agents, &row).unwrap().agents,
+            "claude,codex"
+        );
     }
 
     #[tokio::test]

@@ -650,6 +650,7 @@ mod tests {
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
+            agents: String::new(),
         }
     }
 
@@ -773,6 +774,7 @@ mod tests {
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
+            agents: String::new(),
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.

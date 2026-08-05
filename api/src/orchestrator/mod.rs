@@ -33,6 +33,17 @@ pub struct WorkspaceSpec {
     pub agent_env: crate::agent_credentials::AgentEnv,
     /// The deployment's telemetry policy, applied at every start.
     pub telemetry: TelemetryPolicy,
+    /// Coding agents the workspace should arrive with, in the canonical
+    /// comma-joined form `crate::agents` produces. Delivered to the workspace as
+    /// an environment variable the reference image's entrypoint acts on, and
+    /// recorded on the runtime object so a change to the set is detectable as
+    /// drift. Empty means the workspace installs nothing and the user installs
+    /// their own, which is the behaviour before this existed.
+    ///
+    /// A plain `String` rather than a `Vec`: it is one value to compare against
+    /// what a running workspace was created with, and splitting it only to join
+    /// it again in every backend would be two representations that can disagree.
+    pub agents: String,
 }
 
 /// Who decides whether a workspace sends aoe telemetry (#40).
