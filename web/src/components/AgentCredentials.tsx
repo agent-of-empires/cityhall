@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { ApiError, type AgentCredential, type AgentCredentials as AgentCredentialsData } from "../lib/api";
-import { Button, ErrorText, Input } from "./ui";
+import { Banner, Button, Card, ErrorText, Input, SectionLabel } from "./ui";
 
 /// A blank value is never "keep existing" here, unlike the git credential form:
 /// the server rejects an empty value, so the save control simply refuses to
@@ -45,9 +45,9 @@ export function AgentCredentialsEditor({
   }, [refresh]);
 
   return (
-    <div className="space-y-4 rounded-lg border border-surface-700 p-5">
-      <h3 className="font-mono text-xs uppercase tracking-wider text-text-muted">Agent credentials</h3>
-      <p className="text-sm text-text-secondary">
+    <Card className="space-y-4">
+      <SectionLabel>Agent credentials</SectionLabel>
+      <p className="text-sm text-text-dim">
         Forwarded into the workspace so agents running there can authenticate. A change takes effect the next time the
         workspace restarts.
       </p>
@@ -55,10 +55,10 @@ export function AgentCredentialsEditor({
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
       {data && !data.secret_key_available && (
-        <div className="rounded-md border border-status-waiting/40 bg-surface-850 px-4 py-3 text-sm text-status-waiting">
-          <code className="text-text-primary">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte
-          key) before saving an agent credential, or the save will be rejected.
-        </div>
+        <Banner tone="warning">
+          <code className="font-semibold">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte key)
+          before saving an agent credential, or the save will be rejected.
+        </Banner>
       )}
 
       {data && (
@@ -74,7 +74,7 @@ export function AgentCredentialsEditor({
           ))}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -125,13 +125,13 @@ function CredentialRow({
   }
 
   return (
-    <div className="space-y-2 border-b border-surface-800 pb-4 last:border-0 last:pb-0">
-      <div className="text-sm text-text-primary">
-        {credential.label} <code className="text-xs text-text-muted">{credential.env_var}</code>
+    <div className="space-y-2 border-b border-border-soft pb-4 last:border-0 last:pb-0">
+      <div className="text-sm text-text">
+        {credential.label} <code className="text-xs text-text-hint">{credential.env_var}</code>
       </div>
 
       {credential.limitation && (
-        <p className="flex items-start gap-1.5 text-sm text-status-waiting">
+        <p className="flex items-start gap-1.5 text-sm text-waiting">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           {credential.limitation}
         </p>
@@ -169,7 +169,7 @@ function CredentialRow({
       </div>
 
       {error && <ErrorText>{error}</ErrorText>}
-      {saved && <p className="text-sm text-status-running">Saved.</p>}
+      {saved && <p className="text-sm text-running">Saved.</p>}
     </div>
   );
 }

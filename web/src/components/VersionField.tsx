@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Input, Select } from "./ui";
+import { Checkbox, Input, Select } from "./ui";
 
 export type VersionMode = "release" | "custom";
 
@@ -48,15 +48,7 @@ export function VersionField({
 
   return (
     <div className={className}>
-      <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-        <input
-          type="checkbox"
-          checked={mode === "custom"}
-          onChange={(e) => toggleCustom(e.target.checked)}
-          className="h-4 w-4 accent-brand-500"
-        />
-        custom version
-      </label>
+      <Checkbox checked={mode === "custom"} onChange={toggleCustom} label="custom version" />
       <div className="mt-1.5">
         {mode === "release" ? (
           versions.length > 0 ? (
@@ -79,7 +71,7 @@ export function VersionField({
         )}
       </div>
       {mode === "custom" && (
-        <p className="mt-1 text-xs text-text-muted">
+        <p className="mt-1 text-xs text-text-hint">
           Substituted into the image template; an image tagged with this version has to already exist or be buildable.
         </p>
       )}

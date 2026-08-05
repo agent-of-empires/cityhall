@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#78350f"></stop><stop offset="100%" stop-color="#451a03"></stop></linearGradient>
+    <linearGradient id="mid" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#92400e"></stop><stop offset="100%" stop-color="#78350f"></stop></linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f59e0b"></stop><stop offset="100%" stop-color="#d97706"></stop></linearGradient>
+    <linearGradient id="tb" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fbbf24"></stop><stop offset="100%" stop-color="#f59e0b"></stop></linearGradient>
+  </defs>
+
+  <rect x="62.5" y="6" width="3" height="13" rx="1.5" fill="#a8a29e"></rect>
+  <path d="M65.5 7.5 L80 11 L65.5 14.5 Z" fill="url(#tb)"></path>
+  <path d="M40 30 L64 18 L88 30 Z" fill="url(#tb)"></path>
+  <rect x="44" y="30" width="40" height="24" rx="4.5" fill="url(#front)"></rect>
+  <rect x="44" y="30" width="40" height="8" rx="4.5" fill="url(#tb)"></rect>
+  <rect x="44" y="34" width="40" height="4" fill="url(#tb)"></rect>
+  <circle cx="50" cy="34" r="1.7" fill="#7c2d12" opacity="0.55"></circle><circle cx="56" cy="34" r="1.7" fill="#7c2d12" opacity="0.55"></circle><circle cx="62" cy="34" r="1.7" fill="#7c2d12" opacity="0.55"></circle>
+  <text x="53" y="51" font-family="&#39;Courier New&#39;,monospace" font-size="13" font-weight="bold" fill="#fef3c7" opacity="0.9">$</text>
+  <rect x="65" y="43" width="5" height="8" rx="1.2" fill="#fef3c7" opacity="0.85"></rect>
+  <rect x="32" y="58" width="64" height="24" rx="4.5" fill="url(#mid)"></rect>
+  <rect x="32" y="58" width="64" height="8" rx="4.5" fill="url(#front)" opacity="0.9"></rect>
+  <rect x="32" y="62" width="64" height="4" fill="url(#front)" opacity="0.9"></rect>
+  <g fill="#fbbf24" opacity="0.55"><rect x="39" y="70" width="8" height="8" rx="1.5"></rect><rect x="53" y="70" width="8" height="8" rx="1.5"></rect><rect x="67" y="70" width="8" height="8" rx="1.5"></rect><rect x="81" y="70" width="8" height="8" rx="1.5"></rect></g>
+  <rect x="20" y="86" width="88" height="24" rx="4.5" fill="url(#back)"></rect>
+  <rect x="20" y="86" width="88" height="8" rx="4.5" fill="url(#mid)"></rect>
+  <rect x="20" y="90" width="88" height="4" fill="url(#mid)"></rect>
+  <g fill="#f59e0b" opacity="0.5"><rect x="32" y="98" width="8" height="8" rx="1.5"></rect><rect x="46" y="98" width="8" height="8" rx="1.5"></rect><rect x="60" y="98" width="8" height="8" rx="1.5"></rect><rect x="74" y="98" width="8" height="8" rx="1.5"></rect><rect x="88" y="98" width="8" height="8" rx="1.5"></rect></g>
+  <rect x="14" y="112" width="100" height="6" rx="2" fill="url(#mid)" opacity="0.7"></rect>
+  <rect x="8" y="118" width="112" height="6" rx="2" fill="url(#back)" opacity="0.55"></rect>
+</svg>

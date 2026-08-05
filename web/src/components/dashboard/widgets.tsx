@@ -1,20 +1,8 @@
 import clsx from "clsx";
-import type { Dashboard, DashboardWorkspace, MetricScope, WorkspaceUsage } from "../../lib/api";
+import type { Dashboard, MetricScope, WorkspaceUsage } from "../../lib/api";
 import { formatBytes, formatPercent } from "../../lib/dashboardLayout";
-
-const STATUS_STYLES: Record<DashboardWorkspace["status"], string> = {
-  running: "text-status-running",
-  stopped: "text-status-waiting",
-  not_created: "text-text-muted",
-  unknown: "text-status-error",
-};
-
-const STATUS_LABELS: Record<DashboardWorkspace["status"], string> = {
-  running: "running",
-  stopped: "stopped",
-  not_created: "not created",
-  unknown: "unknown",
-};
+import { Meter, SectionLabel, StatusText, tableHeadClass, thClass, trClass, tdClass } from "../ui";
+import { WORKSPACE_STATUS_META } from "../../lib/workspaceStatus";
 
 /// What the system figures actually measure. Shown next to them because
 /// CityHall usually runs in a container beside the workspaces it reports on,
@@ -25,32 +13,17 @@ const SCOPE_LABELS: Record<MetricScope, string> = {
   cityhall_container: "System visible to CityHall",
 };
 
-/// `danger` is opt-in because "nearly full" only means trouble for a capacity
-/// bar. A version holding the whole fleet is the normal end state of a rollout,
-/// and colouring that red reads as an alert about nothing.
-function Meter({ used, total, danger = false }: { used: number; total: number; danger?: boolean }) {
-  const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-  return (
-    <div className="h-1.5 overflow-hidden rounded-full bg-surface-800">
-      <div
-        className={clsx("h-full rounded-full", danger && percent > 90 ? "bg-status-error" : "bg-brand-500")}
-        style={{ width: `${percent}%` }}
-      />
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <p className="font-mono text-xs uppercase tracking-wider text-text-muted">{label}</p>
-      <p className="text-lg text-text-primary">{value}</p>
+      <SectionLabel>{label}</SectionLabel>
+      <p className="mt-1 text-2xl font-light tracking-tight text-text-bright">{value}</p>
     </div>
   );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-text-muted">{children}</p>;
+  return <p className="text-sm text-text-dim">{children}</p>;
 }
 
 export function SystemUsageWidget({ data }: { data: Dashboard }) {
@@ -58,35 +31,46 @@ export function SystemUsageWidget({ data }: { data: Dashboard }) {
   const { scope, cpu_percent, cpu_count, memory_used_bytes, memory_total_bytes, cgroup_memory, disk } = data.system;
   return (
     <div className="space-y-4">
-      <p className="text-xs text-text-muted">
+      <p className="text-xs text-text-dim">
         {SCOPE_LABELS[scope]}
         {scope === "cityhall_container" && " (not necessarily the workspace host)"}
       </p>
       <div className="grid grid-cols-2 gap-4">
         <Stat label={`CPU (${cpu_count} cores)`} value={formatPercent(cpu_percent)} />
-        <Stat label="Memory" value={`${formatBytes(memory_used_bytes)} / ${formatBytes(memory_total_bytes)}`} />
+        <Stat
+          label="Memory"
+          value={
+            <>
+              {formatBytes(memory_used_bytes)}{" "}
+              <span className="text-base font-normal text-text-dim">/ {formatBytes(memory_total_bytes)}</span>
+            </>
+          }
+        />
       </div>
-      <Meter used={memory_used_bytes} total={memory_total_bytes} danger />
+      <Meter percent={memory_total_bytes > 0 ? (memory_used_bytes / memory_total_bytes) * 100 : 0} danger />
       {cgroup_memory && (
         <div className="space-y-1.5">
-          <p className="font-mono text-xs uppercase tracking-wider text-text-muted">CityHall memory limit</p>
-          <p className="text-sm text-text-secondary">
+          <SectionLabel>CityHall memory limit</SectionLabel>
+          <p className="text-sm text-text">
             {formatBytes(cgroup_memory.used_bytes)} / {formatBytes(cgroup_memory.limit_bytes)}
           </p>
-          <Meter used={cgroup_memory.used_bytes} total={cgroup_memory.limit_bytes} danger />
+          <Meter
+            percent={cgroup_memory.limit_bytes > 0 ? (cgroup_memory.used_bytes / cgroup_memory.limit_bytes) * 100 : 0}
+            danger
+          />
         </div>
       )}
       {disk ? (
         <div className="space-y-1.5">
-          <p className="font-mono text-xs uppercase tracking-wider text-text-muted">Disk {disk.mount_point}</p>
-          <p className="text-sm text-text-secondary">
+          <SectionLabel>Disk {disk.mount_point}</SectionLabel>
+          <p className="text-sm text-text">
             {formatBytes(disk.used_bytes)} / {formatBytes(disk.total_bytes)}
           </p>
-          <Meter used={disk.used_bytes} total={disk.total_bytes} danger />
+          <Meter percent={disk.total_bytes > 0 ? (disk.used_bytes / disk.total_bytes) * 100 : 0} danger />
         </div>
       ) : (
-        <p className="text-xs text-text-muted">
-          Set <code className="text-text-secondary">SYSTEM_METRICS_DISK_PATH</code> to report a filesystem.
+        <p className="text-xs text-text-hint">
+          Set <span className="font-mono text-text-dim">SYSTEM_METRICS_DISK_PATH</span> to report a filesystem.
         </p>
       )}
     </div>
@@ -96,13 +80,13 @@ export function SystemUsageWidget({ data }: { data: Dashboard }) {
 export function FleetStatusWidget({ data }: { data: Dashboard }) {
   const { summary } = data;
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <Stat label="Running" value={String(summary.running)} />
+    <div className="grid grid-cols-3 gap-4">
+      <Stat label="Running" value={<span className="text-running">{summary.running}</span>} />
       <Stat label="Stopped" value={String(summary.stopped)} />
-      <Stat label="Not created" value={String(summary.not_created)} />
-      <Stat label="Unknown" value={String(summary.unknown)} />
+      <Stat label="Not created" value={<span className="text-text-dim">{summary.not_created}</span>} />
       <Stat label="Users" value={String(summary.total_users)} />
-      <Stat label="Provisioning" value={String(summary.provisioning)} />
+      <Stat label="Provisioning" value={<span className="text-text-dim">{summary.provisioning}</span>} />
+      <Stat label="Errors" value={<span className="text-text-dim">{summary.unknown}</span>} />
     </div>
   );
 }
@@ -113,51 +97,59 @@ export function ContainersWidget({ data }: { data: Dashboard }) {
   return (
     <div className="space-y-2">
       {!data.usage_supported && (
-        <p className="text-xs text-text-muted">Resource usage is not available on this workspace backend.</p>
+        <p className="text-xs text-text-hint">Resource usage is not available on this workspace backend.</p>
       )}
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-surface-700 text-left font-mono text-xs uppercase tracking-wider text-text-muted">
-            <th className="py-2 pr-4 font-medium">User</th>
-            <th className="py-2 pr-4 font-medium">Status</th>
-            <th className="py-2 pr-4 font-medium">Version</th>
-            {data.usage_supported && <th className="py-2 pr-4 text-right font-medium">CPU</th>}
-            {data.usage_supported && <th className="py-2 text-right font-medium">Memory</th>}
+          <tr className={tableHeadClass}>
+            <th className={thClass}>User</th>
+            <th className={thClass}>Status</th>
+            <th className={thClass}>Version</th>
+            {data.usage_supported && <th className={clsx(thClass, "text-right")}>CPU</th>}
+            {data.usage_supported && <th className={clsx(thClass, "text-right")}>Memory</th>}
           </tr>
         </thead>
         <tbody>
           {data.workspaces.map((w) => {
             const u = usage.get(w.user_id);
             return (
-              <tr key={w.user_id} className="border-b border-surface-800 last:border-0">
-                <td className="py-2 pr-4 text-text-primary">{w.username}</td>
-                <td className="py-2 pr-4">
+              <tr key={w.user_id} className={trClass}>
+                <td className={clsx(tdClass, "text-text-bright")}>{w.username}</td>
+                <td className={tdClass}>
                   {w.provisioning ? (
-                    <span
-                      className={w.provisioning.failed ? "text-status-error" : "text-status-waiting"}
+                    <StatusText
+                      tone={w.provisioning.failed ? "error" : "waiting"}
+                      glyph={w.provisioning.failed ? "✕" : "◐"}
                       title={w.provisioning.message}
                     >
                       {w.provisioning.failed ? "provisioning failed" : "provisioning"}
-                    </span>
+                    </StatusText>
                   ) : (
-                    <span className={STATUS_STYLES[w.status]}>{STATUS_LABELS[w.status]}</span>
+                    <StatusText
+                      tone={WORKSPACE_STATUS_META[w.status].tone}
+                      glyph={WORKSPACE_STATUS_META[w.status].glyph}
+                    >
+                      {WORKSPACE_STATUS_META[w.status].label}
+                    </StatusText>
                   )}
                 </td>
-                <td className="py-2 pr-4 text-text-secondary">
+                <td className={clsx(tdClass, "text-text-dim")}>
                   {w.effective_version ?? "-"}
                   {/* Only worth showing when they disagree, which means a version
                       change is waiting for a restart. */}
                   {w.running_version && w.running_version !== w.effective_version && (
-                    <span className="ml-1.5 text-xs text-status-waiting" title="running until the next restart">
+                    <span className="ml-1.5 text-xs text-waiting" title="running until the next restart">
                       running {w.running_version}
                     </span>
                   )}
                 </td>
                 {data.usage_supported && (
-                  <td className="py-2 pr-4 text-right text-text-secondary">{u ? formatPercent(u.cpu_percent) : "-"}</td>
+                  <td className={clsx(tdClass, "text-right text-text-dim")}>
+                    {u ? formatPercent(u.cpu_percent) : "-"}
+                  </td>
                 )}
                 {data.usage_supported && (
-                  <td className="py-2 text-right text-text-secondary">{u ? formatBytes(u.memory_bytes) : "-"}</td>
+                  <td className={clsx(tdClass, "text-right text-text-dim")}>{u ? formatBytes(u.memory_bytes) : "-"}</td>
                 )}
               </tr>
             );
@@ -176,10 +168,10 @@ export function VersionsWidget({ data }: { data: Dashboard }) {
       {data.versions.map((v) => (
         <div key={v.version} className="space-y-1">
           <div className="flex justify-between text-sm">
-            <span className="text-text-primary">{v.version}</span>
-            <span className="text-text-muted">{v.count}</span>
+            <span className="text-text">{v.version}</span>
+            <span className="text-text-dim">{v.count}</span>
           </div>
-          <Meter used={v.count} total={total} />
+          <Meter percent={total > 0 ? (v.count / total) * 100 : 0} />
         </div>
       ))}
     </div>
@@ -192,11 +184,11 @@ export function ProvisioningWidget({ data }: { data: Dashboard }) {
   return (
     <div className="space-y-1.5 text-sm">
       {jobs.map(({ w, info }) => (
-        <p key={w.user_id} className={info.failed ? "text-status-error" : "text-status-waiting"}>
-          <span className="font-medium text-text-primary">{w.username}</span>: {info.message}
+        <p key={w.user_id} className={info.failed ? "text-error" : "text-waiting"}>
+          <span className="font-medium text-text-bright">{w.username}</span>: {info.message}
         </p>
       ))}
-      <p className="text-xs text-text-muted">
+      <p className="text-xs text-text-hint">
         A first image pull or local build takes a few minutes and continues if this page is closed.
       </p>
     </div>

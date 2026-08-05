@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
 import { api, ApiError, can, type Me, type PermissionEntry, type Role } from "../lib/api";
-import { TopBar } from "./TopBar";
-import { Button, ErrorText, Field, Input } from "./ui";
+import { PageBody, PageHeader } from "./AppShell";
+import {
+  Button,
+  Checkbox,
+  ErrorText,
+  Field,
+  Input,
+  Modal,
+  SectionLabel,
+  Tag,
+  tableCardClass,
+  tableHeadClass,
+  tdClass,
+  thClass,
+  trClass,
+} from "./ui";
 
-export function RolesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
+export function RolesPage({ me }: { me: Me }) {
   const canWrite = can(me, "roles.write");
   const [roles, setRoles] = useState<Role[]>([]);
   const [catalog, setCatalog] = useState<PermissionEntry[]>([]);
@@ -37,53 +50,77 @@ export function RolesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<vo
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <TopBar me={me} onLogout={onLogout} />
-      <main className="mx-auto w-full max-w-3xl flex-1 space-y-4 overflow-auto p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">Roles</h2>
-          {canWrite && (
-            <Button variant="primary" onClick={() => setDialog({ role: null })} className="flex items-center gap-1.5">
-              <Plus size={14} />
-              New role
+    <>
+      <PageHeader
+        title="Roles"
+        meta={`${roles.length} role${roles.length === 1 ? "" : "s"}`}
+        actions={
+          canWrite && (
+            <Button variant="primary" onClick={() => setDialog({ role: null })}>
+              + New role
             </Button>
-          )}
-        </div>
+          )
+        }
+      />
+      <PageBody className="space-y-3.5">
+        <p className="max-w-[600px] text-[13px] text-text-dim">
+          Members hold <span className="font-mono text-text">workspaces.use</span> by default.{" "}
+          <span className="font-mono text-text">workspaces.impersonate</span> is never implied, grant it only for
+          support, and every use is written to the log.
+        </p>
 
         {error && <ErrorText>{error}</ErrorText>}
 
-        <div className="overflow-hidden rounded-lg border border-surface-700">
+        <div className={tableCardClass}>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-surface-700 bg-surface-850 text-left font-mono text-xs uppercase tracking-wider text-text-muted">
-                <th className="px-4 py-2.5 font-medium">Name</th>
-                <th className="px-4 py-2.5 font-medium">Permissions</th>
-                <th className="px-4 py-2.5 font-medium">Users</th>
-                <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+              <tr className={tableHeadClass}>
+                <th className={thClass}>Name</th>
+                <th className={thClass}>Permissions</th>
+                <th className={thClass}>Users</th>
+                <th className={`${thClass} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {roles.map((r) => (
-                <tr key={r.id} className="border-b border-surface-800 last:border-0">
-                  <td className="px-4 py-2.5 text-text-primary">
-                    {r.name}
-                    {r.is_system && <span className="ml-2 text-xs text-text-muted">built-in</span>}
+                <tr key={r.id} className={trClass}>
+                  <td className={tdClass}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-text-bright">{r.name}</span>
+                      {r.is_system && <span className="font-mono text-[10.5px] text-text-faint">built-in</span>}
+                    </div>
                   </td>
-                  <td className="px-4 py-2.5 text-text-secondary">
-                    {r.permissions.includes("*") ? "all" : r.permissions.join(", ") || "none"}
+                  <td className={tdClass}>
+                    <div className="flex flex-wrap gap-1.5">
+                      {r.permissions.includes("*") ? (
+                        <Tag>all</Tag>
+                      ) : r.permissions.length > 0 ? (
+                        r.permissions.map((p) => <Tag key={p}>{p}</Tag>)
+                      ) : (
+                        <span className="text-text-dim">none</span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-4 py-2.5 text-text-secondary">{r.user_count}</td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex justify-end gap-1">
+                  <td className={`${tdClass} font-mono text-text-dim`}>{r.user_count}</td>
+                  <td className={tdClass}>
+                    <div className="flex justify-end gap-3">
                       {canWrite && r.name !== "admin" && (
-                        <Button variant="ghost" onClick={() => setDialog({ role: r })} aria-label="Edit">
-                          <Pencil size={14} />
-                        </Button>
+                        <button
+                          type="button"
+                          onClick={() => setDialog({ role: r })}
+                          className="font-mono text-xs text-text-faint hover:text-text"
+                        >
+                          edit
+                        </button>
                       )}
                       {canWrite && !r.is_system && (
-                        <Button variant="danger" onClick={() => remove(r)} aria-label="Delete">
-                          <Trash2 size={14} />
-                        </Button>
+                        <button
+                          type="button"
+                          onClick={() => remove(r)}
+                          className="font-mono text-xs text-error hover:text-error/80"
+                        >
+                          del
+                        </button>
                       )}
                     </div>
                   </td>
@@ -91,7 +128,7 @@ export function RolesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<vo
               ))}
               {roles.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-text-muted">
+                  <td colSpan={4} className={`${tdClass} py-8 text-center text-text-dim`}>
                     No roles yet.
                   </td>
                 </tr>
@@ -99,10 +136,10 @@ export function RolesPage({ me, onLogout }: { me: Me; onLogout: () => Promise<vo
             </tbody>
           </table>
         </div>
-      </main>
+      </PageBody>
 
       {dialog && <RoleDialog role={dialog.role} catalog={catalog} onClose={() => setDialog(null)} onSaved={load} />}
-    </div>
+    </>
   );
 }
 
@@ -160,47 +197,47 @@ function RoleDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-[var(--width-dialog)] space-y-5 rounded-lg border border-surface-700 bg-surface-850 p-6"
-      >
-        <form onSubmit={submit} className="space-y-5">
-          <h2 className="font-mono text-base font-medium text-text-bright">{editing ? "Edit role" : "New role"}</h2>
-          <Field label="Name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} disabled={isSystem} autoFocus />
-          </Field>
-          <Field label="Description">
-            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="optional" />
-          </Field>
-          <div className="space-y-1.5">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Permissions</span>
-            <div className="space-y-2 rounded-md border border-surface-700 bg-surface-950 p-3">
-              {catalog.map((p) => (
-                <label key={p.key} className="flex items-center gap-2 text-sm text-text-primary">
-                  <input
-                    type="checkbox"
-                    checked={perms.has(p.key)}
-                    onChange={() => toggle(p.key)}
-                    className="h-4 w-4 accent-brand-500"
-                  />
-                  <span className="font-mono text-xs text-text-secondary">{p.key}</span>
-                  <span className="text-text-muted">{p.description}</span>
-                </label>
-              ))}
-            </div>
+    <Modal
+      title={editing ? "Edit role" : "New role"}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" form="role-dialog-form" variant="primary" disabled={busy}>
+            {busy ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <form id="role-dialog-form" onSubmit={submit} className="space-y-5">
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} disabled={isSystem} autoFocus />
+        </Field>
+        <Field label="Description">
+          <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="optional" />
+        </Field>
+        <div className="space-y-1.5">
+          <SectionLabel>Permissions</SectionLabel>
+          <div className="space-y-2 rounded-md border border-border-soft bg-canvas p-3">
+            {catalog.map((p) => (
+              <Checkbox
+                key={p.key}
+                checked={perms.has(p.key)}
+                onChange={() => toggle(p.key)}
+                label={
+                  <>
+                    <span className="font-mono text-xs text-text-dim">{p.key}</span>{" "}
+                    <span className="text-text-hint">{p.description}</span>
+                  </>
+                }
+              />
+            ))}
           </div>
-          {error && <ErrorText>{error}</ErrorText>}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? "Saving..." : "Save"}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+        </div>
+        {error && <ErrorText>{error}</ErrorText>}
+      </form>
+    </Modal>
   );
 }

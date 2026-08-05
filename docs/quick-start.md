@@ -29,7 +29,30 @@ recovered later (only reset). The server then listens on
 1. Open `http://127.0.0.1:3000`.
 2. Sign in as `admin` with the seeded password.
 3. You are required to set a new password before continuing.
-4. You land on the **Users** page, where you can create, edit, and delete users.
+4. You land on the **setup wizard**, which walks the seven things a fresh
+   deployment usually needs.
+
+## Finish the setup
+
+The wizard covers, in order: the admin password, the aoe version workspaces run,
+which coding agents a workspace arrives with, the projects it clones, email
+(SMTP), sign-in and SSO, and inviting your team. Only the password and the aoe
+version are required; a workspace cannot start without a version.
+
+Every step saves through the same settings the UI exposes elsewhere, so nothing
+is wizard-only. Use **Skip this step** for anything you do not want, and the
+step stops being counted as outstanding.
+
+Leaving early is fine. Whatever is unfinished waits on the **Dashboard** as a
+"Finish setting up CityHall" checklist with a **Resume setup** button, and the
+checklist disappears once every step is either configured or skipped. Each item
+also links straight to the settings page that owns it, if you would rather not
+use the wizard at all.
+
+Members see a smaller version of this: their workspace page carries a
+"before your first session" checklist (password, git credential, agent
+credential) and a one-time guide, both driven by real state rather than a
+tutorial flag.
 
 ## Manage users without the UI
 

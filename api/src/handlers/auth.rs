@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use sea_orm::DatabaseConnection;
+use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
@@ -35,6 +35,8 @@ pub struct MeResponse {
     /// Effective permission keys, with the wildcard expanded, so the frontend
     /// can gate UI with a simple membership check.
     pub permissions: Vec<String>,
+    /// Whether this user has dismissed the one-time onboarding UI.
+    pub onboarding_dismissed: bool,
 }
 
 /// Build a `MeResponse`, resolving the role name for display.
@@ -55,6 +57,7 @@ async fn me_response(
         role_id: user.role_id,
         role,
         permissions: perms.effective_keys(),
+        onboarding_dismissed: user.onboarding_dismissed,
     })
 }
 
@@ -179,4 +182,26 @@ pub async fn reset_password(
     let user = consume_reset_token(&db, &body.token).await?;
     service::set_password(&db, user, &body.new_password, false).await?;
     Ok(StatusCode::OK)
+}
+
+#[derive(Serialize)]
+pub struct OnboardingDismissedResponse {
+    pub onboarding_dismissed: bool,
+}
+
+/// POST /api/me/onboarding-dismissed
+///
+/// Any authenticated user, gated only on a session (like
+/// `/auth/change-password`) rather than a permission: dismissing the caller's
+/// own one-time onboarding UI is not an administrative action.
+pub async fn dismiss_onboarding(
+    State(db): State<DatabaseConnection>,
+    caller: AuthUser,
+) -> Result<Json<OnboardingDismissedResponse>, AppError> {
+    let mut active: user::ActiveModel = caller.user.into();
+    active.onboarding_dismissed = Set(true);
+    active.update(&db).await?;
+    Ok(Json(OnboardingDismissedResponse {
+        onboarding_dismissed: true,
+    }))
 }

@@ -45,4 +45,6 @@ pub enum Users {
     OidcSubject,
     // Added by m0010.
     EmailVerified,
+    // Added by m0019.
+    OnboardingDismissed,
 }

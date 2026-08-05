@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, can, type Me, type Role, type User } from "../lib/api";
-import { Button, ErrorText, Field, Input, Select } from "./ui";
+import { Button, Checkbox, ErrorText, Field, Input, Modal, Select } from "./ui";
 
 type Result = { kind: "password"; value: string } | { kind: "email"; address: string };
 
@@ -79,101 +79,96 @@ export function UserDialog({
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-[var(--width-dialog)] space-y-5 rounded-lg border border-surface-700 bg-surface-850 p-6"
+  if (result) {
+    return (
+      <Modal
+        title="User created"
+        onClose={onClose}
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        }
       >
-        {result ? (
-          <>
-            <h2 className="font-mono text-base font-medium text-text-bright">User created</h2>
-            {result.kind === "password" ? (
-              <div className="space-y-2">
-                <p className="text-sm text-text-secondary">
-                  Temporary password (shown once; the user must change it on first login):
-                </p>
-                <code className="block rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm text-text-bright">
-                  {result.value}
-                </code>
-              </div>
-            ) : (
-              <p className="text-sm text-text-secondary">
-                A setup email was sent to <span className="text-text-primary">{result.address}</span> with a link to set
-                a password.
-              </p>
-            )}
-            <div className="flex justify-end">
-              <Button type="button" variant="primary" onClick={onClose}>
-                Done
-              </Button>
-            </div>
-          </>
+        {result.kind === "password" ? (
+          <div className="space-y-2">
+            <p className="text-sm text-text-dim">
+              Temporary password (shown once; the user must change it on first login):
+            </p>
+            <code className="block rounded-md border border-border-soft bg-canvas px-3 py-2 text-sm text-text-bright">
+              {result.value}
+            </code>
+          </div>
         ) : (
-          <form onSubmit={submit} className="space-y-5">
-            <h2 className="font-mono text-base font-medium text-text-bright">{editing ? "Edit user" : "New user"}</h2>
-            <Field label="Username">
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
-            </Field>
-            <Field label="Email">
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder={!editing && sendSetup ? "required for setup email" : "optional"}
-              />
-            </Field>
-
-            {canManageRoles && (
-              <Field label="Role">
-                <Select
-                  value={roleId ?? ""}
-                  onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : null)}
-                >
-                  {roles.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            )}
-
-            {!editing && (
-              <label className="flex items-center gap-2 text-sm text-text-primary">
-                <input
-                  type="checkbox"
-                  checked={sendSetup}
-                  onChange={(e) => setSendSetup(e.target.checked)}
-                  className="h-4 w-4 accent-brand-500"
-                />
-                Send setup email (user sets their own password)
-              </label>
-            )}
-
-            {!(sendSetup && !editing) && (
-              <Field label={editing ? "New password (leave blank to keep)" : "Password (leave blank to generate one)"}>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="new-password"
-                />
-              </Field>
-            )}
-
-            {error && <ErrorText>{error}</ErrorText>}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" variant="primary" disabled={busy}>
-                {busy ? "Saving..." : "Save"}
-              </Button>
-            </div>
-          </form>
+          <p className="text-sm text-text-dim">
+            A setup email was sent to <span className="text-text">{result.address}</span> with a link to set a password.
+          </p>
         )}
-      </div>
-    </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal
+      title={editing ? "Edit user" : "New user"}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" form="user-dialog-form" variant="primary" disabled={busy}>
+            {busy ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <form id="user-dialog-form" onSubmit={submit} className="space-y-5">
+        <Field label="Username">
+          <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+        </Field>
+        <Field label="Email">
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={!editing && sendSetup ? "required for setup email" : "optional"}
+          />
+        </Field>
+
+        {canManageRoles && (
+          <Field label="Role">
+            <Select value={roleId ?? ""} onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : null)}>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+
+        {!editing && (
+          <Checkbox
+            checked={sendSetup}
+            onChange={setSendSetup}
+            label="Send setup email (user sets their own password)"
+          />
+        )}
+
+        {!(sendSetup && !editing) && (
+          <Field label={editing ? "New password (leave blank to keep)" : "Password (leave blank to generate one)"}>
+            <Input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
+        )}
+
+        {error && <ErrorText>{error}</ErrorText>}
+      </form>
+    </Modal>
   );
 }

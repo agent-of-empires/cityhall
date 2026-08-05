@@ -20,6 +20,8 @@ pub struct Model {
     /// False only for self-signups awaiting email confirmation; such accounts
     /// cannot log in until verified.
     pub email_verified: bool,
+    /// Whether this user has dismissed the one-time onboarding UI.
+    pub onboarding_dismissed: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

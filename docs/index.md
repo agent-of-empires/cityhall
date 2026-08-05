@@ -17,6 +17,8 @@ control plane builds on:
 - Cookie-based authentication with server-side sessions.
 - A seeded `admin` account on first launch, with a random password that must be
   changed on first login.
+- A guided setup wizard on first sign-in, with whatever is left over tracked as a
+  checklist on the dashboard.
 
 ## How it fits together
 
