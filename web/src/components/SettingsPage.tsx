@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Send } from "lucide-react";
 import { Navigate, useParams } from "react-router-dom";
-import { api, ApiError, type Me, type SmtpSettings } from "../lib/api";
+import { api, ApiError, type SmtpSettings } from "../lib/api";
 import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, settingsTabLabel } from "../lib/settingsTabs";
 import { PageBody, PageHeader } from "./AppShell";
 import { OidcSettingsSection } from "./OidcSettings";
@@ -304,11 +304,9 @@ function AdvancedNotes() {
 
 /// Settings is one page per tab (#61): the sidebar renders the tab list, this
 /// renders whichever tab's sections `useParams` names.
-export function SettingsPage({ me }: { me: Me }) {
-  // Every tab here is behind settings.read at the sidebar/route level already;
-  // nothing in this page varies by who `me` is.
-  void me;
-
+/// Takes no `me`: the route gates on settings.read, and nothing here varies by
+/// who is signed in.
+export function SettingsPage() {
   const { tab } = useParams<{ tab: string }>();
 
   if (!SETTINGS_TABS.some((t) => t.slug === tab)) {

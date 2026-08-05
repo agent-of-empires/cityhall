@@ -129,12 +129,18 @@ export function App() {
           path="/dashboard"
           element={can(me!, "dashboard.read") ? <DashboardPage me={me!} /> : <Navigate to="/" replace />}
         />
-        <Route path="/users" element={<UsersPage me={me!} />} />
-        <Route path="/roles" element={<RolesPage me={me!} />} />
+        {/* Gated here rather than inside each page: reaching a page whose API
+            calls all 403 reads as a broken app, and the routing table is the one
+            place the whole set is visible. */}
+        <Route path="/users" element={can(me!, "users.read") ? <UsersPage me={me!} /> : <Navigate to="/" replace />} />
+        <Route path="/roles" element={can(me!, "roles.read") ? <RolesPage me={me!} /> : <Navigate to="/" replace />} />
         <Route path="/workspaces" element={<WorkspacesPage me={me!} />} />
         <Route path="/account" element={<AccountPage me={me!} />} />
         <Route path="/settings" element={<Navigate to={`/settings/${DEFAULT_SETTINGS_TAB}`} replace />} />
-        <Route path="/settings/:tab" element={<SettingsPage me={me!} />} />
+        <Route
+          path="/settings/:tab"
+          element={can(me!, "settings.read") ? <SettingsPage /> : <Navigate to="/" replace />}
+        />
       </Route>
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />

@@ -377,7 +377,12 @@ function AdminWorkspaces({ me }: { me: Me }) {
                         <td className={tdClass}>
                           <div className="flex justify-end gap-3.5">
                             {canImpersonate && item.user_id !== me.id && (
-                              <RowAction onClick={() => openAsAdmin(item)} disabled={busy} title="Open (audited)">
+                              <RowAction
+                                onClick={() => openAsAdmin(item)}
+                                disabled={busy}
+                                title="Open (audited)"
+                                ariaLabel={`Open ${item.username}'s workspace (audited)`}
+                              >
                                 open
                               </RowAction>
                             )}
@@ -385,6 +390,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                               onClick={() => run(() => api.startWorkspace(item.user_id), "could not start workspace")}
                               disabled={busy || item.status === "running"}
                               title="Start"
+                              ariaLabel={`Start ${item.username}'s workspace`}
                             >
                               start
                             </RowAction>
@@ -392,6 +398,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                               onClick={() => run(() => api.stopWorkspace(item.user_id), "could not stop workspace")}
                               disabled={busy || item.status !== "running"}
                               title="Stop (keeps data)"
+                              ariaLabel={`Stop ${item.username}'s workspace, keeping its data`}
                             >
                               stop
                             </RowAction>
@@ -399,6 +406,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                               onClick={() => setExpandedUserId(item.user_id === expandedUserId ? null : item.user_id)}
                               tone={item.user_id === expandedUserId ? "active" : "faint"}
                               title="Set this user's agent credentials"
+                              ariaLabel={`Set ${item.username}'s agent credentials`}
                             >
                               keys
                             </RowAction>
@@ -407,8 +415,9 @@ function AdminWorkspaces({ me }: { me: Me }) {
                               disabled={busy || item.status === "not_created"}
                               tone="danger"
                               title="Destroy (deletes data)"
+                              ariaLabel={`Destroy ${item.username}'s workspace, deleting its data`}
                             >
-                              ✕
+                              <span aria-hidden>✕</span>
                             </RowAction>
                           </div>
                         </td>
@@ -463,18 +472,23 @@ function RowAction({
   disabled,
   tone = "faint",
   title,
+  ariaLabel,
   children,
 }: {
   onClick: () => void;
   disabled?: boolean;
   tone?: "faint" | "active" | "danger";
   title?: string;
+  /** Needed when the label is a glyph, and worth naming the row's user because
+      the column repeats one of each action per row. */
+  ariaLabel?: string;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
       title={title}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
       className={clsx(
