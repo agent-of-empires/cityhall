@@ -15,6 +15,12 @@ export function FirstRunModal({ proxyOrigin, onFinish }: { proxyOrigin: string |
   const [busy, setBusy] = useState(false);
 
   async function finish(openWorkspace: boolean) {
+    // Opened before the await, inside the task the click started: a popup opened
+    // after an await has lost the user gesture and most browsers block it, so
+    // the primary button would appear to do nothing.
+    if (openWorkspace && proxyOrigin) {
+      window.open(`${proxyOrigin}/?cityhall_ws_exit=1`, "_blank", "noopener");
+    }
     setBusy(true);
     try {
       await api.dismissOnboarding();
@@ -23,9 +29,6 @@ export function FirstRunModal({ proxyOrigin, onFinish }: { proxyOrigin: string |
       // means the tour may reappear next visit.
     } finally {
       setBusy(false);
-    }
-    if (openWorkspace && proxyOrigin) {
-      window.open(`${proxyOrigin}/?cityhall_ws_exit=1`, "_blank", "noopener");
     }
     onFinish();
   }
