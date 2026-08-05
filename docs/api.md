@@ -500,11 +500,19 @@ Requires `settings.read`.
 `available_agents` is the whole selectable catalog, so a client lists that rather
 than hardcoding one.
 
+`telemetry_policy` is the stored policy verbatim, while
+`telemetry_policy_override` is set only when `WORKSPACE_TELEMETRY_POLICY` pins one
+for the deployment, and `effective_telemetry_policy` is what workspaces actually
+run under.
+
 ```json
 {
   "image_template": "cityhall/aoe:{version}",
   "default_version": "v0.5.0",
   "idle_stop_minutes": 30,
+  "telemetry_policy": "user_choice",
+  "telemetry_policy_override": null,
+  "effective_telemetry_policy": "user_choice",
   "agents": ["claude"],
   "available_agents": [
     { "name": "claude", "label": "Claude" },
@@ -517,8 +525,12 @@ than hardcoding one.
 
 ### `PUT /api/settings/workspaces`
 
-Requires `settings.write`. Same shape as `GET` minus `available_agents`, which is
-the server's catalog rather than a setting and is ignored if sent.
+Requires `settings.write`. Takes `image_template`, `default_version`,
+`idle_stop_minutes`, `telemetry_policy`, `agents`, and `restart_running`. The
+three fields the server derives, `telemetry_policy_override`,
+`effective_telemetry_policy`, and `available_agents`, are not settings and are
+ignored if sent.
+
 `image_template` is required; `idle_stop_minutes` must be at least 1. A name in
 `agents` that is not in the catalog is rejected with 400 and nothing is stored.
 
