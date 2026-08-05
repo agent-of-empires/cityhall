@@ -113,6 +113,7 @@ impl DockerCliOrchestrator {
                     network_label: labels.get("cityhall.workspace.network").cloned(),
                     env_label: labels.get("cityhall.workspace.env").cloned(),
                     telemetry_label: labels.get("cityhall.workspace.telemetry").cloned(),
+                    agents_label: labels.get("cityhall.workspace.agents").cloned(),
                 }))
             }
             None => Ok(None),
@@ -354,13 +355,16 @@ fn log_tail(path: &std::path::Path) -> String {
 
 /// `KEY=value` lines for everything the workspace's environment needs: the
 /// bundle location and token (when configured), the telemetry policy's own
-/// variables, then every agent credential. One line per pair, in that order;
+/// variables, the coding agents to install (when any), then every agent
+/// credential. One line per pair, in that order;
 /// `agent_credentials::validate_value` guarantees a value can contain no NUL,
 /// newline, or carriage return before it ever reaches here, which this
-/// line-oriented format depends on.
+/// line-oriented format depends on, and the agent set is a canonical join of
+/// catalog names that cannot contain any of the three either.
 ///
-/// The policy's variables are not secret, but they ride the same file rather
-/// than a second `-e` mechanism: one place builds this container's environment.
+/// Neither the policy's variables nor the agent set is secret, and both could
+/// have travelled as plain `-e` pairs, but they ride the same file: one place
+/// builds this container's environment rather than two.
 fn env_file_contents(spec: &WorkspaceSpec) -> String {
     let mut out = String::new();
     if let Some(bundle) = &spec.bundle {
@@ -369,6 +373,9 @@ fn env_file_contents(spec: &WorkspaceSpec) -> String {
     }
     for (name, value) in spec.telemetry.env_pairs() {
         out.push_str(&format!("{name}={value}\n"));
+    }
+    if !spec.agents.is_empty() {
+        out.push_str(&format!("{}={}\n", crate::agents::ENV_VAR, spec.agents));
     }
     for (name, value) in &spec.agent_env.pairs {
         out.push_str(&format!("{name}={}\n", value.expose()));
@@ -464,6 +471,14 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         // runs under, and a policy change is not a credential change.
         "--label".into(),
         format!("cityhall.workspace.telemetry={}", spec.telemetry.as_str()),
+        // The agent set the container was created with. Recorded rather than
+        // derived from the environment because `docker start` reuses a stopped
+        // container's stored environment, so without this a container would
+        // never see a changed set. Empty (never absent) for the same reason the
+        // env label is: a pre-feature container's absent label and an
+        // unconfigured set have to compare equal.
+        "--label".into(),
+        format!("cityhall.workspace.agents={}", spec.agents),
         "-v".into(),
         format!("{volume}:{AOE_DATA_DIR}"),
     ];
@@ -589,25 +604,28 @@ struct ContainerState {
     network_label: Option<String>,
     env_label: Option<String>,
     telemetry_label: Option<String>,
+    agents_label: Option<String>,
 }
 
 /// Whether a running container must be recreated rather than reused or
 /// resumed: the pinned version changed, the addressing mode changed, the
-/// injected credential set changed, or the telemetry policy changed. Extracted
-/// as a pure function so the drift conditions are testable without a docker
-/// daemon.
+/// injected credential set changed, the telemetry policy changed, or the
+/// coding-agent set changed. Extracted as a pure function so the drift
+/// conditions are testable without a docker daemon.
 ///
-/// The env label is absent on any container created before credentials were
-/// injected. Treating that absence as the empty string means a user with no
-/// stored credentials (whose fingerprint is also empty) is never recreated on
-/// upgrade just because the label didn't exist yet. The telemetry label is
-/// absent for the same reason and reads as `user_choice`, which is what a
-/// container created before the policy existed effectively runs under, so
-/// again nothing is recreated by the upgrade alone.
+/// The env, telemetry, and agents labels are absent on any container created
+/// before the feature that added each. Treating those absences as the empty
+/// string (or, for telemetry, as `user_choice`) means a user with no stored
+/// credentials, a container predating the policy, and an install with no
+/// configured agents are all left alone rather than recreated by an upgrade.
 ///
-/// The policy has to be here and not only in the create path: a stopped
-/// container is otherwise resumed with `docker start`, which reuses its stored
-/// environment, and a policy change would never reach it.
+/// The policy and the agent set both have to be here and not only in the create
+/// path: a stopped container is otherwise resumed with `docker start`, which
+/// reuses its stored environment, so a change to either would never reach it.
+/// The agent set therefore drifts like a credential does rather than more
+/// gently; the endpoint cache means a workspace being actively used is not
+/// reconciled at all until it is stopped, restarted, or CityHall itself
+/// restarts.
 fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<&str>) -> bool {
     let telemetry = state
         .telemetry_label
@@ -618,6 +636,7 @@ fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<
         || state.network_label.as_deref() != network
         || state.env_label.as_deref().unwrap_or("") != spec.agent_env.fingerprint
         || telemetry != spec.telemetry
+        || state.agents_label.as_deref().unwrap_or("") != spec.agents
 }
 
 #[derive(Deserialize)]
@@ -831,6 +850,13 @@ mod tests {
         }
     }
 
+    fn spec_with_agents() -> WorkspaceSpec {
+        WorkspaceSpec {
+            agents: "claude,codex".to_string(),
+            ..spec()
+        }
+    }
+
     /// Force-off is delivered as `DO_NOT_TRACK`, which aoe treats as absolute,
     /// and leaves the command alone. The other two policies inject nothing.
     #[test]
@@ -920,6 +946,7 @@ mod tests {
             // Absent, like a container created before the policy existed. The
             // telemetry cases below set it explicitly.
             telemetry_label: None,
+            agents_label: None,
         }
     }
 
@@ -943,6 +970,73 @@ mod tests {
 
         let current = container_state("v1.0.0", None, Some(&spec.agent_env.fingerprint));
         assert!(!needs_recreate(&current, &spec, None));
+    }
+
+    /// The workspace only learns which agents to install from its environment,
+    /// and `docker start` cannot change a stopped container's environment, so
+    /// the set has to be there at create time or the feature does nothing.
+    #[test]
+    fn the_agent_set_reaches_the_container_environment() {
+        let contents = env_file_contents(&spec_with_agents());
+        assert!(
+            contents
+                .lines()
+                .any(|l| l == "CITYHALL_AGENTS=claude,codex"),
+            "{contents}"
+        );
+        // Nothing configured must not define the variable at all, so the
+        // entrypoint's install loop has nothing to iterate.
+        assert_eq!(env_file_contents(&spec()), "");
+    }
+
+    /// An install that has never configured this has no agents label on its
+    /// containers and no configured set. Those two must compare equal, or
+    /// upgrading CityHall would recreate every workspace once for nothing.
+    #[test]
+    fn absent_agents_label_and_empty_set_do_not_trigger_recreate() {
+        let spec = spec();
+        assert_eq!(spec.agents, "");
+        let state = container_state("v1.0.0", None, None);
+        assert!(state.agents_label.is_none());
+        assert!(!needs_recreate(&state, &spec, None));
+    }
+
+    /// Adding or removing an agent has to reach existing workspaces. Without
+    /// this, a stopped container would be resumed with its old environment
+    /// forever and an admin's change would only ever apply to new users.
+    #[test]
+    fn a_differing_agents_label_triggers_recreate() {
+        let spec = spec_with_agents();
+
+        let mut stale = container_state("v1.0.0", None, None);
+        stale.agents_label = Some("claude".to_string());
+        assert!(needs_recreate(&stale, &spec, None));
+
+        // Deselecting everything is a change too, not a return to "unset".
+        let mut emptied = container_state("v1.0.0", None, None);
+        emptied.agents_label = Some(String::new());
+        assert!(needs_recreate(&emptied, &spec, None));
+
+        let mut current = container_state("v1.0.0", None, None);
+        current.agents_label = Some(spec.agents.clone());
+        assert!(!needs_recreate(&current, &spec, None));
+    }
+
+    /// The label is what makes the set comparable at all, so it has to be on
+    /// the create command, and empty rather than absent when nothing is set.
+    #[test]
+    fn run_args_record_the_agent_set_as_a_label() {
+        let args = run_args(&spec_with_agents(), None, None);
+        assert!(
+            args.iter()
+                .any(|a| a == "cityhall.workspace.agents=claude,codex"),
+            "{args:?}"
+        );
+        let args = run_args(&spec(), None, None);
+        assert!(
+            args.iter().any(|a| a == "cityhall.workspace.agents="),
+            "{args:?}"
+        );
     }
 
     #[test]

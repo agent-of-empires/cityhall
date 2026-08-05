@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
@@ -318,6 +318,15 @@ async fn pin_version(
     Ok(())
 }
 
+/// One agent an operator can ask a workspace to arrive with, for the settings
+/// form to render. The server owns this catalog so the client lists whatever
+/// comes back rather than hardcoding one, the way it does for credentials.
+#[derive(Serialize)]
+pub struct AvailableAgent {
+    pub name: &'static str,
+    pub label: &'static str,
+}
+
 #[derive(Serialize)]
 pub struct WorkspaceSettingsResponse {
     pub image_template: String,
@@ -337,6 +346,11 @@ pub struct WorkspaceSettingsResponse {
     pub telemetry_policy_override: Option<&'static str>,
     /// What workspaces actually run under: the override, or the stored value.
     pub effective_telemetry_policy: &'static str,
+    /// The configured set. Empty means users install their own.
+    pub agents: Vec<String>,
+    /// Everything that could be selected. Response only; sending it back is
+    /// ignored.
+    pub available_agents: Vec<AvailableAgent>,
 }
 
 #[derive(Deserialize)]
@@ -351,6 +365,13 @@ pub struct UpdateWorkspaceSettingsRequest {
     /// they come back on the new policy at their next start.
     #[serde(default)]
     pub restart_running: bool,
+    /// Absent preserves the stored set, `[]` clears it, a list replaces it.
+    ///
+    /// An `Option` rather than a defaulted `Vec` so a client that predates this
+    /// field does not silently wipe an operator's selection just by saving the
+    /// version or the idle timeout. The rest of this body is a full replacement,
+    /// but those fields have always been sent.
+    pub agents: Option<Vec<String>>,
 }
 
 /// The telemetry policy value a save should store.
@@ -393,6 +414,14 @@ pub async fn get_settings(
         image_template: cfg.image_template,
         default_version: cfg.default_version,
         idle_stop_minutes: cfg.idle_stop_minutes,
+        agents: crate::agents::parse(&cfg.agents),
+        available_agents: crate::agents::CATALOG
+            .iter()
+            .map(|a| AvailableAgent {
+                name: a.name,
+                label: a.label,
+            })
+            .collect(),
     }))
 }
 
@@ -403,40 +432,9 @@ pub async fn update_settings(
     Json(body): Json<UpdateWorkspaceSettingsRequest>,
 ) -> Result<Json<WorkspaceSettingsResponse>, AppError> {
     caller.require("settings.write")?;
-    if body.image_template.trim().is_empty() {
-        return Err(AppError::BadRequest("image template is required"));
-    }
-    if body.idle_stop_minutes < 1 {
-        return Err(AppError::BadRequest("idle stop must be at least 1 minute"));
-    }
-    let default_version = normalize(body.default_version);
-
-    let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
-        .one(&state.db)
-        .await?;
-    let telemetry_policy = policy_to_store(
-        &body.telemetry_policy,
-        existing.as_ref().map(|r| r.telemetry_policy.as_str()),
-    )?;
-    let agents = existing
-        .as_ref()
-        .map(|e| e.agents.clone())
-        .unwrap_or_default();
-    let model = workspace_settings::ActiveModel {
-        id: Set(SETTINGS_ID),
-        image_template: Set(body.image_template.trim().to_string()),
-        default_version: Set(default_version),
-        idle_stop_minutes: Set(body.idle_stop_minutes),
-        telemetry_policy: Set(telemetry_policy),
-        updated_at: Set(Utc::now()),
-        agents: Set(agents),
-    };
-    if existing.is_some() {
-        model.update(&state.db).await?;
-    } else {
-        model.insert(&state.db).await?;
-    }
-    if body.restart_running {
+    let restart_running = body.restart_running;
+    write_settings(&state.db, body).await?;
+    if restart_running {
         let user_ids = workspace::Entity::find()
             .all(&state.db)
             .await?
@@ -448,9 +446,126 @@ pub async fn update_settings(
     get_settings(State(state), caller).await
 }
 
+/// Validate and persist the settings row. Split out from the handler so the
+/// validation and the preserve-on-absent behaviour are testable without an
+/// authenticated request, the way the credential handlers do it.
+async fn write_settings(
+    db: &DatabaseConnection,
+    body: UpdateWorkspaceSettingsRequest,
+) -> Result<(), AppError> {
+    if body.image_template.trim().is_empty() {
+        return Err(AppError::BadRequest("image template is required"));
+    }
+    if body.idle_stop_minutes < 1 {
+        return Err(AppError::BadRequest("idle stop must be at least 1 minute"));
+    }
+    let default_version = normalize(body.default_version);
+
+    let existing = workspace_settings::Entity::find_by_id(SETTINGS_ID)
+        .one(db)
+        .await?;
+    let telemetry_policy = policy_to_store(
+        &body.telemetry_policy,
+        existing.as_ref().map(|r| r.telemetry_policy.as_str()),
+    )?;
+    let agents = match &body.agents {
+        Some(requested) => crate::agents::canonicalize(requested)?,
+        None => existing
+            .as_ref()
+            .map(|e| e.agents.clone())
+            .unwrap_or_default(),
+    };
+    let model = workspace_settings::ActiveModel {
+        id: Set(SETTINGS_ID),
+        image_template: Set(body.image_template.trim().to_string()),
+        default_version: Set(default_version),
+        idle_stop_minutes: Set(body.idle_stop_minutes),
+        telemetry_policy: Set(telemetry_policy),
+        updated_at: Set(Utc::now()),
+        agents: Set(agents),
+    };
+    if existing.is_some() {
+        model.update(db).await?;
+    } else {
+        model.insert(db).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::Migrator;
+    use sea_orm::{ConnectOptions, Database};
+    use sea_orm_migration::MigratorTrait;
+
+    async fn setup() -> DatabaseConnection {
+        let mut opts = ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1);
+        let db = Database::connect(opts).await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    fn body(agents: Option<Vec<&str>>) -> UpdateWorkspaceSettingsRequest {
+        UpdateWorkspaceSettingsRequest {
+            image_template: "cityhall/aoe:{version}".to_string(),
+            default_version: Some("v1.0.0".to_string()),
+            idle_stop_minutes: 30,
+            telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
+            restart_running: false,
+            agents: agents.map(|a| a.into_iter().map(String::from).collect()),
+        }
+    }
+
+    async fn stored_agents(db: &DatabaseConnection) -> String {
+        crate::workspaces::settings(db).await.unwrap().agents
+    }
+
+    #[tokio::test]
+    async fn an_unknown_agent_is_rejected_and_stores_nothing() {
+        let db = setup().await;
+        let err = write_settings(&db, body(Some(vec!["claude", "not-an-agent"])))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+        // The whole save is refused rather than the good half being kept, so a
+        // typo cannot half-apply.
+        assert_eq!(stored_agents(&db).await, "");
+    }
+
+    #[tokio::test]
+    async fn a_selection_is_stored_canonically() {
+        let db = setup().await;
+        write_settings(&db, body(Some(vec!["opencode", "claude", "claude"])))
+            .await
+            .unwrap();
+        assert_eq!(stored_agents(&db).await, "claude,opencode");
+    }
+
+    /// A client that predates this field must not wipe the operator's selection
+    /// just by saving the default version or the idle timeout.
+    #[tokio::test]
+    async fn omitting_the_field_preserves_the_stored_set() {
+        let db = setup().await;
+        write_settings(&db, body(Some(vec!["claude"])))
+            .await
+            .unwrap();
+        write_settings(&db, body(None)).await.unwrap();
+        assert_eq!(stored_agents(&db).await, "claude");
+    }
+
+    /// Sending an empty list is how the set is actually cleared, which has to
+    /// stay distinguishable from not sending the field at all.
+    #[tokio::test]
+    async fn an_empty_list_clears_the_stored_set() {
+        let db = setup().await;
+        write_settings(&db, body(Some(vec!["claude"])))
+            .await
+            .unwrap();
+        write_settings(&db, body(Some(vec![]))).await.unwrap();
+        assert_eq!(stored_agents(&db).await, "");
+    }
 
     /// The whole point of keeping the stored policy a raw string: an admin on an
     /// older CityHall, which reads a policy it does not know as `user_choice`,
