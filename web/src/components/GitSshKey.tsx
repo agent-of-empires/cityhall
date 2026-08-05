@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type GitSshKey as GitSshKeyData } from "../lib/api";
-import { Button, ErrorText, Field } from "./ui";
+import { Button, ErrorText, Field, SectionLabel, Textarea } from "./ui";
 
 /// Whether the save control can submit. A blank key means "keep the stored one",
 /// like the git credential form, so it is only missing when nothing is stored;
@@ -11,9 +11,6 @@ export function canSaveSshKey(cred: GitSshKeyData | null, key: string, knownHost
   if (knownHosts.trim().length === 0) return false;
   return cred.key_set || key.trim().length > 0;
 }
-
-const TEXTAREA =
-  "w-full rounded-md border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-50";
 
 /// GitHub publishes its current SSH host keys here, over HTTPS against a
 /// certificate for a name an attacker on the path cannot produce.
@@ -139,15 +136,17 @@ export function GitSshKeyEditor() {
 
   return (
     <>
-      <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">Git SSH key</h2>
+      <SectionLabel>Git SSH key</SectionLabel>
 
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
-      <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
-        <p className="text-sm text-text-secondary">
-          For <span className="font-mono text-text-primary">git@host:...</span> remotes, which a token cannot
-          authenticate. Stored encrypted and never shown again. The key must have no passphrase: nothing in a workspace
-          can prompt for one.
+      {/* A `<form>`, not `Card`: the primitive only renders a `div`, and this
+          section needs real form submit semantics. Styled to match it exactly. */}
+      <form onSubmit={save} className="space-y-4 rounded-card border border-border-soft bg-surface px-[22px] py-[18px]">
+        <p className="text-sm text-text-dim">
+          For <span className="font-mono text-text">git@host:...</span> remotes, which a token cannot authenticate.
+          Stored encrypted and never shown again. The key must have no passphrase: nothing in a workspace can prompt for
+          one.
         </p>
 
         {cred && !cred.secret_key_available && (
@@ -158,7 +157,7 @@ export function GitSshKeyEditor() {
         )}
 
         <Field label={cred?.key_set ? "Private key (leave blank to keep the stored one)" : "Private key"}>
-          <textarea
+          <Textarea
             value={key}
             onChange={(e) => {
               setKey(e.target.value);
@@ -172,12 +171,12 @@ export function GitSshKeyEditor() {
                 ? "unchanged"
                 : "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
             }
-            className={TEXTAREA}
+            className="font-mono text-xs"
           />
         </Field>
 
         <Field label="Known hosts">
-          <textarea
+          <Textarea
             value={knownHosts}
             onChange={(e) => {
               setKnownHosts(e.target.value);
@@ -187,30 +186,30 @@ export function GitSshKeyEditor() {
             rows={4}
             disabled={busy || filling}
             placeholder="github.com ssh-ed25519 AAAAC3Nza..."
-            className={TEXTAREA}
+            className="font-mono text-xs"
           />
         </Field>
         <div className="flex items-center gap-3">
           <Button type="button" variant="default" disabled={busy || filling} onClick={() => void fillFromGithub()}>
             {filling ? "Fetching..." : "Fill from GitHub"}
           </Button>
-          <p className="text-sm text-text-secondary">
+          <p className="text-sm text-text-dim">
             Fetches GitHub's published host keys. For another host, run{" "}
-            <span className="font-mono text-text-primary">ssh-keyscan &lt;host&gt;</span> somewhere you trust the
-            network, and check the result against the fingerprints that host publishes: a scan trusts whatever answers,
-            so pasting one unchecked pins whatever was listening.
+            <span className="font-mono text-text">ssh-keyscan &lt;host&gt;</span> somewhere you trust the network, and
+            check the result against the fingerprints that host publishes: a scan trusts whatever answers, so pasting
+            one unchecked pins whatever was listening.
           </p>
         </div>
         {fillError && <ErrorText>{fillError}</ErrorText>}
-        <p className="text-sm text-text-secondary">
+        <p className="text-sm text-text-dim">
           Required. Your workspace verifies the host against these and refuses to connect to anything else, so a key on
           its own is not enough.
         </p>
 
-        <p className="text-sm text-text-secondary">A change applies the next time your workspace starts.</p>
+        <p className="text-sm text-text-dim">A change applies the next time your workspace starts.</p>
 
         {saveError && <ErrorText>{saveError}</ErrorText>}
-        {saved && <p className="text-sm text-status-running">SSH key saved.</p>}
+        {saved && <p className="text-sm text-running">SSH key saved.</p>}
 
         <div className="flex justify-between">
           {cred?.key_set ? (

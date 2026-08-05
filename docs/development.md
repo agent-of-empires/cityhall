@@ -22,8 +22,37 @@ api/    Rust backend (axum + SeaORM)
 web/    React frontend (Vite + TypeScript + Tailwind)
   src/
     components/  Pages and UI (Login, ChangePassword, Users, Settings, dialogs)
+      ui.tsx       Shared primitives (Button, Input, Card, Modal, Toggle, ...)
+      AppShell.tsx Sidebar + PageHeader/PageBody, the shell every signed-in page renders into
+    index.css    Design tokens (the `empire` palette) and base styles
     lib/api.ts   Typed API client
 ```
+
+## Frontend conventions
+
+The UI projects the Agent of Empires `empire` TUI theme onto the web, so a
+status color means the same thing in both places.
+
+- **Colors, fonts, and radii** are Tailwind v4 theme tokens declared in
+  `web/src/index.css`: surfaces (`canvas`, `surface`, `surface-elevated`),
+  `border` / `border-soft`, a five-step text scale (`text-bright`, `text`,
+  `text-dim`, `text-hint`, `text-faint`), the copper `accent` family, and the
+  status colors (`running`, `waiting`, `idle`, `error`). Use the tokens, never a
+  raw hex value or a stock Tailwind palette color, so a palette change stays one
+  edit.
+- **Primitives** live in `web/src/components/ui.tsx`. Prefer them over
+  hand-rolled markup: a new card, input, toggle, or dialog should be `Card`,
+  `Input`, `Toggle`, or `Modal`. Tables use the exported class constants
+  (`tableCardClass`, `tableHeadClass`, `thClass`, `trClass`, `tdClass`) with real
+  `<table>` markup.
+- **Page shape**: `AppShell` renders the sidebar and an `<Outlet/>`; a signed-in
+  page renders `<PageHeader title meta actions />` followed by `<PageBody>`, and
+  receives `{ me }`. Unauthenticated screens use `AuthCard` instead.
+- **Settings** is one route per tab. The tab list is `web/src/lib/settingsTabs.ts`,
+  read by both the sidebar sub-nav and `SettingsPage`, so adding a tab is one
+  entry plus a branch in the page.
+- **Status vocabulary** for workspaces lives in `web/src/lib/workspaceStatus.ts`
+  so every surface shows the same glyph and color for the same state.
 
 ## Backend
 

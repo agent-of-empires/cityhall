@@ -10,8 +10,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::error::AppError;
 use crate::handlers::{
-    agent_credentials, auth, dashboard, oidc, roles, settings, signup, users, workspace_config,
-    workspaces,
+    agent_credentials, auth, dashboard, oidc, roles, settings, setup, signup, users,
+    workspace_config, workspaces,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -31,6 +31,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/change-password", post(auth::change_password))
+        .route("/me/onboarding-dismissed", post(auth::dismiss_onboarding))
         .route("/auth/forgot-password", post(auth::forgot_password))
         .route("/auth/reset-password", post(auth::reset_password))
         .route("/auth/providers", get(oidc::providers))
@@ -86,6 +87,7 @@ pub fn api_router(state: AppState) -> Router {
             "/settings/workspace-config",
             get(workspace_config::get_config).put(workspace_config::update_config),
         )
+        .route("/settings/setup", get(setup::get).put(setup::update))
         .route(
             "/me/git-credential",
             get(workspace_config::get_git_credential)

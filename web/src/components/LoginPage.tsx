@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
+import { AuthCard } from "./AuthCard";
 import { Button, ErrorText, Field, Input } from "./ui";
 
 export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
@@ -37,15 +38,12 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
   }
 
   return (
-    <div className="flex h-full items-center justify-center p-4">
-      <form
-        onSubmit={submit}
-        className="w-[var(--width-dialog)] space-y-5 rounded-lg border border-surface-700 bg-surface-850 p-6"
-      >
-        <div className="space-y-1">
-          <h1 className="font-mono text-lg font-medium text-text-bright">CityHall</h1>
-          <p className="text-sm text-text-muted">Sign in to continue</p>
-        </div>
+    <AuthCard>
+      <div className="flex flex-col gap-1.5">
+        <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-text-bright">Sign in</h1>
+        <p className="text-sm text-text-dim">The control plane for your team's aoe workspaces.</p>
+      </div>
+      <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Username">
           <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
         </Field>
@@ -58,37 +56,42 @@ export function LoginPage({ onAuthed }: { onAuthed: () => Promise<void> }) {
           />
         </Field>
         {error && <ErrorText>{error}</ErrorText>}
-        <Button type="submit" variant="primary" className="w-full" disabled={busy}>
+        <Button type="submit" variant="primary" className="mt-1 w-full" disabled={busy}>
           {busy ? "Signing in..." : "Sign in"}
         </Button>
         {ssoEnabled && (
           <>
-            <div className="flex items-center gap-3 text-xs text-text-muted">
-              <span className="h-px flex-1 bg-surface-700" />
-              or
-              <span className="h-px flex-1 bg-surface-700" />
+            <div className="flex items-center gap-3">
+              <span className="h-px flex-1 bg-border-soft" />
+              <span className="font-mono text-[11px] text-text-faint">OR</span>
+              <span className="h-px flex-1 bg-border-soft" />
             </div>
             <Button
               type="button"
-              variant="default"
               className="w-full"
               onClick={() => {
                 window.location.href = "/api/auth/oidc/login";
               }}
             >
-              Sign in with SSO
+              Continue with SSO
             </Button>
           </>
         )}
-        <Link to="/forgot-password" className="block text-center text-sm text-text-muted hover:text-text-primary">
+      </form>
+      <p className="text-[12.5px] leading-relaxed text-text-hint">
+        First launch? The seeded <span className="font-mono text-text-dim">admin</span> password is printed once in the
+        server log, and you will be asked to replace it.
+      </p>
+      <div className="flex flex-col items-center gap-2 text-sm text-text-dim">
+        <Link to="/forgot-password" className="hover:text-text-bright">
           Forgot password?
         </Link>
         {signupEnabled && (
-          <Link to="/register" className="block text-center text-sm text-text-muted hover:text-text-primary">
+          <Link to="/register" className="hover:text-text-bright">
             Create an account
           </Link>
         )}
-      </form>
-    </div>
+      </div>
+    </AuthCard>
   );
 }

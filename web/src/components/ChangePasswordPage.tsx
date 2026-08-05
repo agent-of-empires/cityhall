@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, ApiError } from "../lib/api";
+import { AuthCard } from "./AuthCard";
 import { Button, ErrorText, Field, Input } from "./ui";
 
 export function ChangePasswordPage({ forced, onDone }: { forced: boolean; onDone: () => Promise<void> }) {
@@ -28,15 +29,12 @@ export function ChangePasswordPage({ forced, onDone }: { forced: boolean; onDone
   }
 
   return (
-    <div className="flex h-full items-center justify-center p-4">
-      <form
-        onSubmit={submit}
-        className="w-[var(--width-dialog)] space-y-5 rounded-lg border border-surface-700 bg-surface-850 p-6"
-      >
-        <div className="space-y-1">
-          <h1 className="font-mono text-lg font-medium text-text-bright">Change password</h1>
-          {forced && <p className="text-sm text-status-waiting">You must set a new password before continuing.</p>}
-        </div>
+    <AuthCard>
+      <div className="flex flex-col gap-1.5">
+        <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-text-bright">Change password</h1>
+        {forced && <p className="text-sm text-waiting">You must set a new password before continuing.</p>}
+      </div>
+      <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Current password">
           <Input
             type="password"
@@ -58,10 +56,10 @@ export function ChangePasswordPage({ forced, onDone }: { forced: boolean; onDone
           />
         </Field>
         {error && <ErrorText>{error}</ErrorText>}
-        <Button type="submit" variant="primary" className="w-full" disabled={busy}>
+        <Button type="submit" variant="primary" className="mt-1 w-full" disabled={busy}>
           {busy ? "Saving..." : "Update password"}
         </Button>
       </form>
-    </div>
+    </AuthCard>
   );
 }

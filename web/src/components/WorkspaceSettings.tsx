@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, type AvailableAgent, type TelemetryPolicy, type WorkspaceSettings } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
-import { Button, ErrorText, Field, Input, Select } from "./ui";
+import { Button, Card, Checkbox, ErrorText, Field, Input, Select } from "./ui";
 import { VersionField } from "./VersionField";
 
 const TELEMETRY_LABELS: Record<TelemetryPolicy, string> = {
@@ -9,6 +9,21 @@ const TELEMETRY_LABELS: Record<TelemetryPolicy, string> = {
   force_on: "On for everyone",
   force_off: "Off for everyone",
 };
+
+/// One "label + help on the left, control on the right" settings row, matching
+/// the mockup's c-setting pattern. Kept local rather than shared from
+/// SettingsPage.tsx, which imports this section and would make a cycle.
+function SettingRow({ label, help, children }: { label: string; help?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-accent">{label}</div>
+        {help && <p className="mt-1 max-w-[420px] text-[12.5px] leading-relaxed text-text-dim">{help}</p>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
 
 /// What to say when `WORKSPACE_TELEMETRY_POLICY` pins the policy, or null when
 /// nothing is pinned. The stored value is still saveable while pinned, so the
@@ -50,7 +65,11 @@ export function toggleAgent(selected: string[], catalog: AvailableAgent[], name:
   return catalog.filter((a) => next.has(a.name)).map((a) => a.name);
 }
 
-export function WorkspaceSettingsSection() {
+/// Workspace defaults (#61) and the image template (moved to the Advanced tab)
+/// are two pages sharing one settings object and one save endpoint, so each
+/// mounts its own copy of the full state and sends the whole thing back on
+/// save; `section` only picks which fields it renders.
+export function WorkspaceSettingsSection({ section }: { section: "defaults" | "advanced" }) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [imageTemplate, setImageTemplate] = useState("");
@@ -127,43 +146,130 @@ export function WorkspaceSettingsSection() {
     }
   }
 
-  return (
-    <>
-      <h2 className="mt-4 font-mono text-xs uppercase tracking-wider text-text-muted">Workspaces</h2>
+  if (section === "advanced") {
+    return (
+      <div className="flex flex-col gap-4">
+        {loadError && <ErrorText>{loadError}</ErrorText>}
 
+        <Card>
+          <form onSubmit={save} className="flex flex-col gap-4">
+            <Field
+              label="Image template"
+              help="Point this at a registry your cluster can pull from. On kubernetes a missing image cannot be built locally. The image for a user is the template with {version} replaced by their pinned version (or the default)."
+            >
+              <Input
+                value={imageTemplate}
+                onChange={(e) => setImageTemplate(e.target.value)}
+                placeholder="cityhall/aoe:{version}"
+              />
+            </Field>
+
+            {/* The image only changes for a workspace that is recreated, so this
+                tab needs its own copy of the restart opt-in. */}
+            <Checkbox
+              checked={restartRunning}
+              onChange={setRestartRunning}
+              label="Restart running workspaces on save, to apply it now, ending whatever their users are running."
+            />
+
+            {saveError && <ErrorText>{saveError}</ErrorText>}
+            {saved && <p className="text-sm text-running">Settings saved.</p>}
+
+            <div className="flex justify-end">
+              <Button type="submit" variant="primary" disabled={saving}>
+                {saving ? "Saving..." : "Save settings"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
-      <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Image template">
-            <Input
-              value={imageTemplate}
-              onChange={(e) => setImageTemplate(e.target.value)}
-              placeholder="cityhall/aoe:{version}"
-            />
-          </Field>
-          {/* Deliberately not a Field: that wraps its children in a label with
-              no `for`, which binds to the first control inside it, and here that
-              would be VersionField's checkbox rather than the version control. */}
-          <div className="block space-y-1.5">
-            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Default version</span>
-            <VersionField
-              value={defaultVersion}
-              onChange={setDefaultVersion}
-              versions={versions}
-              latest={latest ?? undefined}
-              noneLabel="none"
-            />
+      <Card>
+        <form onSubmit={save} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* Deliberately not a Field: that wraps its children in a label with
+                no `for`, which binds to the first control inside it, and here that
+                would be VersionField's checkbox rather than the version control. */}
+            <div className="block space-y-1.5">
+              <span className="block font-mono text-[10.5px] tracking-[0.12em] text-text-hint uppercase">
+                Default version
+              </span>
+              <VersionField
+                value={defaultVersion}
+                onChange={setDefaultVersion}
+                versions={versions}
+                latest={latest ?? undefined}
+                noneLabel="none"
+              />
+            </div>
+            <Field label="Idle stop (minutes)">
+              <Input
+                type="number"
+                value={idleStopMinutes}
+                onChange={(e) => setIdleStopMinutes(Number(e.target.value))}
+                min={1}
+              />
+            </Field>
           </div>
-          <Field label="Idle stop (minutes)">
-            <Input
-              type="number"
-              value={idleStopMinutes}
-              onChange={(e) => setIdleStopMinutes(Number(e.target.value))}
-              min={1}
-            />
-          </Field>
-          <Field label="aoe telemetry">
+
+          {latest && versions.includes(defaultVersion) && isOlderVersion(defaultVersion, latest) && (
+            <p className="text-[12.5px] text-waiting">
+              The default version {defaultVersion} is behind the latest release {latest}.{" "}
+              <button type="button" className="underline" onClick={() => setDefaultVersion(latest)}>
+                Use {latest}
+              </button>
+            </p>
+          )}
+
+          <p className="text-[12.5px] leading-relaxed text-text-dim">
+            Idle workspaces are stopped automatically; their data volume is kept.
+          </p>
+
+          <div className="flex flex-col gap-2 border-t border-border-soft pt-4">
+            <span className="font-mono text-[10.5px] tracking-[0.12em] text-text-hint uppercase">
+              Coding agents preinstalled
+            </span>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              {availableAgents.map((agent) => (
+                <Checkbox
+                  key={agent.name}
+                  checked={agents.includes(agent.name)}
+                  onChange={(on) => setAgents(toggleAgent(agents, availableAgents, agent.name, on))}
+                  label={agent.label}
+                />
+              ))}
+            </div>
+            <p className="text-[12.5px] leading-relaxed text-text-hint">
+              Installed the first time a workspace starts, so a user gets one that is ready to use. Leave all of them
+              unticked and users install their own instead. A change reaches an existing workspace the next time it is
+              created, which is a restart, an idle stop, or a first launch. This is a default and not a restriction: a
+              user can still install and run any agent they like.
+            </p>
+          </div>
+
+          {saveError && <ErrorText>{saveError}</ErrorText>}
+          {saved && <p className="text-sm text-running">Settings saved.</p>}
+
+          <div className="flex justify-end">
+            <Button type="submit" variant="primary" disabled={saving}>
+              {saving ? "Saving..." : "Save settings"}
+            </Button>
+          </div>
+        </form>
+      </Card>
+
+      <Card>
+        <SettingRow
+          label="aoe telemetry"
+          help="aoe asks each user to opt in inside their own workspace. In a deployment that is the wrong person to ask."
+        >
+          <div className="w-56">
             <Select value={telemetryPolicy} onChange={(e) => setTelemetryPolicy(e.target.value)}>
               {/* Keeps an unrecognized stored policy selectable, so leaving the
                   control alone saves it back verbatim instead of the browser
@@ -177,13 +283,15 @@ export function WorkspaceSettingsSection() {
                 </option>
               ))}
             </Select>
-          </Field>
-        </div>
+          </div>
+        </SettingRow>
 
-        {telemetryOverride && <p className="text-sm text-status-waiting">{telemetryOverrideNote(telemetryOverride)}</p>}
+        {telemetryOverride && (
+          <p className="mt-3 text-[12.5px] text-waiting">{telemetryOverrideNote(telemetryOverride)}</p>
+        )}
 
         {effectiveTelemetryPolicy(telemetryPolicy, telemetryOverride) === "force_on" && (
-          <p className="text-sm text-status-waiting">
+          <p className="mt-3 text-[12.5px] leading-relaxed text-waiting">
             Turning telemetry on for everyone suppresses aoe's consent prompt and records the choice as answered in each
             user's workspace, so disclosing the collection to your users is your deployment's responsibility. Reverting
             to "Let each user choose" stops enforcing it, but leaves those users opted in until they change it
@@ -191,68 +299,17 @@ export function WorkspaceSettingsSection() {
           </p>
         )}
 
-        <p className="text-sm text-text-secondary">
-          A telemetry change reaches a workspace the next time it starts.{" "}
-          <label className="inline-flex items-center gap-1.5">
-            <input
-              type="checkbox"
-              checked={restartRunning}
-              onChange={(e) => setRestartRunning(e.target.checked)}
-              className="h-4 w-4 accent-brand-500"
-            />
-            restart running workspaces on save
-          </label>{" "}
-          to apply it now, ending whatever their users are running.
+        <p className="mt-3 text-[12.5px] leading-relaxed text-text-dim">
+          A telemetry change reaches a workspace the next time it starts.
         </p>
-
-        <p className="text-sm text-text-secondary">
-          The image for a user is the template with <code className="text-text-primary">{"{version}"}</code> replaced by
-          their pinned version (or the default). Idle workspaces are stopped automatically; their data volume is kept.
-        </p>
-
-        <div className="space-y-1.5 border-t border-surface-700 pt-4">
-          <span className="font-mono text-xs uppercase tracking-wider text-text-muted">Coding agents</span>
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
-            {availableAgents.map((agent) => (
-              <label key={agent.name} className="flex items-center gap-2 text-sm text-text-primary">
-                <input
-                  type="checkbox"
-                  checked={agents.includes(agent.name)}
-                  onChange={(e) => setAgents(toggleAgent(agents, availableAgents, agent.name, e.target.checked))}
-                  className="h-4 w-4 accent-brand-500"
-                />
-                {agent.label}
-              </label>
-            ))}
-          </div>
-          <p className="text-sm text-text-secondary">
-            Installed the first time a workspace starts, so a user gets one that is ready to use. Leave all of them
-            unticked and users install their own instead. A change reaches an existing workspace the next time it is
-            created, which is a restart, an idle stop, or a first launch. This is a default and not a restriction: a
-            user can still install and run any agent they like.
-          </p>
+        <div className="mt-2">
+          <Checkbox
+            checked={restartRunning}
+            onChange={setRestartRunning}
+            label="Restart running workspaces on save, to apply it now, ending whatever their users are running."
+          />
         </div>
-
-        {/* Only releases are comparable: a custom tag's digits are not a
-            version, so "dev-0" would otherwise read as behind the latest. */}
-        {latest && versions.includes(defaultVersion) && isOlderVersion(defaultVersion, latest) && (
-          <p className="text-sm text-status-waiting">
-            The default version {defaultVersion} is behind the latest release {latest}.{" "}
-            <button type="button" className="underline" onClick={() => setDefaultVersion(latest)}>
-              Use {latest}
-            </button>
-          </p>
-        )}
-
-        {saveError && <ErrorText>{saveError}</ErrorText>}
-        {saved && <p className="text-sm text-status-running">Settings saved.</p>}
-
-        <div className="flex justify-end">
-          <Button type="submit" variant="primary" disabled={saving}>
-            {saving ? "Saving..." : "Save settings"}
-          </Button>
-        </div>
-      </form>
-    </>
+      </Card>
+    </div>
   );
 }

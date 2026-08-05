@@ -1,14 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Send } from "lucide-react";
+import { Navigate, useParams } from "react-router-dom";
 import { api, ApiError, type Me, type SmtpSettings } from "../lib/api";
-import { TopBar } from "./TopBar";
+import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, settingsTabLabel } from "../lib/settingsTabs";
+import { PageBody, PageHeader } from "./AppShell";
 import { OidcSettingsSection } from "./OidcSettings";
 import { SignupSettingsSection } from "./SignupSettings";
 import { WorkspaceSettingsSection } from "./WorkspaceSettings";
 import { WorkspaceConfigSection } from "./WorkspaceConfig";
-import { Button, ErrorText, Field, Input, Select } from "./ui";
+import { Banner, Button, Card, ErrorText, Field, Input, Select, Toggle } from "./ui";
 
-export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
+/// One "label + help on the left, control on the right" settings row, matching
+/// the mockup's c-setting pattern. Private to this file and the sibling
+/// settings sections; each keeps its own copy rather than importing one
+/// another's, since Settings*.tsx already import from here and importing back
+/// would make a cycle.
+function SettingRow({ label, help, children }: { label: string; help?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-accent">{label}</div>
+        {help && <p className="mt-1 max-w-[420px] text-[12.5px] leading-relaxed text-text-dim">{help}</p>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function SmtpSettingsSection() {
   const [settings, setSettings] = useState<SmtpSettings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -104,38 +123,30 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <TopBar me={me} onLogout={onLogout} />
-      <main className="mx-auto w-full max-w-3xl flex-1 space-y-4 overflow-auto p-6">
-        <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">SMTP / Email</h2>
+    <div className="flex flex-col gap-4">
+      {loadError && <ErrorText>{loadError}</ErrorText>}
 
-        {loadError && <ErrorText>{loadError}</ErrorText>}
+      {envManaged && (
+        <Banner>
+          SMTP is configured through environment variables, so these fields are read-only. Unset the{" "}
+          <code className="text-text">SMTP_*</code> variables to manage it here instead.
+        </Banner>
+      )}
 
-        {envManaged && (
-          <div className="rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm text-text-secondary">
-            SMTP is configured through environment variables, so these fields are read-only. Unset the{" "}
-            <code className="text-text-primary">SMTP_*</code> variables to manage it here instead.
-          </div>
-        )}
+      {settings && !envManaged && !settings.secret_key_available && (
+        <Banner>
+          <span className="text-waiting">
+            <code className="text-text">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte key)
+            before saving a password, or the save will be rejected.
+          </span>
+        </Banner>
+      )}
 
-        {settings && !envManaged && !settings.secret_key_available && (
-          <div className="rounded-md border border-status-waiting/40 bg-surface-850 px-4 py-3 text-sm text-status-waiting">
-            <code className="text-text-primary">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte
-            key) before saving a password, or the save will be rejected.
-          </div>
-        )}
-
-        <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
-          <label className="flex items-center gap-2 text-sm text-text-primary">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={disabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-              className="h-4 w-4 accent-brand-500"
-            />
-            Enable email sending
-          </label>
+      <Card>
+        <form onSubmit={save} className="flex flex-col gap-4">
+          <SettingRow label="Email sending" help="Send account and notification email through this server.">
+            <Toggle checked={enabled} onChange={setEnabled} label="Enable email sending" disabled={disabled} />
+          </SettingRow>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Host">
@@ -202,7 +213,7 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
           </div>
 
           {saveError && <ErrorText>{saveError}</ErrorText>}
-          {saved && <p className="text-sm text-status-running">Settings saved.</p>}
+          {saved && <p className="text-sm text-running">Settings saved.</p>}
 
           {!envManaged && (
             <div className="flex justify-end">
@@ -212,10 +223,14 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
             </div>
           )}
         </form>
+      </Card>
 
-        <div className="space-y-3 rounded-lg border border-surface-700 p-5">
-          <h3 className="font-mono text-xs uppercase tracking-wider text-text-muted">Send test email</h3>
-          <p className="text-sm text-text-secondary">Sends a test message using the currently active configuration.</p>
+      <Card>
+        <div className="flex flex-col gap-3">
+          <div>
+            <div className="text-sm font-medium text-text-bright">Send a test message</div>
+            <p className="mt-1 text-[12.5px] text-text-dim">Uses the configuration that is active right now.</p>
+          </div>
           <div className="flex items-end gap-3">
             <div className="flex-1">
               <Field label="Recipient">
@@ -227,31 +242,95 @@ export function SettingsPage({ me, onLogout }: { me: Me; onLogout: () => Promise
                 />
               </Field>
             </div>
-            <Button
-              variant="default"
-              onClick={sendTest}
-              disabled={testing || !testTo}
-              className="flex items-center gap-1.5"
-            >
+            <Button onClick={sendTest} disabled={testing || !testTo} className="flex items-center gap-1.5">
               <Send size={14} />
               {testing ? "Sending..." : "Send test"}
             </Button>
           </div>
           {testResult && (
-            <p className={testResult.ok ? "text-sm text-status-running" : "text-sm text-status-error"}>
-              {testResult.message}
+            <p className={testResult.ok ? "text-sm text-running" : "text-sm text-error"}>{testResult.message}</p>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/// Read-only notes for the Advanced tab: the workspace backend is a deploy-time
+/// choice with no settings endpoint, and the secret key note reuses whichever
+/// signal is already on hand (SMTP's) rather than inventing an endpoint just to
+/// report one boolean.
+function AdvancedNotes() {
+  const [secretKeyAvailable, setSecretKeyAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api
+      .getSmtpSettings()
+      .then((s) => setSecretKeyAvailable(s.secret_key_available))
+      .catch(() => {});
+  }, []);
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-3">
+        <div>
+          <div className="text-sm font-medium text-text-bright">Workspace backend</div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-text-dim">
+            Docker, Kubernetes, or a plain process, chosen at deploy time for this CityHall install and not changeable
+            here.
+          </p>
+        </div>
+        <div className="border-t border-border-soft pt-3">
+          <div className="text-sm font-medium text-text-bright">Secret key</div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-text-dim">
+            Git tokens and agent credentials are encrypted with <code className="text-text">CITYHALL_SECRET_KEY</code>.
+            Rotating it without the rotation procedure leaves stored credentials unreadable, so accounts then show them
+            as needing re-entry.
+          </p>
+          {secretKeyAvailable !== null && (
+            <p className="mt-1.5 text-[12.5px]">
+              {secretKeyAvailable ? (
+                <span className="text-running">A secret key is configured.</span>
+              ) : (
+                <span className="text-waiting">No secret key is configured, so nothing above can store a secret.</span>
+              )}
             </p>
           )}
         </div>
+      </div>
+    </Card>
+  );
+}
 
-        <OidcSettingsSection />
+/// Settings is one page per tab (#61): the sidebar renders the tab list, this
+/// renders whichever tab's sections `useParams` names.
+export function SettingsPage({ me }: { me: Me }) {
+  // Every tab here is behind settings.read at the sidebar/route level already;
+  // nothing in this page varies by who `me` is.
+  void me;
 
-        <SignupSettingsSection />
+  const { tab } = useParams<{ tab: string }>();
 
-        <WorkspaceSettingsSection />
+  if (!SETTINGS_TABS.some((t) => t.slug === tab)) {
+    return <Navigate to={`/settings/${DEFAULT_SETTINGS_TAB}`} replace />;
+  }
 
-        <WorkspaceConfigSection />
-      </main>
-    </div>
+  return (
+    <>
+      <PageHeader title={settingsTabLabel(tab)} meta="Settings" />
+      <PageBody className="max-w-[660px]">
+        {tab === "access" && <OidcSettingsSection />}
+        {tab === "signup" && <SignupSettingsSection />}
+        {tab === "email" && <SmtpSettingsSection />}
+        {tab === "workspace-defaults" && <WorkspaceSettingsSection section="defaults" />}
+        {tab === "workspace-config" && <WorkspaceConfigSection />}
+        {tab === "advanced" && (
+          <div className="flex flex-col gap-4">
+            <WorkspaceSettingsSection section="advanced" />
+            <AdvancedNotes />
+          </div>
+        )}
+      </PageBody>
+    </>
   );
 }

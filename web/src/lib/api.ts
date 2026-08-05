@@ -14,6 +14,7 @@ export interface Me {
   role_id: number | null;
   role: string | null;
   permissions: string[];
+  onboarding_dismissed: boolean;
 }
 
 /** Whether `me` holds a permission (used to gate UI). */
@@ -266,6 +267,14 @@ export interface WorkspaceConfig {
   };
 }
 
+/// The admin setup checklist/wizard's persisted state: which steps have been
+/// dismissed as handled or not needed, and whether the wizard itself has been
+/// finished.
+export interface SetupState {
+  dismissed_steps: string[];
+  wizard_finished: boolean;
+}
+
 /// A user's own git credential. The token is never returned, only whether one
 /// is stored.
 export interface GitCredential {
@@ -450,6 +459,13 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ bundle }),
     }),
+  getSetupState: () => request<SetupState>("/settings/setup"),
+  updateSetupState: (update: SetupState) =>
+    request<SetupState>("/settings/setup", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    }),
+  dismissOnboarding: () => request<{ onboarding_dismissed: boolean }>("/me/onboarding-dismissed", { method: "POST" }),
   getGitCredential: () => request<GitCredential>("/me/git-credential"),
   updateGitCredential: (patch: { host: string; username: string; token: string | null }) =>
     request<GitCredential>("/me/git-credential", {

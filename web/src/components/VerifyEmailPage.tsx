@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
+import { AuthCard } from "./AuthCard";
 import { ErrorText } from "./ui";
 
 type State = "verifying" | "done" | "error";
@@ -25,27 +26,25 @@ export function VerifyEmailPage() {
   }, [token]);
 
   return (
-    <div className="flex h-full items-center justify-center p-4">
-      <div className="w-[var(--width-dialog)] space-y-5 rounded-lg border border-surface-700 bg-surface-850 p-6">
-        <h1 className="font-mono text-lg font-medium text-text-bright">Email verification</h1>
-        {state === "verifying" && <p className="text-sm text-text-muted">Verifying...</p>}
-        {state === "done" && (
-          <>
-            <p className="text-sm text-text-secondary">Your email is verified. You can now sign in.</p>
-            <Link to="/login" className="text-sm text-brand-500 hover:text-brand-400">
-              Go to sign in
-            </Link>
-          </>
-        )}
-        {state === "error" && (
-          <>
-            <ErrorText>{error}</ErrorText>
-            <Link to="/login" className="text-sm text-brand-500 hover:text-brand-400">
-              Back to sign in
-            </Link>
-          </>
-        )}
-      </div>
-    </div>
+    <AuthCard>
+      <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-text-bright">Email verification</h1>
+      {state === "verifying" && <p className="text-sm text-text-dim">Verifying...</p>}
+      {state === "done" && (
+        <>
+          <p className="text-sm text-text-dim">Your email is verified. You can now sign in.</p>
+          <Link to="/login" className="text-sm text-accent hover:text-accent-bright">
+            Go to sign in
+          </Link>
+        </>
+      )}
+      {state === "error" && (
+        <>
+          <ErrorText>{error}</ErrorText>
+          <Link to="/login" className="text-sm text-accent hover:text-accent-bright">
+            Back to sign in
+          </Link>
+        </>
+      )}
+    </AuthCard>
   );
 }

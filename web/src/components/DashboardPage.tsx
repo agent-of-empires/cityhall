@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import GridLayout, { useContainerWidth, type Layout } from "react-grid-layout";
 import { Check, Pencil, RotateCcw } from "lucide-react";
@@ -13,8 +14,9 @@ import {
   visibleWidgets,
   WIDGETS,
 } from "../lib/dashboardLayout";
-import { TopBar } from "./TopBar";
-import { Button } from "./ui";
+import { PageBody, PageHeader } from "./AppShell";
+import { Banner, Button, Checkbox, ErrorText, SectionLabel } from "./ui";
+import { SetupChecklist } from "./dashboard/SetupChecklist";
 import { WIDGET_BODIES } from "./dashboard/widgets";
 
 /// Matched to the sampler's own interval: polling faster only re-reads the same
@@ -22,7 +24,7 @@ import { WIDGET_BODIES } from "./dashboard/widgets";
 const POLL_MS = 10_000;
 const ROW_HEIGHT = 40;
 
-export function DashboardPage({ me, onLogout }: { me: Me; onLogout: () => Promise<void> }) {
+export function DashboardPage({ me }: { me: Me }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [layout, setLayout] = useState<DashboardLayout>(() => defaultLayout());
   const [editing, setEditing] = useState(false);
@@ -117,104 +119,96 @@ export function DashboardPage({ me, onLogout }: { me: Me; onLogout: () => Promis
     return { i: widget.id, x: item.x, y: item.y, w: item.w, h: item.h, minW: widget.minW, minH: widget.minH };
   });
 
+  const freshness = data && (
+    <span className={data.stale ? "text-error" : undefined}>
+      {data.sampled_at ? `updated ${formatAge(data.sampled_at)}` : "collecting the first sample"}
+    </span>
+  );
+
+  const editControls = canEdit && (
+    <>
+      {editing && (
+        <Button variant="ghost" onClick={() => void reset()}>
+          <RotateCcw size={14} />
+          Reset layout
+        </Button>
+      )}
+      <Button variant={editing ? "primary" : "default"} onClick={() => (editing ? void done() : setEditing(true))}>
+        {editing ? <Check size={14} /> : <Pencil size={14} />}
+        {editing ? "Done" : "Edit layout"}
+      </Button>
+    </>
+  );
+
   return (
-    <div className="flex h-full flex-col">
-      <TopBar me={me} onLogout={onLogout} />
-      <main className="flex-1 overflow-auto p-6">
-        <div className="mx-auto w-full max-w-7xl space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-baseline gap-3">
-              <h2 className="font-mono text-xs uppercase tracking-wider text-text-muted">Dashboard</h2>
-              {data && (
-                <span className={data.stale ? "text-xs text-status-error" : "text-xs text-text-muted"}>
-                  {data.sampled_at ? `updated ${formatAge(data.sampled_at)}` : "collecting the first sample"}
-                </span>
-              )}
-            </div>
-            {canEdit && (
-              <div className="flex items-center gap-2">
-                {editing && (
-                  <Button variant="ghost" onClick={() => void reset()} className="flex items-center gap-1.5">
-                    <RotateCcw size={14} />
-                    Reset layout
-                  </Button>
-                )}
-                <Button
-                  variant={editing ? "primary" : "ghost"}
-                  onClick={() => (editing ? void done() : setEditing(true))}
-                  className="flex items-center gap-1.5"
-                >
-                  {editing ? <Check size={14} /> : <Pencil size={14} />}
-                  {editing ? "Done" : "Edit layout"}
-                </Button>
-              </div>
-            )}
-          </div>
+    <>
+      <PageHeader title="Dashboard" meta={freshness} actions={editControls} />
+      <PageBody className="space-y-4">
+        <SetupChecklist me={me} />
 
-          {error && <p className="text-sm text-status-error">{error}</p>}
+        {error && <ErrorText>{error}</ErrorText>}
 
-          {data && data.errors.length > 0 && (
-            <div className="space-y-1 rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm">
-              {data.errors.map((message) => (
-                <p key={message} className="text-status-waiting">
-                  {message}
-                </p>
-              ))}
-              <p className="text-xs text-text-muted">The figures below are the last ones collected successfully.</p>
-            </div>
-          )}
+        {data && data.errors.length > 0 && (
+          <Banner className="space-y-1">
+            {data.errors.map((message) => (
+              <p key={message} className="text-waiting">
+                {message}
+              </p>
+            ))}
+            <p className="text-xs text-text-hint">The figures below are the last ones collected successfully.</p>
+          </Banner>
+        )}
 
-          {editing && (
-            <div className="flex flex-wrap items-center gap-3 rounded-md border border-surface-700 bg-surface-850 px-4 py-3">
-              <span className="text-sm text-text-secondary">Drag a card by its title; resize from its corner.</span>
-              {WIDGETS.map((widget) => (
-                <label key={widget.id} className="flex items-center gap-1.5 text-xs text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={!layout.hidden.includes(widget.id)}
-                    onChange={() => setLayout((current) => toggleWidget(current, widget.id))}
-                    className="h-4 w-4 accent-brand-500"
-                  />
-                  {widget.title}
-                </label>
-              ))}
-            </div>
-          )}
+        {editing && (
+          <Banner className="flex flex-wrap items-center gap-4">
+            <span className="text-text-dim">Drag a card by its title; resize from its corner.</span>
+            {WIDGETS.map((widget) => (
+              <Checkbox
+                key={widget.id}
+                label={widget.title}
+                checked={!layout.hidden.includes(widget.id)}
+                onChange={() => setLayout((current) => toggleWidget(current, widget.id))}
+              />
+            ))}
+          </Banner>
+        )}
 
-          <div ref={containerRef}>
-            {mounted && data && (
-              <GridLayout
-                width={width}
-                layout={gridLayout}
-                onLayoutChange={onLayoutChange}
-                gridConfig={{ cols: GRID_COLUMNS, rowHeight: ROW_HEIGHT, margin: [16, 16], containerPadding: [0, 0] }}
-                // Off until Edit, and handled by the title bar only, so a click
-                // on a table row or a button never starts a drag.
-                dragConfig={{ enabled: editing, handle: ".dashboard-drag-handle" }}
-                resizeConfig={{ enabled: editing }}
-              >
-                {visible.map((widget) => {
-                  const Body = WIDGET_BODIES[widget.id];
-                  return (
+        <div ref={containerRef}>
+          {mounted && data && (
+            <GridLayout
+              width={width}
+              layout={gridLayout}
+              onLayoutChange={onLayoutChange}
+              gridConfig={{ cols: GRID_COLUMNS, rowHeight: ROW_HEIGHT, margin: [16, 16], containerPadding: [0, 0] }}
+              // Off until Edit, and handled by the title bar only, so a click
+              // on a table row or a button never starts a drag.
+              dragConfig={{ enabled: editing, handle: ".dashboard-drag-handle" }}
+              resizeConfig={{ enabled: editing }}
+            >
+              {visible.map((widget) => {
+                const Body = WIDGET_BODIES[widget.id];
+                return (
+                  <div
+                    key={widget.id}
+                    className="flex flex-col overflow-hidden rounded-card border border-border-soft bg-surface"
+                  >
                     <div
-                      key={widget.id}
-                      className="flex flex-col overflow-hidden rounded-lg border border-surface-700 bg-surface-900"
+                      className={clsx(
+                        "dashboard-drag-handle border-b border-border-soft px-4 py-2.5",
+                        editing && "cursor-move",
+                      )}
                     >
-                      <div
-                        className={`dashboard-drag-handle border-b border-surface-700 px-4 py-2 ${editing ? "cursor-move" : ""}`}
-                      >
-                        <h3 className="font-mono text-xs uppercase tracking-wider text-text-muted">{widget.title}</h3>
-                      </div>
-                      <div className="flex-1 overflow-auto p-4">{Body && <Body data={data} />}</div>
+                      <SectionLabel>{widget.title}</SectionLabel>
                     </div>
-                  );
-                })}
-              </GridLayout>
-            )}
-            {!data && !error && <p className="text-sm text-text-muted">Loading...</p>}
-          </div>
+                    <div className="flex-1 overflow-auto p-4">{Body && <Body data={data} />}</div>
+                  </div>
+                );
+              })}
+            </GridLayout>
+          )}
+          {!data && !error && <p className="text-sm text-text-dim">Loading...</p>}
         </div>
-      </main>
-    </div>
+      </PageBody>
+    </>
   );
 }

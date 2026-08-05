@@ -372,6 +372,22 @@ pub async fn get_settings(
     Ok(Json(response_from_row(oidc::load_row(&db).await?)))
 }
 
+/// Only an enabled provider needs credentials. Requiring them unconditionally
+/// makes "leave SSO off" unsaveable, which is what the setup wizard does when it
+/// writes the sign-in step with nothing filled in.
+fn validate_update(body: &UpdateOidcRequest) -> Result<(), AppError> {
+    if !body.enabled {
+        return Ok(());
+    }
+    if body.issuer.trim().is_empty() {
+        return Err(AppError::BadRequest("issuer is required"));
+    }
+    if body.client_id.trim().is_empty() {
+        return Err(AppError::BadRequest("client id is required"));
+    }
+    Ok(())
+}
+
 pub async fn update_settings(
     State(db): State<DatabaseConnection>,
     caller: AuthUser,
@@ -383,12 +399,7 @@ pub async fn update_settings(
             "OIDC is managed via environment variables",
         ));
     }
-    if body.issuer.trim().is_empty() {
-        return Err(AppError::BadRequest("issuer is required"));
-    }
-    if body.client_id.trim().is_empty() {
-        return Err(AppError::BadRequest("client id is required"));
-    }
+    validate_update(&body)?;
 
     let existing = oidc::load_row(&db).await?;
     let client_secret_encrypted = match body.client_secret.filter(|s| !s.is_empty()) {
@@ -416,4 +427,36 @@ pub async fn update_settings(
         model.insert(&db).await?;
     }
     Ok(Json(response_from_row(oidc::load_row(&db).await?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(enabled: bool, issuer: &str, client_id: &str) -> UpdateOidcRequest {
+        UpdateOidcRequest {
+            enabled,
+            issuer: issuer.to_string(),
+            client_id: client_id.to_string(),
+            client_secret: None,
+            scopes: "openid email profile".to_string(),
+            allowed_domains: String::new(),
+        }
+    }
+
+    /// The setup wizard saves this step with empty fields when an operator wants
+    /// no SSO, so an empty disabled provider has to be a valid thing to store.
+    #[test]
+    fn a_disabled_provider_needs_no_credentials() {
+        assert!(validate_update(&request(false, "", "")).is_ok());
+        assert!(validate_update(&request(false, "  ", "  ")).is_ok());
+    }
+
+    #[test]
+    fn enabling_requires_an_issuer_and_a_client_id() {
+        assert!(validate_update(&request(true, "", "cid")).is_err());
+        assert!(validate_update(&request(true, "   ", "cid")).is_err());
+        assert!(validate_update(&request(true, "https://idp.example", "")).is_err());
+        assert!(validate_update(&request(true, "https://idp.example", "cid")).is_ok());
+    }
 }

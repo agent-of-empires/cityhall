@@ -79,7 +79,8 @@ Returns the current user, including their role and effective permissions:
   "must_change_password": false,
   "role_id": 1,
   "role": "admin",
-  "permissions": ["users.read", "users.write", "roles.read", "roles.write", "settings.read", "settings.write"]
+  "permissions": ["users.read", "users.write", "roles.read", "roles.write", "settings.read", "settings.write"],
+  "onboarding_dismissed": false
 }
 ```
 
@@ -91,6 +92,12 @@ Returns the current user, including their role and effective permissions:
 
 Verifies the current password and requires the new one to be at least 8
 characters. Returns the updated user (with `must_change_password: false`).
+
+### `POST /api/me/onboarding-dismissed`
+
+Any authenticated session (no permission required, like
+`/auth/change-password`). Marks the caller's own one-time onboarding UI as
+dismissed and returns `{ "onboarding_dismissed": true }`. Idempotent.
 
 ### `POST /api/auth/forgot-password`
 
@@ -415,6 +422,28 @@ Requires `settings.write`. Updates the self-signup configuration (same shape as
 unknown `signup_default_role_id` returns `400`. Enabling signup while SMTP is
 unconfigured returns `400` (verification email cannot be sent). Returns the
 updated settings.
+
+### `GET /api/settings/setup`
+
+Requires `settings.read`. The admin setup checklist/wizard's persisted state:
+which steps have been dismissed as handled or not needed, and whether the
+wizard itself has been finished. No row yet reads as nothing dismissed and the
+wizard not finished.
+
+```json
+{ "dismissed_steps": ["password", "email"], "wizard_finished": false }
+```
+
+`dismissed_steps` is one or more of `password`, `version`, `agents`,
+`projects`, `email`, `sso`, `invites`.
+
+### `PUT /api/settings/setup`
+
+Requires `settings.write`. Replaces the checklist state (same shape as `GET`)
+and returns it back. An unknown step key in `dismissed_steps` returns `400`
+and nothing is stored; the stored set is deduplicated and reordered into a
+canonical order, so saving the same set again (in any order, with repeats)
+reads as no change.
 
 ### `GET /api/dashboard`
 

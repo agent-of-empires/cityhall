@@ -1,6 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, type OidcSettings } from "../lib/api";
-import { Button, ErrorText, Field, Input } from "./ui";
+import { Banner, Button, Card, ErrorText, Field, Input, Toggle } from "./ui";
+
+/// One "label + help on the left, control on the right" settings row, matching
+/// the mockup's c-setting pattern. Kept local rather than shared from
+/// SettingsPage.tsx, which imports this section and would make a cycle.
+function SettingRow({ label, help, children }: { label: string; help?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-accent">{label}</div>
+        {help && <p className="mt-1 max-w-[420px] text-[12.5px] leading-relaxed text-text-dim">{help}</p>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
 
 export function OidcSettingsSection() {
   const [settings, setSettings] = useState<OidcSettings | null>(null);
@@ -69,95 +84,90 @@ export function OidcSettingsSection() {
   }
 
   return (
-    <>
-      <h2 className="mt-4 font-mono text-xs uppercase tracking-wider text-text-muted">SSO / OpenID Connect</h2>
-
+    <div className="flex flex-col gap-4">
       {loadError && <ErrorText>{loadError}</ErrorText>}
 
       {envManaged && (
-        <div className="rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm text-text-secondary">
+        <Banner>
           OIDC is configured through environment variables, so these fields are read-only. Unset the{" "}
-          <code className="text-text-primary">OIDC_*</code> variables to manage it here instead.
-        </div>
+          <code className="text-text">OIDC_*</code> variables to manage it here instead.
+        </Banner>
       )}
 
       {settings && !envManaged && !settings.secret_key_available && (
-        <div className="rounded-md border border-status-waiting/40 bg-surface-850 px-4 py-3 text-sm text-status-waiting">
-          <code className="text-text-primary">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte
-          key) before saving a client secret, or the save will be rejected.
-        </div>
+        <Banner>
+          <span className="text-waiting">
+            <code className="text-text">CITYHALL_SECRET_KEY</code> is not set. Set it (a base64-encoded 32-byte key)
+            before saving a client secret, or the save will be rejected.
+          </span>
+        </Banner>
       )}
 
       {settings && (
-        <div className="rounded-md border border-surface-700 bg-surface-850 px-4 py-3 text-sm text-text-secondary">
-          Register this redirect URI with your identity provider:
-          <code className="ml-1 break-all text-text-primary">{callbackUrl}</code>
-        </div>
+        <Banner>
+          Register this redirect URI with your identity provider:{" "}
+          <code className="break-all text-text">{callbackUrl}</code>
+        </Banner>
       )}
 
-      <form onSubmit={save} className="space-y-4 rounded-lg border border-surface-700 p-5">
-        <label className="flex items-center gap-2 text-sm text-text-primary">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={disabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            className="h-4 w-4 accent-brand-500"
-          />
-          Enable SSO login
-        </label>
+      <Card>
+        <form onSubmit={save} className="flex flex-col gap-4">
+          <SettingRow label="Single sign-on" help="OpenID Connect.">
+            <Toggle checked={enabled} onChange={setEnabled} label="Enable SSO login" disabled={disabled} />
+          </SettingRow>
 
-        <Field label="Issuer URL">
-          <Input
-            value={issuer}
-            disabled={disabled}
-            onChange={(e) => setIssuer(e.target.value)}
-            placeholder="https://accounts.example.com"
-          />
-        </Field>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Client ID">
-            <Input value={clientId} disabled={disabled} onChange={(e) => setClientId(e.target.value)} />
-          </Field>
-          <Field label="Client secret">
-            <Input
-              type="password"
-              value={clientSecret}
-              disabled={disabled}
-              onChange={(e) => setClientSecret(e.target.value)}
-              placeholder={settings?.client_secret_set ? "•••••••• (unchanged)" : "(optional for public clients)"}
-              autoComplete="new-password"
-            />
-          </Field>
-          <Field label="Scopes">
-            <Input
-              value={scopes}
-              disabled={disabled}
-              onChange={(e) => setScopes(e.target.value)}
-              placeholder="openid email profile"
-            />
-          </Field>
-          <Field label="Allowed email domains">
-            <Input
-              value={allowedDomains}
-              disabled={disabled}
-              onChange={(e) => setAllowedDomains(e.target.value)}
-              placeholder="(any) example.com, example.org"
-            />
-          </Field>
-        </div>
-
-        {saveError && <ErrorText>{saveError}</ErrorText>}
-        {saved && <p className="text-sm text-status-running">Settings saved.</p>}
-
-        {!envManaged && (
-          <div className="flex justify-end">
-            <Button type="submit" variant="primary" disabled={saving}>
-              {saving ? "Saving..." : "Save settings"}
-            </Button>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Issuer URL">
+              <Input
+                value={issuer}
+                disabled={disabled}
+                onChange={(e) => setIssuer(e.target.value)}
+                placeholder="https://accounts.example.com"
+              />
+            </Field>
+            <Field label="Client ID">
+              <Input value={clientId} disabled={disabled} onChange={(e) => setClientId(e.target.value)} />
+            </Field>
+            <Field label="Client secret">
+              <Input
+                type="password"
+                value={clientSecret}
+                disabled={disabled}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder={settings?.client_secret_set ? "•••••••• (unchanged)" : "(optional for public clients)"}
+                autoComplete="new-password"
+              />
+            </Field>
+            <Field label="Scopes">
+              <Input
+                value={scopes}
+                disabled={disabled}
+                onChange={(e) => setScopes(e.target.value)}
+                placeholder="openid email profile"
+              />
+            </Field>
+            <Field label="Allowed email domains">
+              <Input
+                value={allowedDomains}
+                disabled={disabled}
+                onChange={(e) => setAllowedDomains(e.target.value)}
+                placeholder="(any) example.com, example.org"
+              />
+            </Field>
           </div>
-        )}
-      </form>
-    </>
+
+          {saveError && <ErrorText>{saveError}</ErrorText>}
+          {saved && <p className="text-sm text-running">Settings saved.</p>}
+
+          {!envManaged && (
+            <div className="flex justify-end">
+              <Button type="submit" variant="primary" disabled={saving}>
+                {saving ? "Saving..." : "Save settings"}
+              </Button>
+            </div>
+          )}
+        </form>
+      </Card>
+    </div>
   );
 }

@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod oidc;
 pub mod roles;
 pub mod settings;
+pub mod setup;
 pub mod signup;
 pub mod users;
 pub mod workspace_config;
