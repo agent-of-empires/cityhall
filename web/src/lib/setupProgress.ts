@@ -70,7 +70,9 @@ export type SetupStepState = SetupStep & {
 export function setupSteps(inputs: SetupInputs, dismissed: string[]): SetupStepState[] {
   return SETUP_STEPS.map((step) => {
     const configured = stepConfigured(step.key, inputs);
-    return { ...step, configured, done: configured || dismissed.includes(step.key) };
+    // A required step is only ever done by being configured. Dismissing one
+    // would report a deployment as set up while no workspace can start.
+    return { ...step, configured, done: configured || (!step.required && dismissed.includes(step.key)) };
   });
 }
 

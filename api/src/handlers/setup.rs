@@ -26,6 +26,12 @@ const STEPS: &[&str] = &[
     "password", "version", "agents", "projects", "email", "sso", "invites",
 ];
 
+/// Steps CityHall cannot run without, so they are never dismissable: no
+/// workspace starts without a default version, and the seeded admin password was
+/// written to the server log in plain text. Dismissing one would report a
+/// deployment as set up while it cannot serve anybody.
+const REQUIRED_STEPS: &[&str] = &["password", "version"];
+
 fn known(step: &str) -> bool {
     STEPS.contains(&step)
 }
@@ -38,6 +44,14 @@ fn canonicalize(requested: &[String]) -> Result<String, AppError> {
     if let Some(unknown) = requested.iter().find(|s| !known(s)) {
         return Err(AppError::BadRequestOwned(format!(
             "unknown setup step '{unknown}'"
+        )));
+    }
+    if let Some(required) = requested
+        .iter()
+        .find(|s| REQUIRED_STEPS.contains(&s.as_str()))
+    {
+        return Err(AppError::BadRequestOwned(format!(
+            "setup step '{required}' is required and cannot be dismissed"
         )));
     }
     Ok(STEPS
@@ -125,20 +139,30 @@ mod tests {
 
     #[test]
     fn catalog_is_closed() {
-        assert!(canonicalize(&["password".to_string()]).is_ok());
-        assert!(canonicalize(&["Password".to_string()]).is_err());
+        assert!(canonicalize(&["email".to_string()]).is_ok());
+        assert!(canonicalize(&["Email".to_string()]).is_err());
         assert!(canonicalize(&["".to_string()]).is_err());
         assert!(canonicalize(&["bogus".to_string()]).is_err());
+    }
+
+    /// Dismissing one of these would report a deployment as set up while no
+    /// workspace can start, so the API refuses rather than trusting the caller.
+    #[test]
+    fn required_steps_cannot_be_dismissed() {
+        for required in REQUIRED_STEPS {
+            assert!(canonicalize(&[required.to_string()]).is_err());
+            assert!(canonicalize(&["email".to_string(), required.to_string()]).is_err());
+        }
     }
 
     /// Order and repetition in the request must not change the stored value.
     #[test]
     fn canonical_form_is_order_and_duplicate_insensitive() {
-        let expected = "password,version,email";
+        let expected = "agents,email,sso";
         for submitted in [
-            vec!["password", "version", "email"],
-            vec!["email", "password", "version"],
-            vec!["version", "version", "email", "password"],
+            vec!["agents", "email", "sso"],
+            vec!["sso", "agents", "email"],
+            vec!["email", "email", "sso", "agents"],
         ] {
             let submitted: Vec<String> = submitted.into_iter().map(String::from).collect();
             assert_eq!(canonicalize(&submitted).unwrap(), expected);
@@ -153,15 +177,12 @@ mod tests {
 
     #[test]
     fn parse_drops_steps_no_longer_in_the_catalog() {
-        assert_eq!(
-            parse("password,retired-step,version"),
-            vec!["password", "version"]
-        );
+        assert_eq!(parse("email,retired-step,sso"), vec!["email", "sso"]);
     }
 
     #[test]
     fn parse_round_trips_a_canonical_value() {
-        let stored = canonicalize(&["sso".to_string(), "password".to_string()]).unwrap();
-        assert_eq!(parse(&stored), vec!["password", "sso"]);
+        let stored = canonicalize(&["sso".to_string(), "email".to_string()]).unwrap();
+        assert_eq!(parse(&stored), vec!["email", "sso"]);
     }
 }

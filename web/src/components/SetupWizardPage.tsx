@@ -387,19 +387,20 @@ export function SetupWizardPage({ me, onFinish }: { me: Me; onFinish: () => void
 
   const isLast = stepIndex === SETUP_STEPS.length - 1;
 
-  async function finishWizard() {
-    // The step rail can jump past a step, and skipping is offered for optional
-    // ones, so finishing has to re-check the required steps itself. Marking
-    // setup finished with no default version would leave a deployment where no
-    // workspace can start and no checklist entry pushing anyone to fix it.
-    const outstanding = inputs ? setupSteps(inputs, dismissed).find((s) => s.required && !s.done) : null;
+  /** Marking setup finished with no default version would leave a deployment
+   *  where no workspace can start and no checklist entry pushing anyone to fix
+   *  it. The step rail can jump past a step, so every path that finishes has to
+   *  re-check rather than trusting the order steps were visited in. */
+  async function finishWizard(dismissedNow: string[] = dismissed) {
+    const outstanding = inputs ? setupSteps(inputs, dismissedNow).find((s) => s.required && !s.done) : undefined;
     if (outstanding) {
       setStepIndex(SETUP_STEPS.findIndex((s) => s.key === outstanding.key));
       setStepError(`${outstanding.label} still needs to be set before setup can be finished`);
       return;
     }
     try {
-      await api.updateSetupState({ dismissed_steps: dismissed, wizard_finished: true });
+      await api.updateSetupState({ dismissed_steps: dismissedNow, wizard_finished: true });
+      setDismissed(dismissedNow);
       onFinish();
       navigate("/dashboard");
     } catch (e) {
@@ -426,14 +427,15 @@ export function SetupWizardPage({ me, onFinish }: { me: Me; onFinish: () => void
     const nextDismissed = dismissed.includes(key) ? dismissed : [...dismissed, key];
     setStepSaving(true);
     try {
-      await api.updateSetupState({ dismissed_steps: nextDismissed, wizard_finished: isLast });
-      setDismissed(nextDismissed);
+      // Skipping the last step ends the wizard, so it goes through the same
+      // required-step guard as the Finish button.
       if (isLast) {
-        onFinish();
-        navigate("/dashboard");
-      } else {
-        setStepIndex((i) => Math.min(SETUP_STEPS.length - 1, i + 1));
+        await finishWizard(nextDismissed);
+        return;
       }
+      await api.updateSetupState({ dismissed_steps: nextDismissed, wizard_finished: false });
+      setDismissed(nextDismissed);
+      setStepIndex((i) => Math.min(SETUP_STEPS.length - 1, i + 1));
     } catch (e) {
       setStepError(e instanceof ApiError ? e.message : "could not update the setup state");
     } finally {
