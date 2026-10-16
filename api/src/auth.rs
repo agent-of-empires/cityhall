@@ -1,6 +1,4 @@
-use argon2::password_hash::{
-    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
@@ -43,20 +41,16 @@ pub fn random_token(len: usize) -> String {
 }
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
-    let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|_| AppError::Internal("failed to hash password"))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    match PasswordHash::new(hash) {
-        Ok(parsed) => Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok(),
-        Err(_) => false,
-    }
+    Argon2::default()
+        .verify_password(password.as_bytes(), hash)
+        .is_ok()
 }
 
 /// Create a session row for `user_id` and return its token.
@@ -248,6 +242,15 @@ mod tests {
         let uid = make_user(&db).await;
         let token = create_reset_token(&db, uid, -1).await.unwrap();
         assert!(consume_reset_token(&db, &token).await.is_err());
+    }
+
+    #[test]
+    fn verifies_hash_from_argon2_0_5() {
+        // Produced by argon2 0.5.3 `Argon2::default().hash_password`, the format
+        // already stored in existing databases.
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$Dca0jtd1m1wK/S59aRTTCg$SYdafPz+JKfylpKDdA9zQxlx6QgxE+kvcdmd7CQImaY";
+        assert!(verify_password("correct horse battery staple", hash));
+        assert!(!verify_password("wrong password", hash));
     }
 
     #[tokio::test]
