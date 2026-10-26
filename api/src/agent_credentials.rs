@@ -163,7 +163,11 @@ fn fingerprint(pairs: &[(String, Secret)]) -> String {
         hasher.update(value.expose().as_bytes());
         hasher.update(b"\n");
     }
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Load and decrypt `user_id`'s credentials.
