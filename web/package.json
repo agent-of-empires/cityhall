@@ -15,11 +15,11 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.61.0",
+    "lucide-react": "^1.65.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-grid-layout": "^2.3.0",
-    "react-router-dom": "^7.18.4",
+    "react-router-dom": "^7.18.5",
     "smol-toml": "^1.9.1",
     "tailwindcss": "^4.3.2"
   },
@@ -29,9 +29,9 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "eslint": "^10.13.0",
-    "oxfmt": "^0.74.0",
+    "oxfmt": "^0.75.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
   }
