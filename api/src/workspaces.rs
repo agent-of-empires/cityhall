@@ -7,7 +7,7 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
-use crate::entities::{role, user, workspace, workspace_settings};
+use crate::entities::{user, workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
     bundle_url, render_image, telemetry_policy_override, BundleAccess, OrchestratorError,
@@ -560,6 +560,7 @@ async fn sweep_once(state: &AppState) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::role;
     use crate::migration::Migrator;
     use sea_orm::{ConnectOptions, Database};
     use sea_orm_migration::MigratorTrait;
