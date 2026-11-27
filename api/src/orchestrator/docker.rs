@@ -1277,11 +1277,11 @@ mod tests {
     async fn ensure_started_refuses_old_aoe_and_a_missing_token() {
         let orch = DockerCliOrchestrator::from_env(Arc::default());
         let old = WorkspaceSpec {
-            version: "v1.25.0".to_string(),
+            version: "v1.17.0".to_string(),
             ..spec_with_token()
         };
         let err = orch.ensure_started(&old).await.unwrap_err().to_string();
-        assert!(err.contains("v1.25.0"), "{err}");
+        assert!(err.contains("v1.17.0"), "{err}");
         let no_token = WorkspaceSpec {
             version: "v1.26.0".to_string(),
             ..spec()

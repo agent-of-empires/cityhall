@@ -828,7 +828,7 @@ mod tests {
     async fn ensure_started_refuses_old_aoe_and_a_missing_token() {
         let orch = scratch("gate");
         let old = WorkspaceSpec {
-            version: "v1.25.0".to_string(),
+            version: "v1.17.0".to_string(),
             ..token_spec(&"c".repeat(64))
         };
         assert!(orch
@@ -836,7 +836,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string()
-            .contains("v1.25.0"));
+            .contains("v1.17.0"));
         let no_token = WorkspaceSpec {
             version: "v1.26.0".to_string(),
             ..spec_for(1)

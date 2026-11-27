@@ -591,7 +591,7 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 
 - Delivery relies on an undocumented aoe contract: CityHall writes
   `$HOME/.config/agent-of-empires/serve.token` (0600) before aoe starts and aoe
-  reads it (aoe issue 4953 tracks an explicit input). It needs aoe 1.26 or
+  reads it (aoe issue 4953 tracks an explicit input). It needs aoe 1.18 or
   later (tags like `latest` pass the check); below that the workspace refuses
   to start, with no fallback to `--auth none`.
 - Upgrade: every running workspace is recreated once on its first start after

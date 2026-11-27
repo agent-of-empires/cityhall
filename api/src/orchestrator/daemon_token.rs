@@ -2,7 +2,8 @@
 //!
 //! UNDOCUMENTED UPSTREAM CONTRACT. aoe has no flag or env var to choose the
 //! bearer it serves under (agent-of-empires issue 4953 is open). What it does
-//! do, verified against aoe 1.26.0: when `<HOME>/.config/agent-of-empires/serve.token`
+//! do, verified against aoe 1.18.0 through 1.26.0: when
+//! `<HOME>/.config/agent-of-empires/serve.token`
 //! holds exactly 64 hex characters, has mode 0600 and a fresh mtime, then
 //! `aoe serve --auth token` adopts that value as its bearer instead of minting
 //! one. Everything that depends on this behavior lives in this module, so a
@@ -26,7 +27,7 @@ pub const ENV_VAR: &str = "CITYHALL_DAEMON_TOKEN";
 pub const SERVE_TOKEN_RELATIVE_PATH: &str = ".config/agent-of-empires/serve.token";
 
 /// Oldest aoe `(major, minor)` verified to adopt `serve.token`.
-const MIN_TOKEN_AUTH_VERSION: (u32, u32) = (1, 26);
+const MIN_TOKEN_AUTH_VERSION: (u32, u32) = (1, 18);
 
 /// Refuse to launch a release older than [`MIN_TOKEN_AUTH_VERSION`].
 ///
@@ -216,8 +217,9 @@ mod tests {
     #[test]
     fn version_gate_rejects_old_releases_and_passes_moving_tags() {
         for v in [
+            "v1.18.0",
+            "1.18.0",
             "v1.26.0",
-            "1.26.0",
             "v1.27.3",
             "v2.0.0",
             "v1.26.0-rc.1",
@@ -227,9 +229,9 @@ mod tests {
         ] {
             assert!(require_token_auth_support(v).is_ok(), "{v}");
         }
-        for v in ["v1.25.9", "1.22.0", "v0.5.0"] {
+        for v in ["v1.17.9", "1.17.0", "v0.5.0"] {
             let err = require_token_auth_support(v).unwrap_err().to_string();
-            assert!(err.contains(v) && err.contains("1.26"), "{err}");
+            assert!(err.contains(v) && err.contains("1.18"), "{err}");
         }
     }
 
