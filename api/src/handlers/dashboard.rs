@@ -436,6 +436,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             bundle_token: None,
+            daemon_token: None,
         };
         let owned = attributed_runtime(Some(&row), Some(&runtime));
         assert_eq!(runtime_status(owned), "running");

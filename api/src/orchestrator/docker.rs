@@ -21,9 +21,9 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{
-    plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator,
-    OrchestratorError, ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceMode,
-    WorkspaceRuntime, WorkspaceSpec, WorkspaceStatus, WorkspaceUsage,
+    daemon_token, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin,
+    Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, UsageReport,
+    WorkspaceMode, WorkspaceRuntime, WorkspaceSpec, WorkspaceStatus, WorkspaceUsage,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -38,12 +38,13 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 /// sampling interval, and a stuck daemon should leave the last good snapshot in
 /// place rather than pin a sampler tick for a minute.
 const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Why Full mode is unavailable on docker. With or without
-/// `WORKSPACE_DOCKER_NETWORK`, workspace containers share a bridge network
-/// that allows container to container traffic, and aoe listens on 0.0.0.0
-/// with `--auth none`, so a Full mode terminal could reach every other
-/// workspace's shell. The loopback publish only limits access from the host.
-pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on docker: workspace containers can reach each other's unauthenticated aoe port. It waits for per-workspace auth";
+/// Why Full mode is unavailable on docker. Workspace containers share a bridge
+/// network that allows container to container traffic (with or without
+/// `WORKSPACE_DOCKER_NETWORK`), so a Full mode terminal can reach every other
+/// workspace's aoe port. aoe runs `--auth token` and a peer container gets 401
+/// without the token (checked on the default bridge); lifting the refusal is a
+/// follow-up.
+pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on docker: workspace containers share a network, and lifting this is a follow-up";
 
 /// Records a Full mode container. Absent means Composer.
 const MODE_LABEL: &str = "cityhall.workspace.mode";
@@ -51,6 +52,10 @@ const MODE_LABEL: &str = "cityhall.workspace.mode";
 /// container ours.
 const MANAGED_FILTER: &str = "label=cityhall.managed=true";
 const USER_ID_LABEL: &str = "cityhall.user_id";
+/// Fingerprint of the container's daemon token. Absent on a container created
+/// before per-workspace tokens (it runs `--auth none`), which is why absence is
+/// drift here, unlike the other labels.
+const DAEMON_TOKEN_LABEL: &str = "cityhall.workspace.daemon-token";
 const VERSION_LABEL: &str = "cityhall.workspace.version";
 
 /// The reference workspace image build, embedded so a running CityHall can
@@ -145,6 +150,7 @@ impl DockerCliOrchestrator {
                     telemetry_label: labels.get("cityhall.workspace.telemetry").cloned(),
                     agents_label: labels.get("cityhall.workspace.agents").cloned(),
                     mode_label: labels.get(MODE_LABEL).cloned(),
+                    daemon_token_label: labels.get(DAEMON_TOKEN_LABEL).cloned(),
                 }))
             }
             None => Ok(None),
@@ -387,7 +393,7 @@ fn log_tail(path: &std::path::Path) -> String {
 /// `KEY=value` lines for everything the workspace's environment needs: the
 /// bundle location and token (when configured), the telemetry policy's own
 /// variables, the coding agents to install (when any), then every agent
-/// credential. One line per pair, in that order;
+/// credential, then the daemon token. One line per pair, in that order;
 /// `agent_credentials::validate_value` guarantees a value can contain no NUL,
 /// newline, or carriage return before it ever reaches here, which this
 /// line-oriented format depends on, and the agent set is a canonical join of
@@ -410,6 +416,9 @@ fn env_file_contents(spec: &WorkspaceSpec) -> String {
     }
     for (name, value) in &spec.agent_env.pairs {
         out.push_str(&format!("{name}={}\n", value.expose()));
+    }
+    if let Some(token) = &spec.daemon_token {
+        out.push_str(&format!("{}={}\n", daemon_token::ENV_VAR, token.expose()));
     }
     out
 }
@@ -510,6 +519,10 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         // unconfigured set have to compare equal.
         "--label".into(),
         format!("cityhall.workspace.agents={}", spec.agents),
+        // Fingerprint only, never the token. Drives recreation on a token
+        // change, and on upgrade from `--auth none` (no label).
+        "--label".into(),
+        format!("{DAEMON_TOKEN_LABEL}={}", daemon_token_fingerprint(spec)),
         "-v".into(),
         format!("{volume}:{AOE_DATA_DIR}"),
     ];
@@ -545,40 +558,38 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
     }
     args.push(spec.image.clone());
     // The image's ENTRYPOINT stays in charge (it is what puts each agent's
-    // config on the volume); this is only the command it execs, which force-on
-    // wraps to assert the telemetry policy first.
-    args.extend(
-        spec.telemetry.wrap_command(
-            [
-                "aoe",
-                "serve",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                &AOE_PORT.to_string(),
-                // CityHall's session gates the proxy. The loopback publish keeps
-                // the host's network out, but containers on docker's bridge can
-                // reach this port directly, which is why Full mode is refused
-                // on docker (`DOCKER_FULL_MODE_BLOCKER`).
-                "--auth",
-                "none",
-                "--behind-proxy",
-                // The proxy forwards the public Host and Origin, both of which
-                // aoe's DNS-rebinding gate requires on the allowlist.
-                "--allowed-host",
-                &proxy_allowed_host(),
-                "--allowed-origin",
-                &proxy_allowed_origin(),
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            // Composer mode is the locked-down end-user client (composer +
-            // structured view only); Full mode omits the flag.
-            .chain(spec.mode.cityhall_flag().map(String::from))
-            .chain(plaintext_flag(&spec.version))
-            .collect(),
-        ),
-    );
+    // config on the volume); this is only the command it execs, wrapped to
+    // write the daemon token (and, for force-on, assert the telemetry policy)
+    // before aoe starts.
+    args.extend(daemon_token::wrap_command(
+        spec.telemetry,
+        [
+            "aoe",
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            &AOE_PORT.to_string(),
+            // aoe adopts the per-workspace token the wrapper writes (see
+            // `daemon_token`); the proxy presents it as the bearer.
+            "--auth",
+            "token",
+            "--behind-proxy",
+            // The proxy forwards the public Host and Origin, both of which
+            // aoe's DNS-rebinding gate requires on the allowlist.
+            "--allowed-host",
+            &proxy_allowed_host(),
+            "--allowed-origin",
+            &proxy_allowed_origin(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        // Composer mode is the locked-down end-user client (composer +
+        // structured view only); Full mode omits the flag.
+        .chain(spec.mode.cityhall_flag().map(String::from))
+        .chain(plaintext_flag(&spec.version))
+        .collect(),
+    ));
     args
 }
 
@@ -589,6 +600,11 @@ impl Orchestrator for DockerCliOrchestrator {
     }
 
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
+        daemon_token::require_or_stop(&spec.version, spec.user_id, || self.stop(spec.user_id))
+            .await?;
+        if spec.daemon_token.is_none() {
+            return Err(daemon_token::missing_token());
+        }
         let name = container_name(spec.user_id);
         match self.inspect(&name).await? {
             Some(state) if needs_recreate(&state, spec, self.network.as_deref()) => {
@@ -872,6 +888,7 @@ struct ContainerState {
     telemetry_label: Option<String>,
     agents_label: Option<String>,
     mode_label: Option<String>,
+    daemon_token_label: Option<String>,
 }
 
 /// Whether a running container must be recreated rather than reused or
@@ -909,6 +926,17 @@ fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<
         // would reuse its stored command line.
         || ((!state.running || spec.apply_mode_to_running)
             && WorkspaceMode::from_stored(state.mode_label.as_deref()) != spec.mode)
+        || state.daemon_token_label.as_deref() != Some(daemon_token_fingerprint(spec).as_str())
+}
+
+/// The fingerprint `spec`'s token should carry on the container. Empty without a
+/// token, which never equals a real label (and `ensure_started` rejects such a
+/// spec before it gets here).
+fn daemon_token_fingerprint(spec: &WorkspaceSpec) -> String {
+    spec.daemon_token
+        .as_ref()
+        .map(|t| daemon_token::fingerprint(t.expose()))
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -983,6 +1011,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            daemon_token: None,
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
@@ -990,11 +1019,20 @@ mod tests {
         }
     }
 
+    fn spec_with_token() -> WorkspaceSpec {
+        WorkspaceSpec {
+            daemon_token: Some(crate::crypto::Secret::new(TEST_TOKEN.to_string())),
+            ..spec()
+        }
+    }
+
+    const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     fn spec_with_bundle() -> WorkspaceSpec {
         WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             ..spec()
         }
@@ -1003,6 +1041,9 @@ mod tests {
     /// A distinctive credential value, checked for absence in argv and error
     /// strings elsewhere: any test that finds this substring outside the
     /// env file content has found a leak.
+    /// Distinctive bundle token: a plain substring check on it cannot be
+    /// confused with the word `token` in argv.
+    const BUNDLE_PROBE: &str = "bundle-probe-7f3a";
     const SECRET_VALUE: &str = "sk-super-secret-value";
 
     fn spec_with_agent_env() -> WorkspaceSpec {
@@ -1033,7 +1074,7 @@ mod tests {
             lines,
             vec![
                 "AOE_CITYHALL_BUNDLE_URL=http://cityhall:3000/api/workspace-bundle",
-                "AOE_CITYHALL_BUNDLE_TOKEN=tok",
+                &format!("AOE_CITYHALL_BUNDLE_TOKEN={BUNDLE_PROBE}"),
                 &format!("ANTHROPIC_API_KEY={SECRET_VALUE}"),
             ]
         );
@@ -1074,7 +1115,7 @@ mod tests {
             "credential value leaked into argv: {args:?}"
         );
         assert!(
-            !args.iter().any(|a| a.contains("tok")),
+            !args.iter().any(|a| a.contains(BUNDLE_PROBE)),
             "bundle token leaked into argv: {args:?}"
         );
     }
@@ -1180,9 +1221,78 @@ mod tests {
         assert_eq!(args[image_at + 5], "serve");
         assert!(args.iter().any(|a| a == "--cityhall"));
 
-        // The other policies leave the command exactly as it was.
+        // Every policy is wrapped now (the token is always written), but only
+        // force-on asserts telemetry.
         let plain = run_args(&spec(), None, None);
-        assert!(!plain.iter().any(|a| a == "sh"), "{plain:?}");
+        let image_at = plain
+            .iter()
+            .position(|a| a == "cityhall/aoe:v1.0.0")
+            .unwrap();
+        assert_eq!(plain[image_at + 1], "sh");
+        assert!(!plain[image_at + 3].contains("aoe telemetry enable"));
+        assert_eq!(plain[image_at + 4], "aoe");
+    }
+
+    #[test]
+    fn workspaces_launch_under_token_auth_never_none() {
+        let args = run_args(&spec_with_token(), None, None);
+        let at = args.iter().position(|a| a == "--auth").unwrap();
+        assert_eq!(args[at + 1], "token");
+        assert!(!args.iter().any(|a| a == "none"), "{args:?}");
+    }
+
+    /// The token reaches the container through the env file only: not argv, and
+    /// only its fingerprint on a label.
+    #[test]
+    fn the_daemon_token_travels_in_the_env_file_not_argv() {
+        let spec = spec_with_token();
+        assert_eq!(
+            env_file_contents(&spec),
+            format!("CITYHALL_DAEMON_TOKEN={TEST_TOKEN}\n")
+        );
+        let args = run_args(&spec, None, None);
+        assert!(!args.iter().any(|a| a.contains(TEST_TOKEN)), "{args:?}");
+        let fp = daemon_token::fingerprint(TEST_TOKEN);
+        assert!(args
+            .iter()
+            .any(|a| *a == format!("cityhall.workspace.daemon-token={fp}")));
+    }
+
+    /// A container from the `--auth none` era has no label and must be recreated
+    /// once; so must one carrying a different token. Unlike the other labels,
+    /// absence is drift.
+    #[test]
+    fn a_missing_or_different_daemon_token_label_triggers_recreate() {
+        let spec = spec_with_token();
+        let fp = daemon_token::fingerprint(TEST_TOKEN);
+        let mut state = container_state("v1.0.0", None, None);
+        state.daemon_token_label = None;
+        assert!(needs_recreate(&state, &spec, None));
+        state.daemon_token_label = Some("0000000000000000".to_string());
+        assert!(needs_recreate(&state, &spec, None));
+        state.daemon_token_label = Some(fp);
+        assert!(!needs_recreate(&state, &spec, None));
+    }
+
+    #[tokio::test]
+    async fn ensure_started_refuses_old_aoe_and_a_missing_token() {
+        let orch = DockerCliOrchestrator::from_env(Arc::default());
+        let old = WorkspaceSpec {
+            version: "v1.17.0".to_string(),
+            ..spec_with_token()
+        };
+        let err = orch.ensure_started(&old).await.unwrap_err().to_string();
+        assert!(err.contains("v1.17.0"), "{err}");
+        let no_token = WorkspaceSpec {
+            version: "v1.26.0".to_string(),
+            ..spec()
+        };
+        let err = orch
+            .ensure_started(&no_token)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("daemon token"), "{err}");
     }
 
     #[test]
@@ -1241,6 +1351,10 @@ mod tests {
             telemetry_label: None,
             agents_label: None,
             mode_label: None,
+            // Matches `spec()`, which carries no token (fingerprint ""), so the
+            // existing cases isolate the drift they test. The daemon-token
+            // cases below use `spec_with_token()`.
+            daemon_token_label: Some(String::new()),
         }
     }
 
@@ -1263,8 +1377,9 @@ mod tests {
         assert!(!full.iter().any(|a| a == "--cityhall"));
         assert!(full.iter().any(|a| a == "cityhall.workspace.mode=full"));
         // The rest of the launch line is unchanged.
-        assert!(full.iter().any(|a| a == "--auth"));
-        assert!(full.iter().any(|a| a == "none"));
+        let at = full.iter().position(|a| a == "--auth").unwrap();
+        assert_eq!(full[at + 1], "token");
+        assert!(!full.iter().any(|a| a == "none"));
     }
 
     /// A container from before modes existed has no mode label. It is a

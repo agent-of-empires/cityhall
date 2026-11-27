@@ -17,6 +17,9 @@ pub struct Model {
     /// Bearer token this workspace presents to fetch its config bundle. `None`
     /// on rows predating the feature; filled in on their next start.
     pub bundle_token: Option<String>,
+    /// AES-GCM envelope of the 64-hex token the workspace's aoe serves under
+    /// `--auth token`; `None` on rows predating the feature.
+    pub daemon_token: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

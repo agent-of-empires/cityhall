@@ -1,6 +1,7 @@
 //! Shared application state threaded through axum.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -94,40 +95,77 @@ impl ActivityRegistry {
 #[derive(Default)]
 pub struct EndpointCache {
     entries: Mutex<HashMap<i32, CachedEndpoint>>,
+    /// Source of `Endpoint::generation`; never reused.
+    next_generation: AtomicU64,
+}
+
+/// A reachable workspace: its address and the bearer its aoe expects. `Debug`
+/// is safe to derive because `Secret` redacts.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub addr: String,
+    pub token: crate::crypto::Secret,
+    /// Which cache entry this came from, stamped by `EndpointCache::put`.
+    /// A late failure report about an obsolete runtime must not act on its
+    /// replacement, and on k8s the replacement has the same address, so the
+    /// address cannot tell them apart.
+    pub generation: u64,
 }
 
 #[derive(Clone)]
 struct CachedEndpoint {
-    addr: String,
+    endpoint: Endpoint,
     version: String,
     image: String,
 }
 
 impl EndpointCache {
-    /// The cached address, if it was produced by a spec with the same version
+    /// The cached endpoint (address and token, stored in one entry so they
+    /// cannot disagree), if it was produced by a spec with the same version
     /// and image (a pin or template change must miss and reconcile).
-    pub fn get(&self, user_id: i32, version: &str, image: &str) -> Option<String> {
+    pub fn get(&self, user_id: i32, version: &str, image: &str) -> Option<Endpoint> {
         self.entries
             .lock()
             .unwrap()
             .get(&user_id)
             .filter(|e| e.version == version && e.image == image)
-            .map(|e| e.addr.clone())
+            .map(|e| e.endpoint.clone())
     }
 
-    pub fn put(&self, user_id: i32, version: &str, image: &str, addr: String) {
+    /// Cache `endpoint` under a fresh generation and return it stamped.
+    pub fn put(&self, user_id: i32, version: &str, image: &str, endpoint: Endpoint) -> Endpoint {
+        let endpoint = Endpoint {
+            generation: self.next_generation.fetch_add(1, Ordering::Relaxed) + 1,
+            ..endpoint
+        };
         self.entries.lock().unwrap().insert(
             user_id,
             CachedEndpoint {
-                addr,
+                endpoint: endpoint.clone(),
                 version: version.to_string(),
                 image: image.to_string(),
             },
         );
+        endpoint
     }
 
     pub fn invalidate(&self, user_id: i32) {
         self.entries.lock().unwrap().remove(&user_id);
+    }
+
+    /// Remove the entry only if it is still `generation`; true when it did.
+    /// Lets exactly one of several failure reports about the same runtime act.
+    pub fn invalidate_if(&self, user_id: i32, generation: u64) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        if entries
+            .get(&user_id)
+            .is_some_and(|e| e.endpoint.generation == generation)
+        {
+            entries.remove(&user_id);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -179,16 +217,61 @@ mod tests {
         let cache = EndpointCache::default();
         assert!(cache.get(1, "v1", "img:v1").is_none());
 
-        cache.put(1, "v1", "img:v1", "127.0.0.1:5000".to_string());
-        assert_eq!(
-            cache.get(1, "v1", "img:v1").as_deref(),
-            Some("127.0.0.1:5000")
+        cache.put(
+            1,
+            "v1",
+            "img:v1",
+            Endpoint {
+                addr: "127.0.0.1:5000".to_string(),
+                token: crate::crypto::Secret::new("tok".to_string()),
+                generation: 0,
+            },
         );
+        let hit = cache.get(1, "v1", "img:v1").unwrap();
+        assert_eq!(hit.addr, "127.0.0.1:5000");
+        assert_eq!(hit.token.expose(), "tok");
+        assert!(!format!("{hit:?}").contains("tok\""));
         // A version pin or template change must miss and reconcile.
         assert!(cache.get(1, "v2", "img:v2").is_none());
         assert!(cache.get(1, "v1", "other:v1").is_none());
 
         cache.invalidate(1);
         assert!(cache.get(1, "v1", "img:v1").is_none());
+    }
+
+    fn ep(addr: &str) -> Endpoint {
+        Endpoint {
+            addr: addr.to_string(),
+            token: crate::crypto::Secret::new("tok".to_string()),
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn invalidate_if_acts_only_on_the_exact_generation() {
+        let cache = EndpointCache::default();
+        let old = cache.put(1, "v", "i", ep("svc:1"));
+        // Replacement with the SAME address (k8s Service DNS).
+        cache.invalidate(1);
+        let new = cache.put(1, "v", "i", ep("svc:1"));
+        assert_ne!(old.generation, new.generation);
+
+        // A stale report about the obsolete runtime leaves the newer entry.
+        assert!(!cache.invalidate_if(1, old.generation));
+        assert!(cache.get(1, "v", "i").is_some());
+
+        // The matching generation removes it exactly once.
+        assert!(cache.invalidate_if(1, new.generation));
+        assert!(cache.get(1, "v", "i").is_none());
+        assert!(!cache.invalidate_if(1, new.generation));
+    }
+
+    #[test]
+    fn generations_are_unique_across_users() {
+        let cache = EndpointCache::default();
+        let a = cache.put(1, "v", "i", ep("a:1"));
+        let b = cache.put(2, "v", "i", ep("b:1"));
+        assert_ne!(a.generation, b.generation);
+        assert_eq!(cache.get(1, "v", "i").unwrap().generation, a.generation);
     }
 }

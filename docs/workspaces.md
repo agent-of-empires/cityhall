@@ -44,10 +44,10 @@ the workspace volume, so it appears once per workspace.
 
 ### Granting Full mode gives a shell
 
-Full mode puts a terminal behind `aoe serve --auth none`. On backends that
+Full mode puts a terminal behind `aoe serve --auth token`. On backends that
 allow Full mode (process, kubernetes), granting `workspaces.full` therefore
-gives that user a shell in their workspace, and CityHall's session is the only
-thing in front of it. **A fresh install seeds the `member` role with the key, so
+gives that user a shell in their workspace, protected by CityHall's session and
+the per-workspace bearer token. **A fresh install seeds the `member` role with the key, so
 on those backends every new user gets Full mode by default.** On docker the
 key has no effect today: Full mode is refused and every user gets Composer
 mode. To withhold Full mode, remove `workspaces.full` from the `member` role on
@@ -59,7 +59,7 @@ workspace, and CityHall can verify none of it:
 
 | Backend | Full mode |
 | --- | --- |
-| docker | **Refused until the per-workspace bearer (#100) lands.** Workspace containers share a bridge network (docker's default bridge, or `WORKSPACE_DOCKER_NETWORK`) that allows container to container traffic, and aoe listens on `0.0.0.0` without auth, so one user's terminal could reach another user's workspace. Publishing the port on `127.0.0.1` only keeps the host's network out. Users who hold the key get Composer mode, the log warns, and the workspaces pages show why. |
+| docker | **Refused.** Workspace containers share a bridge network (docker's default bridge, or `WORKSPACE_DOCKER_NETWORK`) that allows container to container traffic, and aoe listens on `0.0.0.0`. A peer container can reach the port but gets 401 without the workspace token (checked on docker's default bridge; `GET /` still serves aoe's static shell unauthenticated). Lifting the refusal is a follow-up. Publishing the port on `127.0.0.1` only keeps the host's network out. Users who hold the key get Composer mode, the log warns, and the workspaces pages show why. |
 | kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which only works on a CNI that enforces it, and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. CityHall cannot detect whether it is enforced. Egress from a workspace pod is open: it reaches CityHall's API, `cityhall-db` and the kube API (rows 10 to 12 of [credential isolation](research/credential-isolation.md)). The shell can also read the pod's environment, including the bundle token and provider keys. |
 | process | Allowed, **development only**. Every workspace runs as the CityHall OS user, so there is no isolation between users, or from CityHall itself. |
 
@@ -533,12 +533,16 @@ CityHall does not rewrite aoe's stored consent to undo it.
 Workspaces are served through a dedicated listener (default
 `127.0.0.1:3001`), separate from the main CityHall origin, because the aoe
 dashboard owns root-absolute paths. Every proxied request is authenticated
-with the regular CityHall session cookie; the container itself runs
-`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> [--cityhall]
+with the regular CityHall session cookie; the workspace itself runs
+`aoe serve --auth token --behind-proxy --allowed-host <proxy-host> [--cityhall]
 --dangerously-allow-plaintext-remote` (`--cityhall` only in Composer mode, the
-last flag only on aoe 1.22.0 and later, see below). aoe itself does no
-authentication, so CityHall's session is the only gate in front of it; what else
-can reach the workspace's port depends on the backend, see
+last flag only on aoe 1.22.0 and later, see below). CityHall mints a
+per-workspace bearer token (stored encrypted, so `CITYHALL_SECRET_KEY` is
+required) and the proxy injects it as `Authorization: Bearer`, so the bearer
+keeps a workspace safe from its peers, not from its owner, who can read their
+own `serve.token`. The proxy drops every `Set-Cookie` from the workspace, not
+only `aoe_token`. What else can reach the workspace's port still depends on the
+backend, see
 [Granting Full mode gives a shell](#granting-full-mode-gives-a-shell). In
 development nothing needs configuring:
 the cookie set by `127.0.0.1:3000` is also sent to `127.0.0.1:3001` (cookies
@@ -584,6 +588,24 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 | `WORKSPACE_PROXY_BIND_ADDR` | `127.0.0.1:3001` | Address of the workspace proxy listener. |
 | `WORKSPACE_PROXY_PUBLIC_ORIGIN` | _(derived)_ | Public origin browsers use to reach the proxy. |
 
+### Workspace bearer token
+
+- Delivery relies on an undocumented aoe contract: CityHall writes
+  `$HOME/.config/agent-of-empires/serve.token` (0600) before aoe starts and aoe
+  reads it (aoe issue 4953 tracks an explicit input). It needs aoe 1.18 or
+  later (tags like `latest` pass the check); below that the workspace refuses
+  to start, with no fallback to `--auth none`.
+- Upgrade: every running workspace is recreated once on its first start after
+  upgrading (docker and kubernetes recreate, process respawns). The volume is
+  kept, but the recreate ends that workspace's live sessions. aoe below 1.18 is
+  refused.
+- The token is visible in `docker inspect`, the Kubernetes Secret and aoe's own
+  startup log (the token URL). Treat workspace logs as secret-bearing.
+- On an upstream 401 the proxy stops the workspace and answers 503, because
+  aoe's rate limiter keys on the proxy IP and five failures lock everyone out
+  for 15 minutes. The workspace starts again on the next request (a reload),
+  not automatically.
+
 ## Backends
 
 `WORKSPACE_BACKEND` selects how workspaces run (see
@@ -603,10 +625,10 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   `WORKSPACE_K8S_NAMESPACE`). Stop scales to zero keeping the PVC; destroy
   deletes all of them. The image template must point at a registry the cluster
   can pull. Requires the RBAC and NetworkPolicy shipped in `deploy/k8s/` and
-  the helm chart; without the NetworkPolicy any pod in the cluster can reach
-  the auth-none workspaces. Restrict who else may read Secrets in that
+  the helm chart; the NetworkPolicy is defense in depth on top of the bearer token. Restrict who else may read Secrets in that
   namespace, per the note above.
-- **`process`** (unix). One detached `aoe serve` per user with an isolated
+- **`process`** (unix). Data isolation only: all workspaces share one OS user,
+  so the bearer token is not a peer boundary here. One detached `aoe serve` per user with an isolated
   HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Version
   binaries live at `$WORKSPACE_PROCESS_DIR/versions/<version>/aoe`,
   downloaded automatically from the release tarball (or installed there

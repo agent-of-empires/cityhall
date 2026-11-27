@@ -10,7 +10,7 @@
 //!
 //! Every request is gated on the CityHall session (`workspaces.use`), request-
 //! starts the caller's workspace, and is forwarded to it. The workspace itself
-//! runs `aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall`
+//! runs `aoe serve --auth token --behind-proxy --allowed-host <proxy-host> --cityhall`
 //! and is only reachable through
 //! loopback, so CityHall is the sole auth boundary.
 
@@ -103,7 +103,9 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
     };
 
     // Request-driven start: any hit on the proxy resumes a stopped workspace.
-    let addr = workspaces::ensure_started(&state, user_id).await?;
+    let endpoint = workspaces::ensure_started(&state, user_id).await?;
+    let (addr, token) = (endpoint.addr.as_str(), endpoint.token.expose());
+    let generation = endpoint.generation;
     state.activity.touch(user_id);
 
     let path_q = parts
@@ -111,18 +113,20 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
-    let target = format!("http://{addr}{path_q}");
+    let target = format!("http://{addr}{}", strip_token_param(path_q));
 
     let result = if is_websocket_upgrade(&parts.headers) {
-        websocket_tunnel(&state, &mut parts, &target, user_id).await
+        websocket_tunnel(&state, &mut parts, &target, user_id, generation, token).await
     } else {
-        http_forward(&state, &parts, body, &target).await
+        http_forward(&state, &parts, body, &target, user_id, generation, token).await
     };
     if result.is_err() {
         // The workspace may have died out-of-band (crashed container, killed
         // process): drop the cached address so the next request reconciles
         // with the backend instead of dialing a dead endpoint forever.
-        state.endpoints.invalidate(user_id);
+        // Generation-scoped: a late failure from an obsolete runtime must
+        // not evict its replacement's cache entry.
+        state.endpoints.invalidate_if(user_id, generation);
     }
     result
 }
@@ -314,6 +318,53 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
+/// Drop every `token` query parameter. aoe accepts a bearer as `?token=` too;
+/// a browser-chosen one (junk or not) must never reach the workspace. aoe
+/// matches the raw name case-sensitively; the percent-decoded name is checked
+/// as well so no encoding of it slips through. Every other parameter keeps its
+/// order and exact bytes.
+fn strip_token_param(path_and_query: &str) -> String {
+    let Some((path, query)) = path_and_query.split_once('?') else {
+        return path_and_query.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|param| {
+            let name = param.split_once('=').map_or(*param, |(n, _)| n);
+            let decoded = url::form_urlencoded::parse(name.as_bytes())
+                .next()
+                .map(|(k, _)| k.into_owned());
+            name != "token" && decoded.as_deref() != Some("token")
+        })
+        .collect();
+    if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
+}
+
+/// Subprotocol prefix under which aoe accepts a bearer.
+const AOE_TOKEN_PROTOCOL_PREFIX: &str = "aoe-token.";
+
+/// The browser's `Sec-WebSocket-Protocol` entries minus any `aoe-token.<x>`
+/// one, re-joined; `None` when nothing remains. The dashboard's own
+/// `aoe-auth` and `aoe-device.<secret>` entries pass through.
+fn filter_ws_protocols(headers: &HeaderMap) -> Option<HeaderValue> {
+    let kept: Vec<&str> = headers
+        .get_all(SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.starts_with(AOE_TOKEN_PROTOCOL_PREFIX))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(&kept.join(", ")).ok()
+}
+
 /// Hop-by-hop headers plus CityHall credentials and inbound forwarding
 /// headers; none of these may reach the workspace.
 const SKIP_REQUEST_HEADERS: &[HeaderName] = &[
@@ -326,11 +377,18 @@ const SKIP_REQUEST_HEADERS: &[HeaderName] = &[
     AUTHORIZATION,
 ];
 
-fn forward_headers(parts: &request::Parts) -> HeaderMap {
+/// Header aoe echoes its token in; never accepted from or shown to browsers.
+const AOE_TOKEN_HEADER: &str = "x-aoe-token";
+
+/// Build the upstream request headers. The workspace's own bearer token is
+/// inserted after the browser-credential strip, so the browser can never
+/// supply or see it; shared by HTTP and WebSocket forwarding.
+fn forward_headers(parts: &request::Parts, token: &str) -> Result<HeaderMap, AppError> {
     let mut headers = HeaderMap::new();
     for (name, value) in &parts.headers {
         let lower = name.as_str();
         if SKIP_REQUEST_HEADERS.contains(name)
+            || lower == AOE_TOKEN_HEADER
             || lower.starts_with("x-forwarded-")
             || lower == "keep-alive"
             || lower == "te"
@@ -354,7 +412,55 @@ fn forward_headers(parts: &request::Parts) -> HeaderMap {
             headers.insert("x-forwarded-for", v);
         }
     }
-    headers
+    let mut bearer = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| AppError::Internal("invalid workspace token"))?;
+    bearer.set_sensitive(true);
+    headers.insert(AUTHORIZATION, bearer);
+    Ok(headers)
+}
+
+/// Upstream response headers that must not reach the browser: hop-by-hop
+/// ones, plus aoe's token cookie and `x-aoe-token` echo (it sets both when
+/// it sees a valid bearer).
+fn skip_response_header(name: &HeaderName) -> bool {
+    let lower = name.as_str();
+    lower == "connection"
+        || lower == "keep-alive"
+        || lower == "transfer-encoding"
+        || lower == "set-cookie"
+        || lower == AOE_TOKEN_HEADER
+}
+
+/// True when the workspace rejected the bearer CityHall presented. Retrying
+/// or forwarding is wrong: aoe rate-limits failed auths per proxy IP, so
+/// repeats would lock out every user of that workspace.
+fn is_auth_rejection(status: StatusCode) -> bool {
+    status == StatusCode::UNAUTHORIZED
+}
+
+/// The workspace's token no longer matches (stale after a restart or lost
+/// serve.token). Stop it so the next request restarts it and mints a fresh
+/// token. Best effort: a failed stop is logged, the error is still returned.
+///
+/// Only the request that still owns the cached entry (`generation`) stops the
+/// workspace. Concurrent requests to a rejecting runtime all see a 401; the
+/// first stops it, and a late one must not stop the healthy replacement a
+/// later request started.
+async fn workspace_auth_failed(state: &AppState, user_id: i32, generation: u64) -> AppError {
+    match workspaces::stop_if_generation(state, user_id, generation).await {
+        Ok(true) => tracing::error!(
+            user_id,
+            "workspace rejected CityHall bearer token; stopped it to restart"
+        ),
+        Ok(false) => tracing::info!(
+            user_id,
+            "workspace 401 is about an obsolete runtime; not stopping the replacement"
+        ),
+        Err(e) => tracing::error!(user_id, "failed to stop workspace after auth failure: {e}"),
+    }
+    AppError::WorkspaceUnavailable(
+        "workspace authentication failed; it is restarting, reload".to_string(),
+    )
 }
 
 async fn http_forward(
@@ -362,20 +468,26 @@ async fn http_forward(
     parts: &request::Parts,
     body: Body,
     target: &str,
+    user_id: i32,
+    generation: u64,
+    token: &str,
 ) -> Result<Response<Body>, AppError> {
     let upstream = state
         .proxy_client
         .request(parts.method.clone(), target)
-        .headers(forward_headers(parts))
+        .headers(forward_headers(parts, token)?)
         .body(reqwest::Body::wrap_stream(body.into_data_stream()))
         .send()
         .await
         .map_err(|e| AppError::WorkspaceUnavailable(format!("workspace request failed: {e}")))?;
 
+    if is_auth_rejection(upstream.status()) {
+        return Err(workspace_auth_failed(state, user_id, generation).await);
+    }
+
     let mut builder = Response::builder().status(upstream.status());
     for (name, value) in upstream.headers() {
-        let lower = name.as_str();
-        if lower == "connection" || lower == "keep-alive" || lower == "transfer-encoding" {
+        if skip_response_header(name) {
             continue;
         }
         builder = builder.header(name, value);
@@ -394,24 +506,28 @@ async fn websocket_tunnel(
     parts: &mut request::Parts,
     target: &str,
     user_id: i32,
+    generation: u64,
+    token: &str,
 ) -> Result<Response<Body>, AppError> {
     let on_upgrade = parts
         .extensions
         .remove::<hyper::upgrade::OnUpgrade>()
         .ok_or(AppError::BadRequest("connection is not upgradable"))?;
 
-    let mut headers = forward_headers(parts);
+    let mut headers = forward_headers(parts, token)?;
     headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
     headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
     for name in [
         SEC_WEBSOCKET_KEY,
         SEC_WEBSOCKET_VERSION,
-        SEC_WEBSOCKET_PROTOCOL,
         SEC_WEBSOCKET_EXTENSIONS,
     ] {
         if let Some(v) = parts.headers.get(&name) {
             headers.insert(name, v.clone());
         }
+    }
+    if let Some(v) = filter_ws_protocols(&parts.headers) {
+        headers.insert(SEC_WEBSOCKET_PROTOCOL, v);
     }
 
     let upstream = state
@@ -423,6 +539,9 @@ async fn websocket_tunnel(
         .await
         .map_err(|e| AppError::WorkspaceUnavailable(format!("workspace handshake failed: {e}")))?;
 
+    if is_auth_rejection(upstream.status()) {
+        return Err(workspace_auth_failed(state, user_id, generation).await);
+    }
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Err(AppError::WorkspaceUnavailable(format!(
             "workspace rejected websocket upgrade: {}",
@@ -431,7 +550,8 @@ async fn websocket_tunnel(
     }
 
     // Echo the workspace's actual negotiation (accept key, selected
-    // subprotocol, extensions), never the client's request.
+    // subprotocol, extensions), never the client's request. This is a
+    // whitelist, so aoe's Set-Cookie and x-aoe-token never reach the browser.
     let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
     for name in [
         UPGRADE,
@@ -479,6 +599,108 @@ async fn websocket_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parts_with(headers: &[(&str, &str)]) -> request::Parts {
+        let mut b = Request::builder().uri("/api/x");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn forwarded_request_carries_only_the_workspace_bearer() {
+        let parts = parts_with(&[
+            ("authorization", "Bearer browser"),
+            ("cookie", "aoe_token=evil; cityhall_session=s"),
+            ("x-aoe-token", "evil"),
+            ("accept", "text/html"),
+        ]);
+        let h = forward_headers(&parts, "real-token").unwrap();
+        let auth: Vec<_> = h.get_all(AUTHORIZATION).iter().collect();
+        assert_eq!(auth.len(), 1);
+        assert_eq!(auth[0], "Bearer real-token");
+        assert!(auth[0].is_sensitive());
+        assert!(h.get(COOKIE).is_none());
+        assert!(h.get(AOE_TOKEN_HEADER).is_none());
+        assert_eq!(h.get("accept").unwrap(), "text/html");
+    }
+
+    #[test]
+    fn token_headers_and_cookies_are_stripped_from_responses() {
+        let mut up = HeaderMap::new();
+        up.append(
+            "set-cookie",
+            HeaderValue::from_static("aoe_token=t; HttpOnly"),
+        );
+        up.append("set-cookie", HeaderValue::from_static("other=1"));
+        up.append("X-AOE-Token", HeaderValue::from_static("t"));
+        up.append("connection", HeaderValue::from_static("close"));
+        up.append("content-type", HeaderValue::from_static("text/plain"));
+        let kept: Vec<_> = up
+            .keys()
+            .filter(|n| !skip_response_header(n))
+            .map(|n| n.as_str())
+            .collect();
+        assert_eq!(kept, ["content-type"]);
+    }
+
+    #[test]
+    fn upstream_401_is_an_auth_rejection() {
+        assert!(is_auth_rejection(StatusCode::UNAUTHORIZED));
+        assert!(!is_auth_rejection(StatusCode::FORBIDDEN));
+        assert!(!is_auth_rejection(StatusCode::OK));
+    }
+
+    #[test]
+    fn token_query_param_is_stripped() {
+        for (input, want) in [
+            ("/p", "/p"),
+            ("/p?", "/p?"),
+            ("/p?a=1&token=x&b=2", "/p?a=1&b=2"),
+            ("/p?token=x", "/p"),
+            ("/p?token=x&token=y", "/p"),
+            ("/p?a=1&token=x&token=y&b=2", "/p?a=1&b=2"),
+            ("/p?token=", "/p"),
+            ("/p?token", "/p"),
+            ("/p?%74oken=x&a=1", "/p?a=1"),
+            ("/p?TOKEN=x", "/p?TOKEN=x"),
+            ("/p?xtoken=1", "/p?xtoken=1"),
+            ("/p?tokens=1&a=token", "/p?tokens=1&a=token"),
+            ("/p?a=%20b&token=x&c=d%2Fe", "/p?a=%20b&c=d%2Fe"),
+            ("/p?a=1&&b=2", "/p?a=1&&b=2"),
+        ] {
+            assert_eq!(strip_token_param(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn aoe_token_subprotocols_are_filtered() {
+        let run = |values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(v).unwrap());
+            }
+            filter_ws_protocols(&h).map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(run(&[]), None);
+        assert_eq!(run(&["aoe-auth"]).as_deref(), Some("aoe-auth"));
+        assert_eq!(
+            run(&["aoe-auth, aoe-token.x, aoe-device.s"]).as_deref(),
+            Some("aoe-auth, aoe-device.s")
+        );
+        assert_eq!(run(&["aoe-token.x"]), None);
+        assert_eq!(run(&["aoe-token.x, aoe-token.y"]), None);
+        assert_eq!(
+            run(&["aoe-auth", "aoe-token.x,aoe-device.s"]).as_deref(),
+            Some("aoe-auth, aoe-device.s")
+        );
+        // Only the exact prefix: a lookalike is some other client's protocol.
+        assert_eq!(
+            run(&["aoe-tokenx, graphql-ws"]).as_deref(),
+            Some("aoe-tokenx, graphql-ws")
+        );
+    }
 
     #[test]
     fn websocket_detection() {
@@ -555,9 +777,10 @@ mod tests {
         parts
             .headers
             .insert("accept", HeaderValue::from_static("text/html"));
-        let out = forward_headers(&parts);
+        let out = forward_headers(&parts, "tok").unwrap();
         assert!(out.get(COOKIE).is_none());
-        assert!(out.get(AUTHORIZATION).is_none());
+        // The browser's Authorization is replaced by the workspace bearer.
+        assert_eq!(out.get(AUTHORIZATION).unwrap(), "Bearer tok");
         // Inbound spoofable forwarding headers are dropped, not passed on.
         assert!(out.get("x-forwarded-for").is_none());
         assert_eq!(out.get("accept").unwrap(), "text/html");

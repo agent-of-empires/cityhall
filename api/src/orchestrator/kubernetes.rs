@@ -17,8 +17,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::{
-    http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, Orchestrator,
-    OrchestratorError, TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
+    daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
+    Orchestrator, OrchestratorError, TelemetryPolicy, WorkspaceMode, WorkspaceSpec,
+    WorkspaceStatus,
 };
 
 /// Pod template annotation recording a Full mode workspace. Absent means Composer.
@@ -189,6 +190,11 @@ impl KubectlOrchestrator {
 #[async_trait]
 impl Orchestrator for KubectlOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
+        daemon_token::require_or_stop(&spec.version, spec.user_id, || self.stop(spec.user_id))
+            .await?;
+        if spec.daemon_token.is_none() {
+            return Err(daemon_token::missing_token());
+        }
         // A running pod keeps the mode it started with on a request-driven
         // start: the mode annotation sits on the pod template, so applying a
         // different one would roll a healthy workspace. Only an explicit
@@ -312,7 +318,7 @@ fn live_mode(deployment_json: &str) -> Option<WorkspaceMode> {
 }
 
 /// Every environment value the workspace needs: the bundle location and
-/// token (when configured), plus every agent credential. Empty when there is
+/// token (when configured), every agent credential, and the daemon token. Empty when there is
 /// nothing to inject, in which case the caller emits neither a Secret nor an
 /// `envFrom` referencing one.
 ///
@@ -333,6 +339,12 @@ fn env_values(spec: &WorkspaceSpec) -> std::collections::BTreeMap<String, String
     }
     for (name, value) in &spec.agent_env.pairs {
         values.insert(name.clone(), value.expose().to_string());
+    }
+    if let Some(token) = &spec.daemon_token {
+        values.insert(
+            daemon_token::ENV_VAR.to_string(),
+            token.expose().to_string(),
+        );
     }
     values
 }
@@ -366,16 +378,18 @@ fn render_manifests(
         // where the reference image relocates each agent's config directory
         // onto the volume. Passing the whole command as `args` instead matches
         // what the docker backend does, and an image with no entrypoint runs
-        // these as the command anyway. Force-on wraps these args (never the
-        // entrypoint) so the policy is asserted before aoe serves.
-        "args": spec.telemetry.wrap_command(vec![
+        // these as the command anyway. The wrapper (never the entrypoint) writes
+        // the daemon token, and for force-on asserts the telemetry policy, before
+        // aoe serves.
+        "args": daemon_token::wrap_command(spec.telemetry, vec![
             "aoe".to_string(),
             "serve".to_string(),
             "--host".to_string(), "0.0.0.0".to_string(),
             "--port".to_string(), AOE_PORT.to_string(),
-            // CityHall's session gates the proxy; the
-            // shipped NetworkPolicy keeps other pods out.
-            "--auth".to_string(), "none".to_string(),
+            // aoe adopts the per-workspace token the wrapper
+            // writes (see `daemon_token`); the proxy presents
+            // it as the bearer.
+            "--auth".to_string(), "token".to_string(),
             "--behind-proxy".to_string(),
             // The proxy forwards the public Host and
             // Origin, both of which aoe's DNS-rebinding
@@ -452,6 +466,13 @@ fn render_manifests(
     // Written only when a policy is actually forced, so deploying this feature
     // leaves an existing workspace's template byte-identical and does not roll
     // every pod in the namespace for a setting nobody has touched yet.
+    // Fingerprint only, never the token. The changed args already roll pods
+    // once on upgrade; this makes a future token rotation roll them too, since
+    // the Secret alone changing does not restart running pods.
+    if let Some(token) = &spec.daemon_token {
+        annotations["cityhall.workspace/daemon-token"] =
+            json!(daemon_token::fingerprint(token.expose()));
+    }
     if spec.telemetry != TelemetryPolicy::UserChoice {
         annotations["cityhall.workspace/telemetry-policy"] = json!(spec.telemetry.as_str());
     }
@@ -557,6 +578,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            daemon_token: None,
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
@@ -567,13 +589,16 @@ mod tests {
     /// A distinctive credential value: any assertion below that finds this
     /// substring outside the Secret item has found a leak into the
     /// Deployment.
+    /// Distinctive bundle token: a plain substring check on it cannot be
+    /// confused with the word `token` in a manifest.
+    const BUNDLE_PROBE: &str = "bundle-probe-7f3a";
     const SECRET_VALUE: &str = "sk-super-secret-value";
 
     fn spec_with_bundle_and_agent_env() -> WorkspaceSpec {
         WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             agent_env: crate::agent_credentials::AgentEnv {
                 pairs: vec![(
@@ -595,7 +620,7 @@ mod tests {
         );
         assert_eq!(
             values.get("AOE_CITYHALL_BUNDLE_TOKEN").map(String::as_str),
-            Some("tok")
+            Some(BUNDLE_PROBE)
         );
         assert_eq!(
             values.get("ANTHROPIC_API_KEY").map(String::as_str),
@@ -623,7 +648,7 @@ mod tests {
         let spec = WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             ..spec()
         };
@@ -688,8 +713,10 @@ mod tests {
         // volume from there, so a workspace would silently stop persisting an
         // installed agent and its login.
         assert!(container.get("command").is_none());
-        assert_eq!(container["args"][0], "aoe");
-        assert_eq!(container["args"][1], "serve");
+        // The wrapper is always present; aoe's own argv follows the script.
+        assert_eq!(container["args"][0], "sh");
+        assert_eq!(container["args"][3], "aoe");
+        assert_eq!(container["args"][4], "serve");
         // Nothing to inject: no envFrom referencing a Secret that does not exist.
         assert!(container.get("envFrom").is_none());
         // No agents configured: neither the env nor the annotation is written, so
@@ -726,7 +753,10 @@ mod tests {
         assert_eq!(secret["metadata"]["name"], "cityhall-workspace-u42-env");
         assert_eq!(secret["metadata"]["labels"]["cityhall.user_id"], "42");
         assert_eq!(secret["stringData"]["ANTHROPIC_API_KEY"], SECRET_VALUE);
-        assert_eq!(secret["stringData"]["AOE_CITYHALL_BUNDLE_TOKEN"], "tok");
+        assert_eq!(
+            secret["stringData"]["AOE_CITYHALL_BUNDLE_TOKEN"],
+            BUNDLE_PROBE
+        );
 
         let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
@@ -744,7 +774,7 @@ mod tests {
             "credential value leaked into the Deployment: {dep_text}"
         );
         assert!(
-            !dep_text.contains("tok"),
+            !dep_text.contains(BUNDLE_PROBE),
             "bundle token leaked into the Deployment: {dep_text}"
         );
 
@@ -936,6 +966,79 @@ mod tests {
             dep["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace/agents"],
             "claude,codex"
         );
+    }
+
+    const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn spec_with_token() -> WorkspaceSpec {
+        WorkspaceSpec {
+            daemon_token: Some(crate::crypto::Secret::new(TEST_TOKEN.to_string())),
+            ..spec()
+        }
+    }
+
+    /// The token rides in the per-user Secret, only its fingerprint is on the
+    /// pod template, and aoe is launched under `--auth token`.
+    #[test]
+    fn the_daemon_token_rides_the_secret_and_only_its_fingerprint_rolls_pods() {
+        let m = render_manifests(&spec_with_token(), "cityhall", "5Gi", None);
+        let items = m["items"].as_array().unwrap();
+        let secret = items.iter().find(|i| i["kind"] == "Secret").unwrap();
+        assert_eq!(secret["stringData"]["CITYHALL_DAEMON_TOKEN"], TEST_TOKEN);
+
+        let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
+        let dep_text = dep.to_string();
+        assert!(!dep_text.contains(TEST_TOKEN), "{dep_text}");
+        let fp = daemon_token::fingerprint(TEST_TOKEN);
+        assert_eq!(
+            dep["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace/daemon-token"],
+            fp.as_str()
+        );
+
+        let args = dep["spec"]["template"]["spec"]["containers"][0]["args"]
+            .as_array()
+            .unwrap();
+        let at = args.iter().position(|a| a == "--auth").unwrap();
+        assert_eq!(args[at + 1], "token");
+        assert!(!args.iter().any(|a| a == "none"), "{args:?}");
+
+        // A different token changes the template, so the Deployment rolls.
+        let other = WorkspaceSpec {
+            daemon_token: Some(crate::crypto::Secret::new("f".repeat(64))),
+            ..spec()
+        };
+        let m2 = render_manifests(&other, "cityhall", "5Gi", None);
+        let dep2 = m2["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "Deployment")
+            .unwrap();
+        assert_ne!(
+            dep["spec"]["template"]["metadata"]["annotations"],
+            dep2["spec"]["template"]["metadata"]["annotations"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_started_refuses_old_aoe_and_a_missing_token() {
+        let orch = KubectlOrchestrator::from_env();
+        let old = WorkspaceSpec {
+            version: "v1.17.0".to_string(),
+            ..spec_with_token()
+        };
+        let err = orch.ensure_started(&old).await.unwrap_err().to_string();
+        assert!(err.contains("v1.17.0"), "{err}");
+        let no_token = WorkspaceSpec {
+            version: "v1.26.0".to_string(),
+            ..spec()
+        };
+        let err = orch
+            .ensure_started(&no_token)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("daemon token"), "{err}");
     }
 
     #[test]
