@@ -1015,7 +1015,12 @@ mod tests {
 
     #[test]
     fn run_args_pass_the_plaintext_flag_only_for_aoe_1_22_and_later() {
-        for (version, want) in [("v1.21.0", false), ("v1.22.0", true), ("v1.26.0", true)] {
+        for (version, want) in [
+            ("v1.21.0", false),
+            ("v1.22.0", true),
+            ("v1.26.0", true),
+            ("nightly-20261127", true),
+        ] {
             let spec = WorkspaceSpec {
                 version: version.to_string(),
                 ..spec()

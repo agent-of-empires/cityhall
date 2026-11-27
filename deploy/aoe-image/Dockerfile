@@ -23,12 +23,12 @@
 # CityHall starts containers from this image with:
 #   aoe serve --host 0.0.0.0 --port 8080 --auth none --behind-proxy \
 #     --allowed-host <proxy-host> --cityhall
-# plus --dangerously-allow-plaintext-remote when the version is 1.22.0 or later
-# (aoe's plaintext gate answers 426 otherwise; the hop from the proxy to the
-# workspace is plain HTTP inside the docker or pod network (loopback for the
-# process backend), and a TLS sidecar is
-# the later answer, issue #127)
 # and mounts a per-user volume at /home/aoe/.config/agent-of-empires.
+#
+# For version 1.22.0 or later it also passes --dangerously-allow-plaintext-remote;
+# aoe's plaintext gate answers 426 without it. The proxy-to-workspace hop is
+# plain HTTP inside the docker or pod network (loopback for the process
+# backend); a TLS sidecar is the later answer (issue #127).
 #
 # The image ships no coding agent. A user installs the one they want from
 # inside their workspace, and `entrypoint.sh` keeps that install and the

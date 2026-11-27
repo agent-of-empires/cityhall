@@ -327,7 +327,7 @@ fn render_manifests(
         // what the docker backend does, and an image with no entrypoint runs
         // these as the command anyway. Force-on wraps these args (never the
         // entrypoint) so the policy is asserted before aoe serves.
-        "args": spec.telemetry.wrap_command([
+        "args": spec.telemetry.wrap_command(vec![
             "aoe".to_string(),
             "serve".to_string(),
             "--host".to_string(), "0.0.0.0".to_string(),
@@ -748,8 +748,16 @@ mod tests {
                 ..spec()
             };
             let m = render_manifests(&spec, "cityhall", "5Gi", None);
-            let args = m.to_string();
-            assert_eq!(args.contains(PLAINTEXT_FLAG), want, "{version}");
+            let dep = m["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["kind"] == "Deployment")
+                .unwrap();
+            let args = dep["spec"]["template"]["spec"]["containers"][0]["args"]
+                .as_array()
+                .unwrap();
+            assert_eq!(args.iter().any(|a| a == PLAINTEXT_FLAG), want, "{version}");
         }
     }
 

@@ -485,21 +485,33 @@ Workspaces are served through a dedicated listener (default
 `127.0.0.1:3001`), separate from the main CityHall origin, because the aoe
 dashboard owns root-absolute paths. Every proxied request is authenticated
 with the regular CityHall session cookie; the container itself runs
-`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall`
-(plus `--dangerously-allow-plaintext-remote` on aoe 1.22.0 and later, see
-below) and is only reachable through a
-loopback-published port, so CityHall is the sole auth boundary. In development
+`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall
+--dangerously-allow-plaintext-remote` (the last flag only on aoe 1.22.0 and
+later, see below) and is only reachable through a loopback-published port, so CityHall is the sole auth boundary. In development
 nothing needs configuring: the cookie set by `127.0.0.1:3000` is also sent to
 `127.0.0.1:3001` (cookies ignore ports).
 
 aoe 1.22.0 added a plaintext gate that answers `426 tls_required` to every
 request it did not receive over HTTPS, and CityHall's proxy talks plain HTTP to
-the workspace. CityHall therefore adds `--dangerously-allow-plaintext-remote`
-when the workspace version is 1.22.0 or later (aoe before 1.22.0 rejects the
-flag, so it is omitted there; a version such as `latest` that is not a release
-number gets the flag). The plaintext hop is accepted for now because it stays
-inside the docker or pod network (or on loopback, for the process backend) between the proxy and the workspace; a TLS
-sidecar is the planned replacement (issue #127).
+the workspace. CityHall therefore adds `--dangerously-allow-plaintext-remote` when the
+workspace version is 1.22.0 or later; aoe before 1.22.0 rejects the flag, so
+it is omitted there.
+
+A version that is not a release tag with a `major.minor` number (`latest`,
+`main`, `nightly-20261127`, a git SHA) gets the flag. That side was chosen
+because it fails loudly: if the binary is older than 1.22.0, aoe exits at
+start with an unknown-argument error. The other side fails silently: a newer
+aoe answers 426 on every request while the workspace looks healthy.
+
+The decision keys on the configured version string, not on the binary. For
+docker and kubernetes the version must therefore match the aoe inside the
+image: an `image_template` without `{version}` (for example a `:stable` tag),
+or a custom tag over an older aoe, can make the decision wrong. Keep the
+version and the image in step.
+
+The plaintext hop is accepted for now because it stays inside the docker or
+pod network (or on loopback, for the process backend) between the proxy and
+the workspace; a TLS sidecar is the planned replacement (issue #127).
 
 The allowed host is the host part of `WORKSPACE_PROXY_PUBLIC_ORIGIN` (defaulting
 to `localhost`), because the proxy forwards the public `Host` it was called on
