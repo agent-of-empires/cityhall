@@ -6,13 +6,45 @@ default; kubernetes and bare-process backends are available, see
 [Backends](#backends)). Each workspace has a persistent data volume, so aoe
 sessions and configuration survive stops, restarts, and version changes.
 
-Every workspace runs with `--cityhall`, aoe's locked-down client mode: users
-get the message composer and the structured (chat) view only, with terminal
-and diff panes, project management, and advanced settings hidden in the UI and
-refused server-side. The flag requires an aoe version that supports it;
-starting a workspace on an older version fails with an unknown-argument error
-from `aoe serve`. If no release has it yet, see
-[Unreleased aoe](#unreleased-aoe).
+A workspace runs in one of two modes, set by the owner's role (see
+[GLOSSARY.md](../GLOSSARY.md)):
+
+- **Full mode** serves aoe's complete dashboard: terminal, diff panes,
+  worktrees and yolo. The workspace runs without `--cityhall`. A role gets it
+  with the `workspaces.full` permission, which `admin` holds through `*`.
+- **Composer mode** passes `--cityhall`, aoe's locked-down client mode: the
+  message composer and the structured (chat) view only, with terminal and diff
+  panes, project management and advanced settings hidden in the UI and refused
+  server-side. Every role without `workspaces.full` gets this.
+
+`--cityhall` needs an aoe version that supports it; starting a workspace on an
+older version fails with an unknown-argument error from `aoe serve`. If no
+release has it yet, see [Unreleased aoe](#unreleased-aoe).
+
+The mode is read from the role when a workspace is created or recreated. A role
+change never restarts a running workspace: it applies on the next restart (the
+restart action, an idle stop, or a CityHall restart). Revoking `workspaces.full`
+therefore leaves a running workspace in Full mode until then; restart it to
+revoke at once.
+
+**Upgrading.** A fresh install seeds the `member` role with `workspaces.full`.
+Existing `member` roles are not changed and stay in Composer mode until an admin
+adds the key. Running workspaces are not recreated by the upgrade.
+
+The first time a user opens a Full mode workspace, aoe shows its optional
+setup wizard at `/setup`. "Go to dashboard" dismisses it; the choice is kept on
+the workspace volume, so it appears once per workspace.
+
+Full mode puts a terminal behind `aoe serve --auth none`, so it is only offered
+where nothing but the CityHall proxy can reach the workspace's port:
+
+| Backend | Full mode |
+| --- | --- |
+| docker, published loopback port | Allowed. Trusts every process on the docker host. |
+| docker, `WORKSPACE_DOCKER_NETWORK` set | Not offered. Peer workspaces on the shared network can reach each other's port, so the workspace starts in Composer mode, the log warns, and the workspaces pages show why. |
+| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which needs a CNI that enforces it. |
+| process | Allowed. Development only: workspaces run as the CityHall OS user with no isolation from each other or from CityHall. |
+
 
 ## How it works
 
@@ -485,9 +517,9 @@ Workspaces are served through a dedicated listener (default
 `127.0.0.1:3001`), separate from the main CityHall origin, because the aoe
 dashboard owns root-absolute paths. Every proxied request is authenticated
 with the regular CityHall session cookie; the container itself runs
-`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall
---dangerously-allow-plaintext-remote` (the last flag only on aoe 1.22.0 and
-later, see below) and is only reachable through a loopback-published port, so
+`aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> [--cityhall]
+--dangerously-allow-plaintext-remote` (`--cityhall` only in Composer mode, the
+last flag only on aoe 1.22.0 and later, see below) and is only reachable through a loopback-published port, so
 CityHall is the sole auth boundary. In development nothing needs configuring:
 the cookie set by `127.0.0.1:3000` is also sent to `127.0.0.1:3001` (cookies
 ignore ports).
