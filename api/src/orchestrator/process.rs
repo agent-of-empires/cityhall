@@ -78,7 +78,10 @@ impl RunState {
         self.version == spec.version
             && self.env_fingerprint == spec.agent_env.fingerprint
             && TelemetryPolicy::from_stored(&self.telemetry) == spec.telemetry
-            && WorkspaceMode::from_stored(Some(&self.mode)) == spec.mode
+            // Only called for a live process, which keeps the mode it started
+            // with unless this is an explicit restart.
+            && (!spec.apply_mode_to_running
+                || WorkspaceMode::from_stored(Some(&self.mode)) == spec.mode)
     }
 }
 
@@ -685,6 +688,7 @@ mod tests {
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         }
     }
 
@@ -783,6 +787,7 @@ mod tests {
         assert!(!state.matches(&WorkspaceSpec {
             version: "v1.0.0".to_string(),
             mode: WorkspaceMode::Full,
+            apply_mode_to_running: true,
             ..spec
         }));
     }
@@ -791,6 +796,7 @@ mod tests {
     fn a_mode_change_is_drift_in_both_directions() {
         let full = WorkspaceSpec {
             mode: WorkspaceMode::Full,
+            apply_mode_to_running: true,
             ..spec_for(1)
         };
         let state = RunState {
@@ -802,7 +808,25 @@ mod tests {
             mode: "full".to_string(),
         };
         assert!(state.matches(&full));
-        assert!(!state.matches(&spec_for(1)));
+        // Permission removed, explicit restart: drift.
+        assert!(!state.matches(&WorkspaceSpec {
+            apply_mode_to_running: true,
+            ..spec_for(1)
+        }));
+        // The same mismatch on a request-driven start leaves the live process.
+        assert!(state.matches(&spec_for(1)));
+        let composer = RunState {
+            mode: String::new(),
+            ..state
+        };
+        assert!(composer.matches(&full_without_restart()));
+    }
+
+    fn full_without_restart() -> WorkspaceSpec {
+        WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec_for(1)
+        }
     }
 
     #[test]
@@ -877,6 +901,7 @@ mod tests {
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.

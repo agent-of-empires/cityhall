@@ -13,6 +13,7 @@ use crate::orchestrator::{
     WorkspaceRuntime, WorkspaceStatus,
 };
 use crate::proxy;
+use crate::rbac::Perms;
 use crate::state::AppState;
 use crate::workspaces::{self, SETTINGS_ID};
 
@@ -137,7 +138,9 @@ pub async fn list(
                     .or_else(|| state.provisioning.state(&binary_key(v)))
             })
             .map(|(message, failed)| ProvisioningInfo { message, failed });
-        let requested = workspaces::mode_for_role(user.role_id.and_then(|id| roles.get(&id)));
+        let requested = workspaces::mode_for_perms(&Perms::from_role(
+            user.role_id.and_then(|id| roles.get(&id)),
+        ));
         let (mode, mode_note) = workspaces::next_mode(requested, blocker);
         items.push(WorkspaceItem {
             user_id: user.id,
@@ -174,13 +177,10 @@ pub async fn me(
         .as_ref()
         .and_then(|r| workspaces::effective_version(&cfg, r))
         .or_else(|| cfg.default_version.clone());
-    let requested = if caller.perms.can("workspaces.full") {
-        WorkspaceMode::Full
-    } else {
-        WorkspaceMode::Composer
-    };
-    let (mode, mode_note) =
-        workspaces::next_mode(requested, state.orchestrator.full_mode_blocker());
+    let (mode, mode_note) = workspaces::next_mode(
+        workspaces::mode_for_perms(&caller.perms),
+        state.orchestrator.full_mode_blocker(),
+    );
     Ok(Json(serde_json::json!({
         "status": status,
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),

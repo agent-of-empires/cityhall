@@ -49,6 +49,13 @@ pub struct WorkspaceSpec {
     /// when the workspace is created or reconciled, never in `build_spec`
     /// (that runs on every proxied request and stays free of database reads).
     pub mode: WorkspaceMode,
+    /// Whether a mode that differs from the one a RUNNING workspace was started
+    /// with counts as drift. False on request-driven starts: after a CityHall
+    /// restart or a failed forward the endpoint cache is empty, and a
+    /// permission change must not kill a healthy workspace there. True only on
+    /// an explicit restart. A workspace that is not running always starts in
+    /// `mode`.
+    pub apply_mode_to_running: bool,
 }
 
 /// The aoe client a workspace serves (see GLOSSARY.md).

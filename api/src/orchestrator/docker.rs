@@ -40,8 +40,12 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Marks every container CityHall created, and the only thing that makes a
 /// container ours.
-/// Why Full mode is unavailable on a shared docker network.
-pub(crate) const SHARED_NETWORK_BLOCKER: &str = "Full mode is unavailable on a shared docker network: any other workspace container can reach this workspace's unauthenticated aoe port";
+/// Why Full mode is unavailable on docker. With or without
+/// `WORKSPACE_DOCKER_NETWORK`, workspace containers share a bridge network
+/// that allows container to container traffic, and aoe listens on 0.0.0.0
+/// with `--auth none`, so a Full mode terminal could reach every other
+/// workspace's shell. The loopback publish only limits access from the host.
+pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on docker: workspace containers can reach each other's unauthenticated aoe port. It waits for per-workspace auth";
 
 /// Records a Full mode container. Absent means Composer.
 const MODE_LABEL: &str = "cityhall.workspace.mode";
@@ -552,8 +556,10 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
                 "0.0.0.0",
                 "--port",
                 &AOE_PORT.to_string(),
-                // CityHall's session gates the proxy; the container port is never
-                // reachable from outside (loopback publish or internal network).
+                // CityHall's session gates the proxy. The loopback publish keeps
+                // the host's network out, but containers on docker's bridge can
+                // reach this port directly, which is why Full mode is refused
+                // on docker (`DOCKER_FULL_MODE_BLOCKER`).
                 "--auth",
                 "none",
                 "--behind-proxy",
@@ -579,7 +585,7 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
 #[async_trait]
 impl Orchestrator for DockerCliOrchestrator {
     fn full_mode_blocker(&self) -> Option<&'static str> {
-        self.network.as_ref().map(|_| SHARED_NETWORK_BLOCKER)
+        Some(DOCKER_FULL_MODE_BLOCKER)
     }
 
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
@@ -898,7 +904,11 @@ fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<
         || state.env_label.as_deref().unwrap_or("") != spec.agent_env.fingerprint
         || telemetry != spec.telemetry
         || state.agents_label.as_deref().unwrap_or("") != spec.agents
-        || WorkspaceMode::from_stored(state.mode_label.as_deref()) != spec.mode
+        // A running container keeps the mode it started with unless this is an
+        // explicit restart; a stopped one is recreated, since `docker start`
+        // would reuse its stored command line.
+        || ((!state.running || spec.apply_mode_to_running)
+            && WorkspaceMode::from_stored(state.mode_label.as_deref()) != spec.mode)
 }
 
 #[derive(Deserialize)]
@@ -976,6 +986,7 @@ mod tests {
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         }
     }
 
@@ -1265,28 +1276,58 @@ mod tests {
         assert!(!needs_recreate(&state, &spec(), None));
     }
 
+    /// An explicit restart applies a changed mode to a running container, in
+    /// both directions.
     #[test]
-    fn a_mode_change_triggers_recreate_in_both_directions() {
+    fn a_mode_change_triggers_recreate_on_an_explicit_restart() {
+        let restart = |spec: WorkspaceSpec| WorkspaceSpec {
+            apply_mode_to_running: true,
+            ..spec
+        };
         // Composer container, Full spec.
         let composer = container_state("v1.0.0", None, None);
-        assert!(needs_recreate(&composer, &full_spec(), None));
+        assert!(needs_recreate(&composer, &restart(full_spec()), None));
 
         // Full container, Composer spec (permission removed).
         let mut full = container_state("v1.0.0", None, None);
         full.mode_label = Some("full".to_string());
-        assert!(needs_recreate(&full, &spec(), None));
-        assert!(!needs_recreate(&full, &full_spec(), None));
+        assert!(needs_recreate(&full, &restart(spec()), None));
+        assert!(!needs_recreate(&full, &restart(full_spec()), None));
+    }
+
+    /// Request-driven rediscovery (CityHall restarted, a forward failed) must
+    /// leave a running container in the mode it started with, or an upgrade
+    /// would kill every admin's Composer workspace the moment `*` resolves to
+    /// Full.
+    #[test]
+    fn a_running_container_keeps_its_mode_on_request_driven_starts() {
+        let composer = container_state("v1.0.0", None, None);
+        assert!(composer.running);
+        assert!(!needs_recreate(&composer, &full_spec(), None));
+        let mut full = container_state("v1.0.0", None, None);
+        full.mode_label = Some("full".to_string());
+        assert!(!needs_recreate(&full, &spec(), None));
+    }
+
+    /// A stopped container is recreated: `docker start` reuses the stored
+    /// command line, so a changed mode only reaches it through recreation.
+    #[test]
+    fn a_stopped_container_picks_up_a_changed_mode() {
+        let mut stopped = container_state("v1.0.0", None, None);
+        stopped.running = false;
+        assert!(needs_recreate(&stopped, &full_spec(), None));
+        assert!(!needs_recreate(&stopped, &spec(), None));
     }
 
     #[test]
-    fn a_shared_network_blocks_full_mode_and_published_mode_does_not() {
+    fn docker_refuses_full_mode_with_and_without_a_network() {
         let orch = |network: Option<&str>| DockerCliOrchestrator {
             cli: "docker".to_string(),
             network: network.map(str::to_string),
             provisioning: Arc::new(ProvisioningRegistry::default()),
         };
         assert!(orch(Some("cityhall")).full_mode_blocker().is_some());
-        assert!(orch(None).full_mode_blocker().is_none());
+        assert!(orch(None).full_mode_blocker().is_some());
     }
 
     /// A container from before this feature has no env label at all. A user
