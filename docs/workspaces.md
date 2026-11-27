@@ -540,7 +540,8 @@ last flag only on aoe 1.22.0 and later, see below). CityHall mints a
 per-workspace bearer token (stored encrypted, so `CITYHALL_SECRET_KEY` is
 required) and the proxy injects it as `Authorization: Bearer`, so the bearer
 keeps a workspace safe from its peers, not from its owner, who can read their
-own `serve.token`. What else can reach the workspace's port still depends on the
+own `serve.token`. The proxy drops every `Set-Cookie` from the workspace, not
+only `aoe_token`. What else can reach the workspace's port still depends on the
 backend, see
 [Granting Full mode gives a shell](#granting-full-mode-gives-a-shell). In
 development nothing needs configuring:
@@ -596,12 +597,14 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
   to start, with no fallback to `--auth none`.
 - Upgrade: every running workspace is recreated once on its first start after
   upgrading (docker and kubernetes recreate, process respawns). The volume is
-  kept; live sessions end.
+  kept, but the recreate ends that workspace's live sessions. aoe below 1.18 is
+  refused.
 - The token is visible in `docker inspect`, the Kubernetes Secret and aoe's own
   startup log (the token URL). Treat workspace logs as secret-bearing.
-- On an upstream 401 the proxy answers 503 and restarts the workspace, because
+- On an upstream 401 the proxy stops the workspace and answers 503, because
   aoe's rate limiter keys on the proxy IP and five failures lock everyone out
-  for 15 minutes.
+  for 15 minutes. The workspace starts again on the next request (a reload),
+  not automatically.
 
 ## Backends
 
