@@ -18,7 +18,7 @@ use tokio::process::Command;
 
 use super::{
     http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, Orchestrator,
-    OrchestratorError, TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
+    OrchestratorError, TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace pod.
@@ -341,10 +341,13 @@ fn render_manifests(
             // gate requires on the allowlist.
             "--allowed-host".to_string(), proxy_allowed_host(),
             "--allowed-origin".to_string(), proxy_allowed_origin(),
-            // Locked-down end-user client: composer +
-            // structured view only.
-            "--cityhall".to_string(),
-        ].into_iter().chain(plaintext_flag(&spec.version)).collect()),
+        ]
+        .into_iter()
+        // Composer mode is the locked-down end-user client (composer +
+        // structured view only); Full mode omits the flag.
+        .chain(spec.mode.cityhall_flag().map(String::from))
+        .chain(plaintext_flag(&spec.version))
+        .collect()),
         "ports": [{ "containerPort": AOE_PORT }],
         "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
     });
@@ -418,6 +421,13 @@ fn render_manifests(
     // configured, for the same reason the telemetry annotation is.
     if !spec.agents.is_empty() {
         annotations["cityhall.workspace/agents"] = json!(spec.agents);
+    }
+
+    // The mode changes the container's args, so the template has to change for
+    // the Deployment to roll. Written only for Full, so an existing Composer
+    // workspace's template stays byte-identical and an upgrade rolls nothing.
+    if spec.mode == WorkspaceMode::Full {
+        annotations["cityhall.workspace/mode"] = json!(spec.mode.as_str());
     }
 
     items.push(json!({
@@ -508,6 +518,7 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::Composer,
         }
     }
 
@@ -721,6 +732,54 @@ mod tests {
             .find(|i| i["kind"] == "Deployment")
             .unwrap()
             .clone()
+    }
+
+    fn deployment_for(spec: &WorkspaceSpec) -> serde_json::Value {
+        let m = render_manifests(spec, "cityhall", "5Gi", None);
+        m["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "Deployment")
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn container_args_omit_cityhall_only_in_full_mode() {
+        let args_of = |spec: &WorkspaceSpec| {
+            deployment_for(spec)["spec"]["template"]["spec"]["containers"][0]["args"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        assert!(args_of(&spec()).iter().any(|a| a == "--cityhall"));
+        let full = args_of(&WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec()
+        });
+        assert!(!full.iter().any(|a| a == "--cityhall"));
+        assert!(full.iter().any(|a| a == "--auth"));
+    }
+
+    /// Only Full is annotated, so a Composer pod's template is unchanged by
+    /// this feature (an upgrade rolls nothing) and a Full pod's differs (a mode
+    /// change rolls the Deployment).
+    #[test]
+    fn the_mode_annotation_is_written_only_for_full() {
+        let composer = deployment_for(&spec());
+        assert!(composer["spec"]["template"]["metadata"]["annotations"]
+            .get("cityhall.workspace/mode")
+            .is_none());
+        let full = deployment_for(&WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec()
+        });
+        assert_eq!(
+            full["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace/mode"],
+            "full"
+        );
+        assert_ne!(composer["spec"]["template"], full["spec"]["template"]);
     }
 
     /// The annotation is what makes the Deployment roll, so it must appear for a

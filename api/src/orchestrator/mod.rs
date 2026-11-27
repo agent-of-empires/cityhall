@@ -45,6 +45,45 @@ pub struct WorkspaceSpec {
     /// what a running workspace was created with, and splitting it only to join
     /// it again in every backend would be two representations that can disagree.
     pub agents: String,
+    /// Which aoe client the workspace serves. Resolved from the owner's role
+    /// when the workspace is created or reconciled, never in `build_spec`
+    /// (that runs on every proxied request and stays free of database reads).
+    pub mode: WorkspaceMode,
+}
+
+/// The aoe client a workspace serves (see GLOSSARY.md).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceMode {
+    /// `--cityhall`: composer and structured view only.
+    #[default]
+    Composer,
+    /// aoe's complete dashboard: terminal, diffs, worktrees, yolo.
+    Full,
+}
+
+impl WorkspaceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkspaceMode::Composer => "composer",
+            WorkspaceMode::Full => "full",
+        }
+    }
+
+    /// Read back a recorded mode. Absent or unrecognized is Composer: a
+    /// workspace created before this existed was Composer, so an upgrade
+    /// alone recreates nothing.
+    pub fn from_stored(value: Option<&str>) -> Self {
+        match value {
+            Some("full") => WorkspaceMode::Full,
+            _ => WorkspaceMode::Composer,
+        }
+    }
+
+    /// The `--cityhall` argument, present only in Composer mode.
+    pub fn cityhall_flag(self) -> Option<&'static str> {
+        (self == WorkspaceMode::Composer).then_some("--cityhall")
+    }
 }
 
 /// Who decides whether a workspace sends aoe telemetry (#40).
@@ -266,6 +305,14 @@ pub trait Orchestrator: Send + Sync {
     /// when the running version, OR the agent-credential fingerprint, differs
     /// from what is currently running.
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError>;
+
+    /// Why this backend cannot safely serve [`WorkspaceMode::Full`], when it
+    /// cannot. Full mode is a browser terminal behind `--auth none`, so a
+    /// backend where something other than the proxy can reach the workspace
+    /// port reports a reason and its workspaces run Composer instead.
+    fn full_mode_blocker(&self) -> Option<&'static str> {
+        None
+    }
 
     /// Stop the workspace, keeping its data volume.
     async fn stop(&self, user_id: i32) -> Result<(), OrchestratorError>;

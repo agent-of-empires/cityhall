@@ -22,8 +22,8 @@ use tokio::process::Command;
 
 use super::{
     plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator,
-    OrchestratorError, ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceRuntime,
-    WorkspaceSpec, WorkspaceStatus, WorkspaceUsage,
+    OrchestratorError, ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceMode,
+    WorkspaceRuntime, WorkspaceSpec, WorkspaceStatus, WorkspaceUsage,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -40,6 +40,11 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Marks every container CityHall created, and the only thing that makes a
 /// container ours.
+/// Why Full mode is unavailable on a shared docker network.
+pub(crate) const SHARED_NETWORK_BLOCKER: &str = "Full mode is unavailable on a shared docker network: any other workspace container can reach this workspace's unauthenticated aoe port";
+
+/// Records a Full mode container. Absent means Composer.
+const MODE_LABEL: &str = "cityhall.workspace.mode";
 const MANAGED_FILTER: &str = "label=cityhall.managed=true";
 const USER_ID_LABEL: &str = "cityhall.user_id";
 const VERSION_LABEL: &str = "cityhall.workspace.version";
@@ -135,6 +140,7 @@ impl DockerCliOrchestrator {
                     env_label: labels.get("cityhall.workspace.env").cloned(),
                     telemetry_label: labels.get("cityhall.workspace.telemetry").cloned(),
                     agents_label: labels.get("cityhall.workspace.agents").cloned(),
+                    mode_label: labels.get(MODE_LABEL).cloned(),
                 }))
             }
             None => Ok(None),
@@ -503,6 +509,12 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         "-v".into(),
         format!("{volume}:{AOE_DATA_DIR}"),
     ];
+    // Written only for Full, so a Composer container is byte-identical to one
+    // created before modes existed and an absent label reads as Composer.
+    if spec.mode == WorkspaceMode::Full {
+        args.push("--label".into());
+        args.push(format!("{MODE_LABEL}={}", spec.mode.as_str()));
+    }
     match network {
         Some(net) => {
             // Reachable by container DNS from inside the network only; the
@@ -551,11 +563,12 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
                 &proxy_allowed_host(),
                 "--allowed-origin",
                 &proxy_allowed_origin(),
-                // Locked-down end-user client: composer + structured view only.
-                "--cityhall",
             ]
             .iter()
             .map(|s| s.to_string())
+            // Composer mode is the locked-down end-user client (composer +
+            // structured view only); Full mode omits the flag.
+            .chain(spec.mode.cityhall_flag().map(String::from))
             .chain(plaintext_flag(&spec.version))
             .collect(),
         ),
@@ -565,6 +578,10 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
 
 #[async_trait]
 impl Orchestrator for DockerCliOrchestrator {
+    fn full_mode_blocker(&self) -> Option<&'static str> {
+        self.network.as_ref().map(|_| SHARED_NETWORK_BLOCKER)
+    }
+
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         let name = container_name(spec.user_id);
         match self.inspect(&name).await? {
@@ -848,6 +865,7 @@ struct ContainerState {
     env_label: Option<String>,
     telemetry_label: Option<String>,
     agents_label: Option<String>,
+    mode_label: Option<String>,
 }
 
 /// Whether a running container must be recreated rather than reused or
@@ -880,6 +898,7 @@ fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<
         || state.env_label.as_deref().unwrap_or("") != spec.agent_env.fingerprint
         || telemetry != spec.telemetry
         || state.agents_label.as_deref().unwrap_or("") != spec.agents
+        || WorkspaceMode::from_stored(state.mode_label.as_deref()) != spec.mode
 }
 
 #[derive(Deserialize)]
@@ -956,6 +975,7 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::Composer,
         }
     }
 
@@ -1209,7 +1229,64 @@ mod tests {
             // telemetry cases below set it explicitly.
             telemetry_label: None,
             agents_label: None,
+            mode_label: None,
         }
+    }
+
+    fn full_spec() -> WorkspaceSpec {
+        WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn run_args_omit_cityhall_and_label_the_mode_only_in_full_mode() {
+        let composer = run_args(&spec(), None, None);
+        assert!(composer.iter().any(|a| a == "--cityhall"));
+        assert!(!composer
+            .iter()
+            .any(|a| a.starts_with("cityhall.workspace.mode")));
+
+        let full = run_args(&full_spec(), None, None);
+        assert!(!full.iter().any(|a| a == "--cityhall"));
+        assert!(full.iter().any(|a| a == "cityhall.workspace.mode=full"));
+        // The rest of the launch line is unchanged.
+        assert!(full.iter().any(|a| a == "--auth"));
+        assert!(full.iter().any(|a| a == "none"));
+    }
+
+    /// A container from before modes existed has no mode label. It is a
+    /// Composer container, so a Composer spec must not recreate it.
+    #[test]
+    fn absent_mode_label_and_composer_spec_do_not_trigger_recreate() {
+        let state = container_state("v1.0.0", None, None);
+        assert!(state.mode_label.is_none());
+        assert!(!needs_recreate(&state, &spec(), None));
+    }
+
+    #[test]
+    fn a_mode_change_triggers_recreate_in_both_directions() {
+        // Composer container, Full spec.
+        let composer = container_state("v1.0.0", None, None);
+        assert!(needs_recreate(&composer, &full_spec(), None));
+
+        // Full container, Composer spec (permission removed).
+        let mut full = container_state("v1.0.0", None, None);
+        full.mode_label = Some("full".to_string());
+        assert!(needs_recreate(&full, &spec(), None));
+        assert!(!needs_recreate(&full, &full_spec(), None));
+    }
+
+    #[test]
+    fn a_shared_network_blocks_full_mode_and_published_mode_does_not() {
+        let orch = |network: Option<&str>| DockerCliOrchestrator {
+            cli: "docker".to_string(),
+            network: network.map(str::to_string),
+            provisioning: Arc::new(ProvisioningRegistry::default()),
+        };
+        assert!(orch(Some("cityhall")).full_mode_blocker().is_some());
+        assert!(orch(None).full_mode_blocker().is_none());
     }
 
     /// A container from before this feature has no env label at all. A user

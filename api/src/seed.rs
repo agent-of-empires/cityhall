@@ -99,7 +99,10 @@ mod tests {
     async fn a_fresh_install_seeds_member_with_full_mode() {
         let db = setup().await;
         ensure_roles(&db).await.unwrap();
-        assert!(member_keys(&db).await.iter().any(|k| k == "workspaces.full"));
+        assert!(member_keys(&db)
+            .await
+            .iter()
+            .any(|k| k == "workspaces.full"));
     }
 
     /// Existing installs stay in Composer mode until an admin adds the key.
