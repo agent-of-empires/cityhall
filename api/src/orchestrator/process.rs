@@ -38,6 +38,27 @@ const MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 /// it is blocked rather than slow.
 const FORCE_ON_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Variables of CityHall's own environment that must never reach a workspace's
+/// aoe, which inherits the rest (PATH, locale, proxies and so on). Source:
+/// aoe origin/main 3a85e7241.
+const SCRUBBED_ENV: &[&str] = &[
+    // Moves the app dir (session/mod.rs:300), so every workspace would share one serve.token and daemon socket.
+    "XDG_CONFIG_HOME",
+    // Point aoe's CLI and daemon client at another daemon (acp/client/discovery.rs:50,84-89).
+    "AOE_DAEMON_URL",
+    "AOE_DAEMON_TOKEN",
+    "AOE_DAEMON_PASSPHRASE",
+    "AOE_DASHBOARD_URL",
+    // Would inject a passphrase into `aoe serve` (cli/serve.rs:249,1047).
+    "AOE_SERVE_PASSPHRASE",
+    // Debug-build token rotation would replace the CityHall-minted token (server/token.rs:168,183).
+    "AOE_TEST_TOKEN_LIFETIME_SECS",
+    "AOE_TEST_TOKEN_GRACE_SECS",
+    // Would point the workspace at another config bundle; re-set below when the spec has one (cli/serve.rs:1741-1748).
+    "AOE_CITYHALL_BUNDLE_URL",
+    "AOE_CITYHALL_BUNDLE_TOKEN",
+];
+
 pub struct ProcessOrchestrator {
     root: PathBuf,
     provisioning: Arc<ProvisioningRegistry>,
@@ -208,6 +229,9 @@ impl ProcessOrchestrator {
         cmd.args(serve_args(spec, port))
             .env("HOME", home)
             .current_dir(home);
+        for name in SCRUBBED_ENV {
+            cmd.env_remove(name);
+        }
         // The telemetry policy's variables. `DO_NOT_TRACK` is removed first,
         // always: unlike a container, this process inherits CityHall's own
         // environment, so a `DO_NOT_TRACK` set for CityHall itself would
@@ -570,6 +594,9 @@ async fn apply_force_on(
         .env_remove("DO_NOT_TRACK")
         .current_dir(home)
         .kill_on_drop(true);
+    for name in SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
     let output = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| {
@@ -701,6 +728,66 @@ mod tests {
             err.contains("config lock"),
             "must name the likely cause: {err}"
         );
+    }
+
+    /// A variable set for CityHall that redirects the app dir or injects a
+    /// token, URL or passphrase must not reach the workspace's aoe, in the
+    /// serve spawn or in `telemetry enable`; HOME must be the workspace home.
+    #[tokio::test]
+    async fn workspace_aoe_does_not_inherit_app_dir_or_credential_variables() {
+        let _guard = FAKE_AOE_LOCK.lock().await;
+        let orch = scratch("scrub-env");
+        let home = orch.user_dir(1).join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let dump = fake_aoe(&orch, "aoe-env", "#!/bin/sh\nenv > \"$HOME/env.out\"\n");
+
+        let saved: Vec<_> = SCRUBBED_ENV
+            .iter()
+            .map(|n| (*n, std::env::var_os(n)))
+            .collect();
+        for name in SCRUBBED_ENV {
+            std::env::set_var(name, "/leaked");
+        }
+        let spec = WorkspaceSpec {
+            telemetry: TelemetryPolicy::ForceOn,
+            ..spec_for(1)
+        };
+        orch.spawn_once(&spec, &dump, &home, 4000).unwrap();
+        let out = home.join("env.out");
+        for _ in 0..100 {
+            if std::fs::metadata(&out)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let serve_env = std::fs::read_to_string(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        apply_force_on(&spec, &dump, &home, Duration::from_secs(10))
+            .await
+            .unwrap();
+        let telemetry_env = std::fs::read_to_string(&out).unwrap();
+        for (name, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        for (what, env) in [("serve", serve_env), ("telemetry", telemetry_env)] {
+            for name in SCRUBBED_ENV {
+                assert!(
+                    !env.lines().any(|l| l.starts_with(&format!("{name}="))),
+                    "{what} inherited {name}"
+                );
+            }
+            assert!(
+                env.lines().any(|l| l == format!("HOME={}", home.display())),
+                "{what}: {env}"
+            );
+        }
     }
 
     /// An executable stand-in for the aoe binary.
