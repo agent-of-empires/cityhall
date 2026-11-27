@@ -116,7 +116,13 @@ export interface WorkspaceItem {
   effective_version: string | null;
   last_active_at: string | null;
   provisioning: { message: string; failed: boolean } | null;
+  mode: WorkspaceMode;
+  mode_note: string | null;
 }
+
+/** The aoe client a workspace starts in next. A running workspace keeps its
+ *  current mode until it restarts. */
+export type WorkspaceMode = "composer" | "full";
 
 /// What the system figures describe. CityHall often runs in a container beside
 /// the workspaces it reports on, so the scope is shown rather than assumed.
@@ -202,6 +208,8 @@ export interface MyWorkspace {
   status: "not_created" | "stopped" | "running" | "unknown";
   pinned_version: string | null;
   effective_version: string | null;
+  mode: WorkspaceMode;
+  mode_note: string | null;
   proxy_origin: string;
 }
 

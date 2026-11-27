@@ -23,7 +23,7 @@ import {
   trClass,
 } from "./ui";
 import { VersionField } from "./VersionField";
-import { WORKSPACE_STATUS_META as STATUS_META } from "../lib/workspaceStatus";
+import { modeText, WORKSPACE_MODE_LABEL, WORKSPACE_STATUS_META as STATUS_META } from "../lib/workspaceStatus";
 
 // Dismissing onboarding only persists on the server; `me` is fetched once by
 // App and not refreshed here, so a real dismissal would otherwise look
@@ -292,6 +292,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                 <th className={thClass}>User</th>
                 <th className={thClass}>Status</th>
                 <th className={thClass}>Version</th>
+                <th className={thClass}>Mode</th>
                 <th className={thClass}>Last active</th>
                 {canWrite && <th className={clsx(thClass, "text-right")}>Actions</th>}
               </tr>
@@ -369,6 +370,10 @@ function AdminWorkspaces({ me }: { me: Me }) {
                             </span>
                           )}
                         </div>
+                      </td>
+                      <td className={clsx(tdClass, "text-text-dim")} title={item.mode_note ?? undefined}>
+                        {WORKSPACE_MODE_LABEL[item.mode]}
+                        {item.mode_note && <span className="ml-1.5 font-mono text-xs text-waiting">limited</span>}
                       </td>
                       <td className={clsx(tdClass, "font-mono text-text-dim")}>
                         {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
@@ -507,6 +512,7 @@ function RowAction({
 
 function MemberWorkspace({ me }: { me: Me }) {
   const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
+  const [mode, setMode] = useState<string | null>(null);
   const [gitDone, setGitDone] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
   const [firstRunOpen, setFirstRunOpen] = useState(false);
@@ -514,7 +520,10 @@ function MemberWorkspace({ me }: { me: Me }) {
   useEffect(() => {
     api
       .myWorkspace()
-      .then((w) => setProxyOrigin(w.proxy_origin))
+      .then((w) => {
+        setProxyOrigin(w.proxy_origin);
+        setMode(modeText(w.mode, w.mode_note));
+      })
       .catch(() => {});
   }, []);
 
@@ -559,6 +568,11 @@ function MemberWorkspace({ me }: { me: Me }) {
                 A private aoe instance, yours alone, provisioned with the projects and coding agents your admin
                 selected.
               </p>
+              {mode && (
+                <p className="m-0 text-[13px] text-text-dim">
+                  {mode}. A change to your role applies when your workspace restarts.
+                </p>
+              )}
             </div>
             <Button variant="primary" className="h-[38px] shrink-0" disabled={!proxyOrigin} onClick={openWorkspace}>
               Open workspace <ExternalLink size={14} />
