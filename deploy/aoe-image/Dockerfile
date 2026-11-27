@@ -25,6 +25,11 @@
 #     --allowed-host <proxy-host> --cityhall
 # and mounts a per-user volume at /home/aoe/.config/agent-of-empires.
 #
+# For version 1.22.0 or later it also passes --dangerously-allow-plaintext-remote;
+# aoe's plaintext gate answers 426 without it. The proxy-to-workspace hop is
+# plain HTTP inside the docker or pod network (loopback for the process
+# backend); a TLS sidecar is the later answer (issue #127).
+#
 # The image ships no coding agent. A user installs the one they want from
 # inside their workspace, and `entrypoint.sh` keeps that install and the
 # agent's login on the volume so both survive a container recreate.

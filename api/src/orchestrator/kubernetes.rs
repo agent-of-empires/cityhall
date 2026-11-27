@@ -17,8 +17,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::{
-    http_probe, proxy_allowed_host, proxy_allowed_origin, Orchestrator, OrchestratorError,
-    TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
+    http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, Orchestrator,
+    OrchestratorError, TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Port aoe serves on inside the workspace pod.
@@ -344,7 +344,7 @@ fn render_manifests(
             // Locked-down end-user client: composer +
             // structured view only.
             "--cityhall".to_string(),
-        ]),
+        ].into_iter().chain(plaintext_flag(&spec.version)).collect()),
         "ports": [{ "containerPort": AOE_PORT }],
         "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
     });
@@ -497,6 +497,7 @@ struct WaitingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::PLAINTEXT_FLAG;
 
     fn spec() -> WorkspaceSpec {
         WorkspaceSpec {
@@ -737,6 +738,27 @@ mod tests {
             annotations(TelemetryPolicy::ForceOn)["cityhall.workspace/telemetry-policy"],
             "force_on"
         );
+    }
+
+    #[test]
+    fn container_args_pass_the_plaintext_flag_only_for_aoe_1_22_and_later() {
+        for (version, want) in [("v1.21.0", false), ("v1.22.0", true), ("v1.26.0", true)] {
+            let spec = WorkspaceSpec {
+                version: version.to_string(),
+                ..spec()
+            };
+            let m = render_manifests(&spec, "cityhall", "5Gi", None);
+            let dep = m["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["kind"] == "Deployment")
+                .unwrap();
+            let args = dep["spec"]["template"]["spec"]["containers"][0]["args"]
+                .as_array()
+                .unwrap();
+            assert_eq!(args.iter().any(|a| a == PLAINTEXT_FLAG), want, "{version}");
+        }
     }
 
     /// Force-on wraps the container's args, never its `command`, which would

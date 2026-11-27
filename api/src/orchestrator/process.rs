@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    binary_key, http_probe, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin,
-    Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec,
+    binary_key, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready,
+    Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec,
     WorkspaceStatus,
 };
 
@@ -169,28 +169,9 @@ impl ProcessOrchestrator {
                 OrchestratorError::Runtime(format!("failed to open workspace log: {e}"))
             })?;
         let mut cmd = std::process::Command::new(binary);
-        cmd.args([
-            "serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            // CityHall's session gates the proxy; the process only listens on
-            // loopback.
-            "--auth",
-            "none",
-            "--behind-proxy",
-            // The proxy forwards the public Host and Origin, both of which
-            // aoe's DNS-rebinding gate requires on the allowlist.
-            "--allowed-host",
-            &proxy_allowed_host(),
-            "--allowed-origin",
-            &proxy_allowed_origin(),
-            // Locked-down end-user client: composer + structured view only.
-            "--cityhall",
-        ])
-        .env("HOME", home)
-        .current_dir(home);
+        cmd.args(serve_args(spec, port))
+            .env("HOME", home)
+            .current_dir(home);
         // The telemetry policy's variables. `DO_NOT_TRACK` is removed first,
         // always: unlike a container, this process inherits CityHall's own
         // environment, so a `DO_NOT_TRACK` set for CityHall itself would
@@ -459,6 +440,35 @@ async fn download_release_binary(version: &str, target: &Path) -> Result<(), Str
     Ok(())
 }
 
+/// The `aoe serve` arguments for one workspace process.
+fn serve_args(spec: &WorkspaceSpec, port: u16) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        // CityHall's session gates the proxy; the process only listens on
+        // loopback.
+        "--auth",
+        "none",
+        "--behind-proxy",
+        // The proxy forwards the public Host and Origin, both of which
+        // aoe's DNS-rebinding gate requires on the allowlist.
+        "--allowed-host",
+        &proxy_allowed_host(),
+        "--allowed-origin",
+        &proxy_allowed_origin(),
+        // Locked-down end-user client: composer + structured view only.
+        "--cityhall",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.extend(plaintext_flag(&spec.version));
+    args
+}
+
 /// Versions become path components; reject anything that could escape the
 /// versions directory.
 fn validate_version(version: &str) -> Result<(), OrchestratorError> {
@@ -555,6 +565,7 @@ fn free_port() -> Result<u16, OrchestratorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::PLAINTEXT_FLAG;
 
     /// Linux refuses to exec a file (ETXTBSY) while any process holds it open
     /// for writing, and a fork in another test thread inherits our write fd
@@ -659,6 +670,18 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+        }
+    }
+
+    #[test]
+    fn serve_args_pass_the_plaintext_flag_only_for_aoe_1_22_and_later() {
+        for (version, want) in [("v1.21.0", false), ("v1.22.0", true), ("v1.26.0", true)] {
+            let spec = WorkspaceSpec {
+                version: version.to_string(),
+                ..spec_for(1)
+            };
+            let args = serve_args(&spec, 4000);
+            assert_eq!(args.iter().any(|a| a == PLAINTEXT_FLAG), want, "{version}");
         }
     }
 
