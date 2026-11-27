@@ -21,7 +21,7 @@
 # The tag must match the workspace settings image template (default
 # `cityhall/aoe:{version}`) rendered with the version users are pinned to.
 # CityHall starts containers from this image with:
-#   aoe serve --host 0.0.0.0 --port 8080 --auth none --behind-proxy \
+#   aoe serve --host 0.0.0.0 --port 8080 --auth token --behind-proxy \
 #     --allowed-host <proxy-host> [--cityhall]
 # (--cityhall only for Composer mode; Full mode omits it)
 # and mounts a per-user volume at /home/aoe/.config/agent-of-empires.

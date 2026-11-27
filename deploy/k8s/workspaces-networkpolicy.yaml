@@ -1,6 +1,6 @@
-# Workspace pods run `aoe serve --auth none`; CityHall's session-gated proxy
-# is the only auth boundary. This policy keeps every other pod in the cluster
-# away from them. Enforcement requires a CNI with NetworkPolicy support.
+# Workspace pods run `aoe serve --auth token`; the proxy holds each bearer
+# token. This policy is defense in depth: it keeps every other pod in the
+# cluster away from them. Enforcement requires a CNI with NetworkPolicy support.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
