@@ -946,6 +946,8 @@ mod tests {
             daemon_token: Some(secret),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::default(),
+            apply_mode_to_running: false,
         };
         assert!(!format!("{spec:?}").contains(&token));
     }

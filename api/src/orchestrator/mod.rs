@@ -5,6 +5,7 @@
 //! CityHall stores only intent (pinned version, activity) in the database and
 //! treats the runtime as the source of truth for liveness.
 
+pub mod daemon_token;
 pub mod docker;
 pub mod kubernetes;
 #[cfg(unix)]
@@ -121,17 +122,6 @@ pub enum TelemetryPolicy {
 /// Environment variable holding the deployment-level override.
 pub const TELEMETRY_POLICY_ENV: &str = "WORKSPACE_TELEMETRY_POLICY";
 
-/// The script [`TelemetryPolicy::wrap_command`] runs a force-on workspace
-/// through. A fixed constant with nothing interpolated into it, taking the real
-/// command through `"$0"` / `"$@"` so every argument stays a separate argv
-/// element and none of them is ever reparsed as shell source.
-///
-/// `&&`, not `;` or `|| true`: on an aoe too old for the subcommand the
-/// container must die rather than come up pretending the policy applied. `exec`
-/// so the shell is replaced and aoe remains the container's main process, with
-/// its signals and logs unchanged.
-const FORCE_ON_SCRIPT: &str = r#"aoe telemetry enable && exec "$0" "$@""#;
-
 impl TelemetryPolicy {
     /// The stored / wire value. Also what a backend records as drift metadata,
     /// so changing one of these strings would recreate every workspace once.
@@ -176,27 +166,6 @@ impl TelemetryPolicy {
             TelemetryPolicy::ForceOff => &[("DO_NOT_TRACK", "1")],
             TelemetryPolicy::UserChoice | TelemetryPolicy::ForceOn => &[],
         }
-    }
-
-    /// `command` as the container should actually run it.
-    ///
-    /// Only force-on rewrites anything, and it wraps rather than replaces, so
-    /// the image's own ENTRYPOINT still runs first (in the reference image that
-    /// is what relocates each agent's config onto the volume). Enforcing the
-    /// policy here rather than in the image means it also holds for an image
-    /// built before this feature, and for a third-party one; an image with no
-    /// shell fails loudly instead of ignoring the policy.
-    pub fn wrap_command(self, command: Vec<String>) -> Vec<String> {
-        if self != TelemetryPolicy::ForceOn {
-            return command;
-        }
-        let mut wrapped = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            FORCE_ON_SCRIPT.to_string(),
-        ];
-        wrapped.extend(command);
-        wrapped
     }
 }
 
@@ -721,31 +690,6 @@ mod tests {
         );
         assert!(TelemetryPolicy::ForceOn.env_pairs().is_empty());
         assert!(TelemetryPolicy::UserChoice.env_pairs().is_empty());
-    }
-
-    /// The force-on wrapper must leave every `aoe serve` argument its own argv
-    /// element (nothing is interpolated into the script, so nothing an operator
-    /// configures is ever reparsed as shell source), and must not touch the
-    /// command for the other two policies.
-    #[test]
-    fn force_on_wraps_the_command_without_rewriting_its_arguments() {
-        let command: Vec<String> = ["aoe", "serve", "--allowed-host", "ws.example.com"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        let wrapped = TelemetryPolicy::ForceOn.wrap_command(command.clone());
-        assert_eq!(wrapped[..2], ["sh".to_string(), "-c".to_string()]);
-        assert!(
-            wrapped[2].contains("aoe telemetry enable &&") && wrapped[2].contains(r#"exec "$0""#),
-            "{}",
-            wrapped[2]
-        );
-        assert_eq!(wrapped[3..], command[..]);
-
-        for policy in [TelemetryPolicy::UserChoice, TelemetryPolicy::ForceOff] {
-            assert_eq!(policy.wrap_command(command.clone()), command);
-        }
     }
 
     #[test]
