@@ -298,15 +298,17 @@ auth mode changes nothing on the Host/Origin gate (`src/server/access.rs:226-246
 **Phase 0, now, no behavior change for users, no aoe dependency**
 
 1. Proxy: stop asserting `x-forwarded-proto: http`. Forward `https` only when
-   CityHall's own inbound request was TLS, as shown by the `X-Forwarded-Proto`
-   the operator's reverse proxy sets and overwrites (the shipped nginx example
-   uses `$scheme`, `deploy/reverse-proxy/nginx.conf:32`); otherwise omit the
-   header. Do not derive it from the `CITYHALL_BASE_URL` scheme: that names the
-   public URL and is `https` even when the proxy-to-CityHall hop is plain HTTP.
-   CityHall reads the header without a peer check (`api/src/proxy.rs:251-255`,
-   `api/src/mailer.rs:210-213`), so it is trustworthy only when CityHall is
-   reachable solely through that proxy. Required for the process backend to
-   survive #4743; harmless now.
+   the inbound request carried `X-Forwarded-Proto: https`; otherwise omit the
+   header. CityHall speaks plain HTTP, so it cannot observe the client's TLS
+   itself: that header only describes the client-to-reverse-proxy leg, and it
+   is an operator assertion. The proxy must overwrite any client-supplied value
+   (the shipped nginx example uses `$scheme`, `deploy/reverse-proxy/nginx.conf:32`)
+   and CityHall must be reachable solely through that proxy, because it reads
+   the header without a peer check (`api/src/proxy.rs:251-255`,
+   `api/src/mailer.rs:210-213`). Do not derive it from `CITYHALL_BASE_URL`: that
+   is a configured public URL for email links, not evidence of any request's
+   transport (it can be `https` over a plain-HTTP proxy hop, or `http`).
+   Required for the process backend to survive #4743; harmless now.
 2. Proxy: drop `set-cookie` values for `aoe_token` and the `x-aoe-token` header
    from upstream responses. Harmless with `--auth none`, mandatory before token
    mode.
