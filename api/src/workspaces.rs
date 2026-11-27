@@ -347,6 +347,17 @@ pub fn apply_backend_policy(
     }
 }
 
+/// The mode a workspace starts in next, and the reason when Full was asked for
+/// and the backend refused it. What the API shows; a running workspace keeps
+/// its current mode until it restarts.
+pub fn next_mode(
+    requested: WorkspaceMode,
+    blocker: Option<&'static str>,
+) -> (WorkspaceMode, Option<&'static str>) {
+    let note = blocker.filter(|_| requested == WorkspaceMode::Full);
+    (apply_backend_policy(requested, blocker), note)
+}
+
 /// The mode to launch `user_id`'s workspace in, logging a downgrade.
 async fn resolve_mode(state: &AppState, user_id: i32) -> Result<WorkspaceMode, AppError> {
     let requested = requested_mode(&state.db, user_id).await?;
@@ -847,6 +858,14 @@ mod tests {
     }
 
     /// A blocker turns a Full request into Composer and never the reverse.
+    #[test]
+    fn the_note_names_a_blocker_only_when_full_was_denied() {
+        use WorkspaceMode::{Composer, Full};
+        assert_eq!(next_mode(Full, Some("why")), (Composer, Some("why")));
+        assert_eq!(next_mode(Full, None), (Full, None));
+        assert_eq!(next_mode(Composer, Some("why")), (Composer, None));
+    }
+
     #[test]
     fn a_backend_blocker_downgrades_full_to_composer() {
         use WorkspaceMode::{Composer, Full};

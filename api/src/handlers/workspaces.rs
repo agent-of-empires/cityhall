@@ -6,11 +6,11 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
-use crate::entities::{workspace, workspace_settings};
+use crate::entities::{role, workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
-    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceRuntime,
-    WorkspaceStatus,
+    binary_key, render_image, telemetry_policy_override, TelemetryPolicy, WorkspaceMode,
+    WorkspaceRuntime, WorkspaceStatus,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -28,6 +28,12 @@ pub struct WorkspaceItem {
     /// Background artifact provisioning (image pull/build, binary download)
     /// for this user's effective version, when one is underway or failed.
     pub provisioning: Option<ProvisioningInfo>,
+    /// The mode this workspace starts in next, from the owner's role and what
+    /// the backend allows. A running workspace keeps its current mode until it
+    /// restarts.
+    pub mode: WorkspaceMode,
+    /// Why `mode` is Composer although the owner's role grants Full.
+    pub mode_note: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +110,14 @@ pub async fn list(
     // One round-trip for the whole fleet where the backend can manage it,
     // instead of a shell-out per user on a page that polls every 10 seconds.
     let fleet = Fleet::load(&state).await;
+    // Roles once for the whole list, not a query per user.
+    let roles: std::collections::HashMap<i32, role::Model> = role::Entity::find()
+        .all(&state.db)
+        .await?
+        .into_iter()
+        .map(|r| (r.id, r))
+        .collect();
+    let blocker = state.orchestrator.full_mode_blocker();
 
     let mut items = Vec::with_capacity(users.len());
     for user in users {
@@ -123,6 +137,8 @@ pub async fn list(
                     .or_else(|| state.provisioning.state(&binary_key(v)))
             })
             .map(|(message, failed)| ProvisioningInfo { message, failed });
+        let requested = workspaces::mode_for_role(user.role_id.and_then(|id| roles.get(&id)));
+        let (mode, mode_note) = workspaces::next_mode(requested, blocker);
         items.push(WorkspaceItem {
             user_id: user.id,
             status: match row {
@@ -135,6 +151,8 @@ pub async fn list(
             last_active_at: row.and_then(|r| r.last_active_at),
             username: user.username,
             provisioning,
+            mode,
+            mode_note,
         });
     }
     Ok(Json(items))
@@ -156,10 +174,19 @@ pub async fn me(
         .as_ref()
         .and_then(|r| workspaces::effective_version(&cfg, r))
         .or_else(|| cfg.default_version.clone());
+    let requested = if caller.perms.can("workspaces.full") {
+        WorkspaceMode::Full
+    } else {
+        WorkspaceMode::Composer
+    };
+    let (mode, mode_note) =
+        workspaces::next_mode(requested, state.orchestrator.full_mode_blocker());
     Ok(Json(serde_json::json!({
         "status": status,
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),
         "effective_version": effective,
+        "mode": mode,
+        "mode_note": mode_note,
         "proxy_origin": proxy::public_origin(&headers),
     })))
 }
