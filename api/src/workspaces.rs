@@ -15,7 +15,7 @@ use crate::orchestrator::{
     TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 use crate::rbac::Perms;
-use crate::state::{AppState, Endpoint};
+use crate::state::{AppState, Endpoint, EndpointCache, WorkspaceLocks};
 
 pub const SETTINGS_ID: i32 = 1;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
@@ -545,6 +545,49 @@ pub async fn stop(state: &AppState, user_id: i32) -> Result<(), AppError> {
     checkpoint_activity(state, user_id).await
 }
 
+/// Stop the workspace only if its cached endpoint is still `generation`.
+/// Returns whether it stopped. The check and the stop run under one per-user
+/// lock, so a request that started a healthy replacement in between is never
+/// stopped by a late 401 about the obsolete runtime.
+pub async fn stop_if_generation(
+    state: &AppState,
+    user_id: i32,
+    generation: u64,
+) -> Result<bool, AppError> {
+    stop_if_generation_with(
+        &state.endpoints,
+        &state.locks,
+        user_id,
+        generation,
+        || async {
+            state.orchestrator.stop(user_id).await?;
+            checkpoint_activity(state, user_id).await
+        },
+    )
+    .await
+}
+
+/// The decision behind `stop_if_generation`, with the stop injected.
+async fn stop_if_generation_with<F, Fut>(
+    endpoints: &EndpointCache,
+    locks: &WorkspaceLocks,
+    user_id: i32,
+    generation: u64,
+    stop: F,
+) -> Result<bool, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let lock = locks.lock_for(user_id);
+    let _guard = lock.lock().await;
+    if !endpoints.invalidate_if(user_id, generation) {
+        return Ok(false);
+    }
+    stop().await?;
+    Ok(true)
+}
+
 /// Destroy the workspace and its volume, dropping the intent row.
 pub async fn destroy(state: &AppState, user_id: i32) -> Result<(), AppError> {
     let lock = state.locks.lock_for(user_id);
@@ -699,6 +742,41 @@ mod tests {
             updated_at: Utc::now(),
             agents: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_stale_generation_never_stops_the_replacement() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache = EndpointCache::default();
+        let locks = WorkspaceLocks::default();
+        let stops = AtomicUsize::new(0);
+        let ep = || Endpoint {
+            addr: "svc:1".to_string(),
+            token: Secret::new("tok".to_string()),
+            generation: 0,
+        };
+        let run = |generation| {
+            stop_if_generation_with(&cache, &locks, 1, generation, || async {
+                stops.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+
+        let g1 = cache.put(1, "v", "i", ep()).generation;
+        // Request B replaced the entry (same address) before A's stop ran.
+        let g2 = cache.put(1, "v", "i", ep()).generation;
+        assert_ne!(g1, g2);
+
+        assert!(!run(g1).await.unwrap());
+        assert_eq!(stops.load(Ordering::SeqCst), 0);
+        assert!(cache.get(1, "v", "i").is_some());
+
+        assert!(run(g2).await.unwrap());
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert!(cache.get(1, "v", "i").is_none());
+
+        assert!(!run(g2).await.unwrap());
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

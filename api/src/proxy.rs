@@ -447,14 +447,16 @@ fn is_auth_rejection(status: StatusCode) -> bool {
 /// first stops it, and a late one must not stop the healthy replacement a
 /// later request started.
 async fn workspace_auth_failed(state: &AppState, user_id: i32, generation: u64) -> AppError {
-    if state.endpoints.invalidate_if(user_id, generation) {
-        tracing::error!(
+    match workspaces::stop_if_generation(state, user_id, generation).await {
+        Ok(true) => tracing::error!(
             user_id,
-            "workspace rejected CityHall bearer token; restarting it"
-        );
-        if let Err(e) = workspaces::stop(state, user_id).await {
-            tracing::error!(user_id, "failed to stop workspace after auth failure: {e}");
-        }
+            "workspace rejected CityHall bearer token; stopped it to restart"
+        ),
+        Ok(false) => tracing::info!(
+            user_id,
+            "workspace 401 is about an obsolete runtime; not stopping the replacement"
+        ),
+        Err(e) => tracing::error!(user_id, "failed to stop workspace after auth failure: {e}"),
     }
     AppError::WorkspaceUnavailable(
         "workspace authentication failed; it is restarting, reload".to_string(),
