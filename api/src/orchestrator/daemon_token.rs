@@ -33,12 +33,24 @@ const MIN_TOKEN_AUTH_VERSION: (u32, u32) = (1, 18);
 ///
 /// Never falls back to `--auth none`: an aoe that cannot adopt the token would
 /// serve under a bearer CityHall does not know, so the proxy could not reach it.
-/// A version that does not start with a numeric major.minor (`latest`, `main`)
-/// passes, as those track the newest aoe.
+/// A version without a numeric major (`latest`, `main`, a sha) passes, as those
+/// track the newest aoe. A numeric major with a minor segment that is not purely
+/// digits (`1.17rc1.0`, `1.x.0`, `1.17-alpine`) is refused: its minor cannot be
+/// told from a pre-1.18 daemon that would not adopt the token file.
 pub fn require_token_auth_support(version: &str) -> Result<(), OrchestratorError> {
     let mut parts = version.trim_start_matches('v').split('.');
-    let mut next = || parts.next().and_then(|p| p.parse::<u32>().ok());
-    if let (Some(major), Some(minor)) = (next(), next()) {
+    if let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) {
+        let minor = match parts.next().map(str::parse::<u32>) {
+            None => return Ok(()),
+            Some(Ok(minor)) => minor,
+            Some(Err(_)) => {
+                return Err(OrchestratorError::Runtime(format!(
+                    "aoe {version} has an unreadable minor version, so it cannot be \
+                     checked for per-workspace token support; use a release such as {}.{}.0",
+                    MIN_TOKEN_AUTH_VERSION.0, MIN_TOKEN_AUTH_VERSION.1
+                )))
+            }
+        };
         if (major, minor) < MIN_TOKEN_AUTH_VERSION {
             return Err(OrchestratorError::Runtime(format!(
                 "aoe {version} cannot serve under a per-workspace token; \
@@ -270,6 +282,10 @@ mod tests {
             "v1.18.0-rc.1",
         ] {
             assert!(require_token_auth_support(v).is_ok(), "{v}");
+        }
+        for v in ["1.17rc1.0", "1.x.0", "1.17-alpine", "v1.x"] {
+            let err = require_token_auth_support(v).unwrap_err().to_string();
+            assert!(err.contains(v) && err.contains("minor"), "{err}");
         }
         for v in ["v1.17.9", "1.17.0", "v0.5.0"] {
             let err = require_token_auth_support(v).unwrap_err().to_string();
