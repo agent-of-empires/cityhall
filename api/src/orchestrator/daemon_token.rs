@@ -63,6 +63,34 @@ pub fn require_token_auth_support(version: &str) -> Result<(), OrchestratorError
     Ok(())
 }
 
+/// [`require_token_auth_support`], and on a refusal best-effort `stop` any
+/// existing workspace of the user before returning the refusal. A workspace
+/// started by an older CityHall may still run `--auth none`; the refusal must
+/// not leave it up unauthenticated. A failed stop is logged without detail
+/// beyond the error and never replaces the refusal.
+pub async fn require_or_stop<F, Fut>(
+    version: &str,
+    user_id: i32,
+    stop: F,
+) -> Result<(), OrchestratorError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), OrchestratorError>>,
+{
+    let refusal = match require_token_auth_support(version) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if let Err(e) = stop().await {
+        tracing::warn!(
+            user_id,
+            error = %e,
+            "could not stop the workspace of a refused aoe version"
+        );
+    }
+    Err(refusal)
+}
+
 /// The first 16 lowercase hex characters of a domain-separated SHA-256 of the
 /// token. Safe to record as a label, annotation, or state field.
 pub fn fingerprint(token: &str) -> String {
@@ -259,6 +287,36 @@ mod tests {
             let err = require_token_auth_support(v).unwrap_err().to_string();
             assert!(err.contains(v) && err.contains("1.18"), "{err}");
         }
+    }
+
+    #[tokio::test]
+    async fn refusal_stops_the_workspace_and_still_errors() {
+        for (version, stops) in [
+            ("v1.17.0", 1),
+            ("v1.17rc1.0", 1),
+            ("v1.26.0", 0),
+            ("latest", 0),
+        ] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let res = require_or_stop(version, 7, || async {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            assert_eq!(res.is_err(), stops == 1, "{version}");
+            assert_eq!(calls.into_inner(), stops, "{version}");
+        }
+        // A failing stop never replaces the refusal.
+        let err = require_or_stop("v1.17.0", 7, || async {
+            Err(OrchestratorError::Runtime("stop failed".into()))
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("v1.17.0") && !err.contains("stop failed"),
+            "{err}"
+        );
     }
 
     #[test]

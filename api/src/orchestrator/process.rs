@@ -323,7 +323,8 @@ fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
 impl Orchestrator for ProcessOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         validate_version(&spec.version)?;
-        daemon_token::require_token_auth_support(&spec.version)?;
+        daemon_token::require_or_stop(&spec.version, spec.user_id, || self.stop(spec.user_id))
+            .await?;
         if spec.daemon_token.is_none() {
             return Err(daemon_token::missing_token());
         }
@@ -843,6 +844,34 @@ mod tests {
         };
         let err = orch.ensure_started(&no_token).await.unwrap_err();
         assert!(err.to_string().contains("daemon token"), "{err}");
+    }
+
+    /// A workspace pinned below the minimum that still runs (the `--auth none`
+    /// era) is stopped by the refusal.
+    #[tokio::test]
+    async fn refusing_an_old_aoe_stops_the_running_workspace() {
+        let orch = scratch("gate-stops");
+        std::fs::create_dir_all(orch.user_dir(5)).unwrap();
+        let old = WorkspaceSpec {
+            version: "v1.17.0".to_string(),
+            ..token_spec(&"c".repeat(64))
+        };
+        let pid = live_process();
+        orch.write_state(
+            5,
+            &RunState {
+                pid,
+                port: 1,
+                version: old.version.clone(),
+                env_fingerprint: String::new(),
+                telemetry: TelemetryPolicy::default().as_str().to_string(),
+                mode: String::new(),
+                daemon_token_fp: String::new(),
+            },
+        )
+        .unwrap();
+        assert!(orch.ensure_started(&old).await.is_err());
+        assert!(!alive(pid), "refused workspace was left running");
     }
 
     #[test]

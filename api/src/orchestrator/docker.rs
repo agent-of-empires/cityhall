@@ -603,7 +603,8 @@ impl Orchestrator for DockerCliOrchestrator {
     }
 
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
-        daemon_token::require_token_auth_support(&spec.version)?;
+        daemon_token::require_or_stop(&spec.version, spec.user_id, || self.stop(spec.user_id))
+            .await?;
         if spec.daemon_token.is_none() {
             return Err(daemon_token::missing_token());
         }
