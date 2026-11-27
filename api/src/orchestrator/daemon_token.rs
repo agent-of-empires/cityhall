@@ -33,12 +33,25 @@ const MIN_TOKEN_AUTH_VERSION: (u32, u32) = (1, 18);
 ///
 /// Never falls back to `--auth none`: an aoe that cannot adopt the token would
 /// serve under a bearer CityHall does not know, so the proxy could not reach it.
-/// A version that is not a `major.minor` release tag (`latest`, `main`) passes,
-/// as those track the newest aoe.
+/// A version whose first segment is not a number (`latest`, `main`) passes,
+/// as those track the newest aoe. A numeric major with a non-numeric minor refuses.
 pub fn require_token_auth_support(version: &str) -> Result<(), OrchestratorError> {
     let mut parts = version.trim_start_matches('v').split('.');
-    let mut num = || parts.next()?.parse::<u32>().ok();
-    if let (Some(major), Some(minor)) = (num(), num()) {
+    // A first segment that is not a number is a moving tag (`latest`, `main`).
+    if let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) {
+        // A numeric major with a non-numeric minor (`1.17rc1.0`) is a malformed
+        // release tag: refuse rather than guess it is new enough.
+        let minor = match parts.next() {
+            None => return Ok(()),
+            Some(p) => p.parse::<u32>().ok(),
+        };
+        let Some(minor) = minor else {
+            return Err(OrchestratorError::Runtime(format!(
+                "aoe version {version} is not a valid major.minor release; \
+                 aoe {}.{} or newer is required",
+                MIN_TOKEN_AUTH_VERSION.0, MIN_TOKEN_AUTH_VERSION.1
+            )));
+        };
         if (major, minor) < MIN_TOKEN_AUTH_VERSION {
             return Err(OrchestratorError::Runtime(format!(
                 "aoe {version} cannot serve under a per-workspace token; \
@@ -226,10 +239,19 @@ mod tests {
             "latest",
             "main",
             "abc1234",
+            "1.22.0-rc.1",
+            "v1.18.0-rc.1",
         ] {
             assert!(require_token_auth_support(v).is_ok(), "{v}");
         }
-        for v in ["v1.17.9", "1.17.0", "v0.5.0"] {
+        for v in [
+            "v1.17rc1.0",
+            "1.x.0",
+            "v1.-.0",
+            "v1.17.9",
+            "1.17.0",
+            "v0.5.0",
+        ] {
             let err = require_token_auth_support(v).unwrap_err().to_string();
             assert!(err.contains(v) && err.contains("1.18"), "{err}");
         }
