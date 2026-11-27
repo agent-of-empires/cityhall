@@ -177,9 +177,6 @@ impl DockerCliOrchestrator {
     }
 
     async fn create_and_start(&self, spec: &WorkspaceSpec) -> Result<(), OrchestratorError> {
-        if spec.daemon_token.is_none() {
-            return Err(daemon_token::missing_token());
-        }
         if !self.image_exists(&spec.image).await? {
             return Err(self.provision_image(spec));
         }
