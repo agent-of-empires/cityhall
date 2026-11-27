@@ -298,9 +298,15 @@ auth mode changes nothing on the Host/Origin gate (`src/server/access.rs:226-246
 **Phase 0, now, no behavior change for users, no aoe dependency**
 
 1. Proxy: stop asserting `x-forwarded-proto: http`. Forward `https` only when
-   CityHall's own inbound request was TLS (its `X-Forwarded-Proto` from the
-   operator's reverse proxy, or the `CITYHALL_BASE_URL` scheme); otherwise omit
-   the header. Required for the process backend to survive #4743; harmless now.
+   CityHall's own inbound request was TLS, as shown by the `X-Forwarded-Proto`
+   the operator's reverse proxy sets and overwrites (the shipped nginx example
+   uses `$scheme`, `deploy/reverse-proxy/nginx.conf:32`); otherwise omit the
+   header. Do not derive it from the `CITYHALL_BASE_URL` scheme: that names the
+   public URL and is `https` even when the proxy-to-CityHall hop is plain HTTP.
+   CityHall reads the header without a peer check (`api/src/proxy.rs:251-255`,
+   `api/src/mailer.rs:210-213`), so it is trustworthy only when CityHall is
+   reachable solely through that proxy. Required for the process backend to
+   survive #4743; harmless now.
 2. Proxy: drop `set-cookie` values for `aoe_token` and the `x-aoe-token` header
    from upstream responses. Harmless with `--auth none`, mandatory before token
    mode.
@@ -369,7 +375,8 @@ Token holder, which is how ADR 0002 admits CityHall until a Proxy variant exists
 > (`src/server/token.rs:203-238`) reads `serve.token` only if its mtime is under
 > 24h and otherwise generates a new one, and nothing else supplies a value.
 > CityHall can pre-write `serve.token` from its image entrypoint as an interim,
-> but that leans on an undocumented contract and regenerates after 24h idle.
+> but that leans on an undocumented contract, and a token that is not rewritten
+> before each start regenerates after 24h idle.
 > Would you accept an explicit input, for example `AOE_SERVE_TOKEN` or
 > `--token-file <path>`, honored only with `--auth token`, that pins the value
 > for the process lifetime and skips the idle regeneration? Related: a request
