@@ -41,6 +41,9 @@ const FORCE_ON_TIMEOUT: Duration = Duration::from_secs(30);
 /// Variables of CityHall's own environment that must never reach a workspace's
 /// aoe, which inherits the rest (PATH, locale, proxies and so on). Source:
 /// aoe origin/main 3a85e7241.
+// Not scrubbed: XDG_RUNTIME_DIR (only probes the systemd user bus, process/systemd/mod.rs:132, and
+// scrubbing it would break scopes; tmux sockets follow TMUX_TMPDIR, tmux/mod.rs:80) and AOE_SERVE_PORT
+// (`--port` is always passed).
 const SCRUBBED_ENV: &[&str] = &[
     // Moves the app dir (session/mod.rs:300), so every workspace would share one serve.token and daemon socket.
     "XDG_CONFIG_HOME",
