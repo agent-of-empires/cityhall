@@ -32,6 +32,10 @@ pub struct WorkspaceSpec {
     /// safe; a bare `Vec<(String, String)>` here would be a leak waiting for a
     /// future tracing call.
     pub agent_env: crate::agent_credentials::AgentEnv,
+    /// Bearer the workspace's aoe serves under `--auth token`. `Secret` redacts
+    /// `Debug`, so the derived impl stays safe. `None` until a reconcile site
+    /// decrypts it (see `workspaces::build_spec`).
+    pub daemon_token: Option<crate::crypto::Secret>,
     /// The deployment's telemetry policy, applied at every start.
     pub telemetry: TelemetryPolicy,
     /// Coding agents the workspace should arrive with, in the canonical

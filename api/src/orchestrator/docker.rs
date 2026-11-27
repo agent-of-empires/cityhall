@@ -983,6 +983,7 @@ mod tests {
             version: "v1.0.0".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
+            daemon_token: None,
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,

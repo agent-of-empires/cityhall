@@ -103,7 +103,7 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
     };
 
     // Request-driven start: any hit on the proxy resumes a stopped workspace.
-    let addr = workspaces::ensure_started(&state, user_id).await?;
+    let addr = workspaces::ensure_started(&state, user_id).await?.addr;
     state.activity.touch(user_id);
 
     let path_q = parts

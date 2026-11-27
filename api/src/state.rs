@@ -96,30 +96,39 @@ pub struct EndpointCache {
     entries: Mutex<HashMap<i32, CachedEndpoint>>,
 }
 
+/// A reachable workspace: its address and the bearer its aoe expects. `Debug`
+/// is safe to derive because `Secret` redacts.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub addr: String,
+    pub token: crate::crypto::Secret,
+}
+
 #[derive(Clone)]
 struct CachedEndpoint {
-    addr: String,
+    endpoint: Endpoint,
     version: String,
     image: String,
 }
 
 impl EndpointCache {
-    /// The cached address, if it was produced by a spec with the same version
+    /// The cached endpoint (address and token, stored in one entry so they
+    /// cannot disagree), if it was produced by a spec with the same version
     /// and image (a pin or template change must miss and reconcile).
-    pub fn get(&self, user_id: i32, version: &str, image: &str) -> Option<String> {
+    pub fn get(&self, user_id: i32, version: &str, image: &str) -> Option<Endpoint> {
         self.entries
             .lock()
             .unwrap()
             .get(&user_id)
             .filter(|e| e.version == version && e.image == image)
-            .map(|e| e.addr.clone())
+            .map(|e| e.endpoint.clone())
     }
 
-    pub fn put(&self, user_id: i32, version: &str, image: &str, addr: String) {
+    pub fn put(&self, user_id: i32, version: &str, image: &str, endpoint: Endpoint) {
         self.entries.lock().unwrap().insert(
             user_id,
             CachedEndpoint {
-                addr,
+                endpoint,
                 version: version.to_string(),
                 image: image.to_string(),
             },
@@ -179,11 +188,19 @@ mod tests {
         let cache = EndpointCache::default();
         assert!(cache.get(1, "v1", "img:v1").is_none());
 
-        cache.put(1, "v1", "img:v1", "127.0.0.1:5000".to_string());
-        assert_eq!(
-            cache.get(1, "v1", "img:v1").as_deref(),
-            Some("127.0.0.1:5000")
+        cache.put(
+            1,
+            "v1",
+            "img:v1",
+            Endpoint {
+                addr: "127.0.0.1:5000".to_string(),
+                token: crate::crypto::Secret::new("tok".to_string()),
+            },
         );
+        let hit = cache.get(1, "v1", "img:v1").unwrap();
+        assert_eq!(hit.addr, "127.0.0.1:5000");
+        assert_eq!(hit.token.expose(), "tok");
+        assert!(!format!("{hit:?}").contains("tok\""));
         // A version pin or template change must miss and reconcile.
         assert!(cache.get(1, "v2", "img:v2").is_none());
         assert!(cache.get(1, "v1", "other:v1").is_none());

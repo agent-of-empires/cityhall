@@ -76,6 +76,11 @@ pub enum Aad {
         user_id: i32,
         env_var: String,
     },
+    /// `workspaces.daemon_token`: the bearer a workspace's aoe serves under
+    /// `--auth token`. Bound to the owning user's row.
+    DaemonToken {
+        user_id: i32,
+    },
     /// Not a stored secret: the admin access token in `crate::proxy`.
     WorkspaceAccessToken {
         purpose: &'static str,
@@ -97,6 +102,7 @@ impl Aad {
             Self::AgentCredential { user_id, env_var } => {
                 format!("agent-credential:{user_id}:{env_var}").into_bytes()
             }
+            Self::DaemonToken { user_id } => format!("daemon-token:{user_id}").into_bytes(),
             Self::WorkspaceAccessToken { purpose } => {
                 format!("ws-access-token:{purpose}").into_bytes()
             }
@@ -515,6 +521,8 @@ mod tests {
                 user_id: 1,
                 env_var: "OPENAI_API_KEY".to_string(),
             },
+            Aad::DaemonToken { user_id: 1 },
+            Aad::DaemonToken { user_id: 2 },
             Aad::WorkspaceAccessToken {
                 purpose: "ws-exchange",
             },

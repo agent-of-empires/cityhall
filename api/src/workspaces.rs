@@ -7,6 +7,7 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
+use crate::crypto::Secret;
 use crate::entities::{user, workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
@@ -14,7 +15,7 @@ use crate::orchestrator::{
     TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 use crate::rbac::Perms;
-use crate::state::AppState;
+use crate::state::{AppState, Endpoint};
 
 pub const SETTINGS_ID: i32 = 1;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
@@ -208,13 +209,15 @@ impl VersionCache {
 }
 
 /// The user's workspace intent row, created on first use. Always comes back
-/// with a bundle token (see [`ensure_bundle_token`]).
+/// with a bundle token and a daemon token (see [`ensure_bundle_token`],
+/// [`ensure_daemon_token`]).
 pub async fn get_or_create(
     db: &DatabaseConnection,
     user_id: i32,
 ) -> Result<workspace::Model, AppError> {
     if let Some(row) = workspace::Entity::find_by_id(user_id).one(db).await? {
-        return ensure_bundle_token(db, row).await;
+        let row = ensure_bundle_token(db, row).await?;
+        return ensure_daemon_token(db, row).await;
     }
     let now = Utc::now();
     Ok(workspace::ActiveModel {
@@ -224,7 +227,7 @@ pub async fn get_or_create(
         created_at: Set(now),
         updated_at: Set(now),
         bundle_token: Set(Some(crate::auth::random_token(48))),
-        daemon_token: Set(None),
+        daemon_token: Set(Some(encrypt_daemon_token(user_id, &mint_daemon_token())?)),
     }
     .insert(db)
     .await?)
@@ -266,6 +269,67 @@ pub async fn ensure_bundle_token(
         .ok_or(AppError::NotFound("workspace"))
 }
 
+/// A fresh daemon token: 32 random bytes as 64 lowercase hex characters. aoe
+/// only adopts a `--auth token` value of exactly 64 (or 32) hex or lowercase
+/// letters, so `crate::auth::random_token` (mixed-case alphanumeric) does not
+/// qualify.
+pub fn mint_daemon_token() -> String {
+    use std::fmt::Write;
+    let bytes: [u8; 32] = rand::random();
+    bytes.iter().fold(String::with_capacity(64), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
+fn encrypt_daemon_token(user_id: i32, token: &str) -> Result<String, AppError> {
+    crate::crypto::encrypt(token, &crate::crypto::Aad::DaemonToken { user_id })
+}
+
+/// Give a row a daemon token if it has none. Same shape and reasoning as
+/// [`ensure_bundle_token`]: a conditional update so concurrent backfills
+/// converge on one persisted value, which is re-read and returned. Diverging
+/// would start a workspace under a token CityHall then fails to present.
+pub async fn ensure_daemon_token(
+    db: &DatabaseConnection,
+    row: workspace::Model,
+) -> Result<workspace::Model, AppError> {
+    if row.daemon_token.is_some() {
+        return Ok(row);
+    }
+
+    let user_id = row.user_id;
+    workspace::Entity::update_many()
+        .col_expr(
+            workspace::Column::DaemonToken,
+            Expr::value(encrypt_daemon_token(user_id, &mint_daemon_token())?),
+        )
+        .filter(workspace::Column::UserId.eq(user_id))
+        .filter(workspace::Column::DaemonToken.is_null())
+        .exec(db)
+        .await?;
+
+    workspace::Entity::find_by_id(user_id)
+        .one(db)
+        .await?
+        .ok_or(AppError::NotFound("workspace"))
+}
+
+/// The plaintext daemon token of a row that has one (see
+/// [`ensure_daemon_token`]).
+pub fn decrypt_daemon_token(row: &workspace::Model) -> Result<String, AppError> {
+    let envelope = row
+        .daemon_token
+        .as_deref()
+        .ok_or(AppError::Internal("workspace has no daemon token"))?;
+    crate::crypto::decrypt(
+        envelope,
+        &crate::crypto::Aad::DaemonToken {
+            user_id: row.user_id,
+        },
+    )
+}
+
 /// The aoe version this workspace should run: its pin, or the global default.
 pub fn effective_version(
     settings: &workspace_settings::Model,
@@ -301,6 +365,8 @@ pub fn build_spec(
         version,
         bundle,
         agent_env: crate::agent_credentials::AgentEnv::default(),
+        // Like `agent_env`, decrypted by the reconcile sites, not per request.
+        daemon_token: None,
         telemetry: effective_telemetry_policy(settings),
         // Already canonical on the way in, so it is passed through rather than
         // re-derived: the backends compare this exact string against what a
@@ -374,7 +440,8 @@ impl From<OrchestratorError> for AppError {
     }
 }
 
-/// Start (or resume) `user_id`'s workspace and return its address. This is the
+/// Start (or resume) `user_id`'s workspace and return its address and daemon
+/// token. This is the
 /// request-driven start path: the proxy calls it on every request, the admin
 /// start endpoint calls it explicitly. Serialized per user against the sweeper.
 ///
@@ -383,34 +450,37 @@ impl From<OrchestratorError> for AppError {
 /// recreate the container and kill a session the user is actively running.
 /// Credentials apply on the next create, which happens via the explicit
 /// restart route, an idle stop, or first launch.
-pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, AppError> {
+pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<Endpoint, AppError> {
     let cfg = settings(&state.db).await?;
     let row = get_or_create(&state.db, user_id).await?;
     let mut spec = build_spec(&cfg, &row)?;
 
     // Hot path: a cached address means no backend round-trip per request.
-    if let Some(addr) = state.endpoints.get(user_id, &spec.version, &spec.image) {
+    if let Some(endpoint) = state.endpoints.get(user_id, &spec.version, &spec.image) {
         state.activity.touch(user_id);
-        return Ok(addr);
+        return Ok(endpoint);
     }
 
     let lock = state.locks.lock_for(user_id);
     let _guard = lock.lock().await;
     // Re-check under the lock: a concurrent request may have reconciled.
-    if let Some(addr) = state.endpoints.get(user_id, &spec.version, &spec.image) {
+    if let Some(endpoint) = state.endpoints.get(user_id, &spec.version, &spec.image) {
         state.activity.touch(user_id);
-        return Ok(addr);
+        return Ok(endpoint);
     }
     // Only materialize credentials once a container is actually about to be
     // created or reconciled, not on the cache-hit path above.
     spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
     spec.mode = resolve_mode(state, user_id).await?;
+    let token = Secret::new(decrypt_daemon_token(&row)?);
+    spec.daemon_token = Some(token.clone());
     let addr = state.orchestrator.ensure_started(&spec).await?;
+    let endpoint = Endpoint { addr, token };
     state
         .endpoints
-        .put(user_id, &spec.version, &spec.image, addr.clone());
+        .put(user_id, &spec.version, &spec.image, endpoint.clone());
     state.activity.touch(user_id);
-    Ok(addr)
+    Ok(endpoint)
 }
 
 /// Recreate a RUNNING workspace onto its current effective spec (admin
@@ -428,6 +498,7 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
     // A pre-bundle row would otherwise be recreated without a token, and so
     // without its configuration.
     let row = ensure_bundle_token(&state.db, row).await?;
+    let row = ensure_daemon_token(&state.db, row).await?;
     let mut spec = build_spec(&cfg, &row)?;
 
     let lock = state.locks.lock_for(user_id);
@@ -443,10 +514,15 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
     // An explicit restart is where a changed mode reaches a running workspace.
     spec.apply_mode_to_running = true;
     state.endpoints.invalidate(user_id);
+    let token = Secret::new(decrypt_daemon_token(&row)?);
+    spec.daemon_token = Some(token.clone());
     let addr = state.orchestrator.ensure_started(&spec).await?;
-    state
-        .endpoints
-        .put(user_id, &spec.version, &spec.image, addr);
+    state.endpoints.put(
+        user_id,
+        &spec.version,
+        &spec.image,
+        Endpoint { addr, token },
+    );
     Ok(())
 }
 
@@ -563,6 +639,8 @@ mod tests {
     use super::*;
     use crate::entities::role;
     use crate::migration::Migrator;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
     use sea_orm::{ConnectOptions, Database};
     use sea_orm_migration::MigratorTrait;
     use std::sync::Arc;
@@ -574,6 +652,15 @@ mod tests {
     /// transactions for 120ms each take 960ms, not 120ms), but that is behavior
     /// observed rather than promised, and `a_concurrent_backfill_agrees_on_one_token`
     /// depends on it.
+    /// The daemon token is encrypted, so any test that creates a workspace row
+    /// needs a key. Held for the whole test: the env var is process-wide.
+    fn test_key() -> crate::crypto::KeyEnvGuard {
+        let guard = crate::crypto::guard_key_env();
+        std::env::set_var("CITYHALL_SECRET_KEY", B64.encode([9u8; 32]));
+        std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
+        guard
+    }
+
     async fn setup() -> DatabaseConnection {
         let mut opts = ConnectOptions::new("sqlite::memory:");
         opts.max_connections(1);
@@ -606,6 +693,7 @@ mod tests {
 
     #[tokio::test]
     async fn seeded_version_fills_a_fresh_install() {
+        let _key = test_key();
         let db = setup().await;
         apply_seeded_version(&db, "v9.9.9".to_string())
             .await
@@ -616,6 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn seeding_never_touches_a_saved_row() {
+        let _key = test_key();
         let db = setup().await;
         // Operator saved settings without a version; the seeder must leave
         // that choice alone (and must not hit the network to do so).
@@ -660,6 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_defaults_when_no_row() {
+        let _key = test_key();
         let db = setup().await;
         let s = settings(&db).await.unwrap();
         assert_eq!(s.image_template, "cityhall/aoe:{version}");
@@ -674,6 +764,7 @@ mod tests {
     /// silently turn the whole feature off.
     #[tokio::test]
     async fn spec_carries_the_configured_agents() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -689,6 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_or_create_is_idempotent() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let a = get_or_create(&db, uid).await.unwrap();
@@ -701,6 +793,7 @@ mod tests {
     /// silently boot unconfigured.
     #[tokio::test]
     async fn a_fresh_row_gets_a_bundle_token() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -711,6 +804,7 @@ mod tests {
     /// backfilled rather than left unable to fetch anything.
     #[tokio::test]
     async fn a_pre_bundle_row_is_backfilled() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -733,6 +827,7 @@ mod tests {
     /// hand a workspace a token the bundle endpoint rejects.
     #[tokio::test]
     async fn a_concurrent_backfill_agrees_on_one_token() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -759,8 +854,105 @@ mod tests {
         assert_eq!(b.bundle_token.as_deref(), Some(persisted.as_str()));
     }
 
+    fn is_64_lowercase_hex(s: &str) -> bool {
+        s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    }
+
+    #[test]
+    fn a_minted_daemon_token_is_64_lowercase_hex() {
+        let a = mint_daemon_token();
+        assert!(is_64_lowercase_hex(&a), "{a}");
+        assert_ne!(a, mint_daemon_token());
+    }
+
+    /// The row holds an envelope, never the token, and it opens only for its
+    /// owner.
+    #[tokio::test]
+    async fn a_fresh_row_gets_an_encrypted_daemon_token() {
+        let _key = test_key();
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        let stored = row.daemon_token.clone().expect("minted");
+        let plain = decrypt_daemon_token(&row).unwrap();
+        assert!(is_64_lowercase_hex(&plain));
+        assert!(!stored.contains(&plain));
+
+        let other = crate::crypto::Aad::DaemonToken { user_id: uid + 1 };
+        assert!(crate::crypto::decrypt(&stored, &other).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_pre_feature_row_gets_a_stable_daemon_token() {
+        let _key = test_key();
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        let mut active: workspace::ActiveModel = row.into();
+        active.daemon_token = Set(None);
+        let stripped = active.update(&db).await.unwrap();
+        assert!(decrypt_daemon_token(&stripped).is_err());
+
+        let restored = ensure_daemon_token(&db, stripped).await.unwrap();
+        let token = decrypt_daemon_token(&restored).unwrap();
+        assert!(is_64_lowercase_hex(&token));
+        // Rotating on every start would break the token a running workspace
+        // already serves under.
+        let again = get_or_create(&db, uid).await.unwrap();
+        assert_eq!(decrypt_daemon_token(&again).unwrap(), token);
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_daemon_token_backfill_agrees_on_one_value() {
+        let _key = test_key();
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        let mut active: workspace::ActiveModel = row.into();
+        active.daemon_token = Set(None);
+        let stripped = active.update(&db).await.unwrap();
+
+        let (a, b) = tokio::join!(
+            ensure_daemon_token(&db, stripped.clone()),
+            ensure_daemon_token(&db, stripped)
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+
+        let persisted = workspace::Entity::find_by_id(uid)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        let want = decrypt_daemon_token(&persisted).unwrap();
+        assert_eq!(decrypt_daemon_token(&a).unwrap(), want);
+        assert_eq!(decrypt_daemon_token(&b).unwrap(), want);
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_daemon_token() {
+        let token = "f".repeat(64);
+        let secret = Secret::new(token.clone());
+        let endpoint = Endpoint {
+            addr: "127.0.0.1:1".to_string(),
+            token: secret.clone(),
+        };
+        assert!(!format!("{endpoint:?}").contains(&token));
+        let spec = WorkspaceSpec {
+            user_id: 1,
+            image: "i".to_string(),
+            version: "v".to_string(),
+            bundle: None,
+            agent_env: crate::agent_credentials::AgentEnv::default(),
+            daemon_token: Some(secret),
+            telemetry: TelemetryPolicy::default(),
+            agents: String::new(),
+        };
+        assert!(!format!("{spec:?}").contains(&token));
+    }
+
     #[tokio::test]
     async fn spec_uses_pin_over_default() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -777,6 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn spec_requires_some_version() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
@@ -789,6 +982,7 @@ mod tests {
     /// value only needed when a container is actually created.
     #[tokio::test]
     async fn build_spec_does_not_hit_the_db_for_credentials() {
+        let _key = test_key();
         let db = setup().await;
         let uid = make_user(&db).await;
         let row = get_or_create(&db, uid).await.unwrap();
