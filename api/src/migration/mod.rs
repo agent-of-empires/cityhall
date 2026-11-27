@@ -19,6 +19,7 @@ mod m0016_add_agents_to_workspace_settings;
 mod m0017_create_dashboard_layouts;
 mod m0018_create_setup_state;
 mod m0019_add_onboarding_dismissed_to_users;
+mod m0020_add_daemon_token_to_workspaces;
 
 pub struct Migrator;
 
@@ -45,6 +46,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0017_create_dashboard_layouts::Migration),
             Box::new(m0018_create_setup_state::Migration),
             Box::new(m0019_add_onboarding_dismissed_to_users::Migration),
+            Box::new(m0020_add_daemon_token_to_workspaces::Migration),
         ]
     }
 }

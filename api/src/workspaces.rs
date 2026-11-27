@@ -224,6 +224,7 @@ pub async fn get_or_create(
         created_at: Set(now),
         updated_at: Set(now),
         bundle_token: Set(Some(crate::auth::random_token(48))),
+        daemon_token: Set(None),
     }
     .insert(db)
     .await?)
