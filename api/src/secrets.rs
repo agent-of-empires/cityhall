@@ -19,19 +19,20 @@ use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOr
 
 use crate::crypto::{self, Aad, Provenance};
 use crate::entities::{
-    agent_credential, git_credential, git_ssh_key, oidc_settings, smtp_settings,
+    agent_credential, git_credential, git_ssh_key, oidc_settings, smtp_settings, workspace,
 };
 use crate::error::AppError;
 use crate::{agent_credentials, mailer, oidc};
 
 /// Every store, so one holding no secrets still reports a zero row rather than
 /// vanishing from the output and reading as forgotten.
-const STORES: [&str; 5] = [
+const STORES: [&str; 6] = [
     "SMTP password",
     "OIDC client secret",
     "git credentials",
     "git SSH keys",
     "agent credentials",
+    "workspace daemon tokens",
 ];
 
 /// One encrypted value in the database, identified well enough to classify it,
@@ -47,6 +48,7 @@ enum Slot {
     GitCredential { user_id: i32 },
     GitSshKey { user_id: i32 },
     AgentCredential { user_id: i32, env_var: String },
+    DaemonToken { user_id: i32 },
 }
 
 impl Slot {
@@ -57,6 +59,7 @@ impl Slot {
             Self::GitCredential { .. } => STORES[2],
             Self::GitSshKey { .. } => STORES[3],
             Self::AgentCredential { .. } => STORES[4],
+            Self::DaemonToken { .. } => STORES[5],
         }
     }
 
@@ -68,6 +71,7 @@ impl Slot {
             Self::GitCredential { user_id } => format!("git credential (user {user_id})"),
             Self::GitSshKey { user_id } => format!("git SSH key (user {user_id})"),
             Self::AgentCredential { user_id, env_var } => format!("{env_var} (user {user_id})"),
+            Self::DaemonToken { user_id } => format!("workspace daemon token (user {user_id})"),
         }
     }
 
@@ -80,6 +84,7 @@ impl Slot {
             // Through the store's own helper, so rotation cannot bind a value to
             // something the workspace path will not recognise.
             Self::AgentCredential { user_id, env_var } => agent_credentials::aad(*user_id, env_var),
+            Self::DaemonToken { user_id } => Aad::DaemonToken { user_id: *user_id },
         }
     }
 
@@ -140,6 +145,15 @@ impl Slot {
                     .filter(agent_credential::Column::UserId.eq(*user_id))
                     .filter(agent_credential::Column::EnvVar.eq(env_var.as_str()))
                     .filter(agent_credential::Column::ValueEncrypted.eq(old))
+                    .exec(db)
+                    .await?
+                    .rows_affected
+            }
+            Self::DaemonToken { user_id } => {
+                workspace::Entity::update_many()
+                    .col_expr(workspace::Column::DaemonToken, Expr::value(new))
+                    .filter(workspace::Column::UserId.eq(*user_id))
+                    .filter(workspace::Column::DaemonToken.eq(old))
                     .exec(db)
                     .await?
                     .rows_affected
@@ -205,6 +219,21 @@ async fn slots(db: &DatabaseConnection) -> Result<Vec<(Slot, String)>, AppError>
             },
             row.value_encrypted,
         ));
+    }
+    for row in workspace::Entity::find()
+        .filter(workspace::Column::DaemonToken.is_not_null())
+        .order_by_asc(workspace::Column::UserId)
+        .all(db)
+        .await?
+    {
+        if let Some(token) = row.daemon_token {
+            out.push((
+                Slot::DaemonToken {
+                    user_id: row.user_id,
+                },
+                token,
+            ));
+        }
     }
 
     Ok(out)
@@ -460,6 +489,21 @@ mod tests {
         .insert(db)
         .await
         .unwrap();
+
+        workspace::ActiveModel {
+            user_id: Set(user_id),
+            pinned_version: Set(None),
+            last_active_at: Set(None),
+            created_at: Set(Utc::now()),
+            updated_at: Set(Utc::now()),
+            bundle_token: Set(None),
+            daemon_token: Set(Some(
+                crypto::encrypt("daemon-token", &Aad::DaemonToken { user_id }).unwrap(),
+            )),
+        }
+        .insert(db)
+        .await
+        .unwrap();
     }
 
     fn totals(reports: &[StoreReport]) -> (usize, usize, usize, usize, usize) {
@@ -500,23 +544,23 @@ mod tests {
             seed(&db, user_id).await;
 
             // Before: one legacy row, the rest bound and current.
-            assert_eq!(totals(&status(&db).await.unwrap()), (5, 4, 0, 1, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (6, 5, 0, 1, 0));
             assert_eq!(legacy_count(&db).await.unwrap(), 1);
 
             // The new key becomes current, the old one decrypt-only.
             std::env::set_var("CITYHALL_SECRET_KEY", B64.encode(KEY_B));
             std::env::set_var("CITYHALL_SECRET_KEY_PREVIOUS", B64.encode(KEY_A));
-            assert_eq!(totals(&status(&db).await.unwrap()), (5, 0, 4, 1, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (6, 0, 5, 1, 0));
 
             let report = rotate(&db).await.unwrap();
-            assert_eq!(report.rotated, 5);
+            assert_eq!(report.rotated, 6);
             assert!(report.unreadable.is_empty());
             assert!(report.skipped.is_empty());
-            assert_eq!(totals(&report.after), (5, 5, 0, 0, 0));
+            assert_eq!(totals(&report.after), (6, 6, 0, 0, 0));
 
             // The point of the exercise: the old key can now go away.
             std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
-            assert_eq!(totals(&status(&db).await.unwrap()), (5, 5, 0, 0, 0));
+            assert_eq!(totals(&status(&db).await.unwrap()), (6, 6, 0, 0, 0));
             assert_eq!(legacy_count(&db).await.unwrap(), 0);
 
             // And the plaintexts survived the round trip.
@@ -532,6 +576,15 @@ mod tests {
             let env = agent_credentials::materialize(&db, user_id).await.unwrap();
             assert_eq!(env.pairs.len(), 1);
             assert_eq!(env.pairs[0].1.expose(), "sk-agent");
+            let ws = workspace::Entity::find_by_id(user_id)
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                crate::workspaces::decrypt_daemon_token(&ws).unwrap(),
+                "daemon-token"
+            );
         });
     }
 
@@ -582,7 +635,7 @@ mod tests {
             );
             // The legacy SMTP row was still upgraded.
             assert_eq!(report.rotated, 1);
-            assert_eq!(totals(&report.after), (5, 4, 0, 0, 1));
+            assert_eq!(totals(&report.after), (6, 5, 0, 0, 1));
         });
     }
 

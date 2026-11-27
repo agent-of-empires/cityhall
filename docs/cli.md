@@ -80,7 +80,7 @@ cargo run -- user delete --username bob
 
 Inspect and re-encrypt the secrets CityHall stores: the SMTP password, the OIDC
 client secret, and every user's git credentials (HTTPS token and SSH key) and
-agent credentials. See
+agent credentials, and every workspace's daemon token. See
 [Rotating the key](configuration.md#rotating-the-key) for the full procedure.
 
 ### `secrets status`
@@ -92,12 +92,13 @@ cargo run -- secrets status
 ```
 
 ```text
-STORE                 ROWS  CURRENT  NEEDS-PREVIOUS  LEGACY  UNREADABLE
-SMTP password            1        1               0       0           0
-OIDC client secret       0        0               0       0           0
-git credentials          4        3               1       0           0
-git SSH keys             2        2               0       0           0
-agent credentials        7        7               0       0           0
+STORE                    ROWS  CURRENT  NEEDS-PREVIOUS  LEGACY  UNREADABLE
+SMTP password               1        1               0       0           0
+OIDC client secret          0        0               0       0           0
+git credentials             4        3               1       0           0
+git SSH keys                2        2               0       0           0
+agent credentials           7        7               0       0           0
+workspace daemon tokens     3        3               0       0           0
 ```
 
 | Column           | Meaning                                                                                       |
