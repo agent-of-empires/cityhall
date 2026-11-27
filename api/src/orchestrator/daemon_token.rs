@@ -117,6 +117,14 @@ pub fn missing_token() -> OrchestratorError {
 /// process backend: mode 0600 from creation, content replaced and mtime
 /// refreshed on every call. The error carries only the I/O failure, never the
 /// token.
+///
+/// aoe reads `serve.token` once, at startup (`load_or_generate_token`,
+/// src/server/startup.rs:582 and src/server/token.rs:245-247; the 24 h reuse
+/// window `TOKEN_REUSE_MAX_AGE`, token.rs:241, applies only to that read).
+/// Rotation runs only under `--remote` (startup.rs:1431-1449) or a debug-build
+/// test path (`AOE_TEST_TOKEN_LIFETIME_SECS`, token.rs:166-176, compiled out of
+/// release builds). CityHall never passes `--remote`, so a running daemon keeps
+/// the minted token. Line numbers are aoe commit 3a85e7241.
 #[cfg(unix)]
 pub fn write_serve_token(home: &std::path::Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
