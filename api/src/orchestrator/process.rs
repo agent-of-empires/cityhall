@@ -556,6 +556,12 @@ fn free_port() -> Result<u16, OrchestratorError> {
 mod tests {
     use super::*;
 
+    /// Linux refuses to exec a file (ETXTBSY) while any process holds it open
+    /// for writing, and a fork in another test thread inherits our write fd
+    /// until its own exec. Tests that write a fake aoe and run it hold this
+    /// from the write until the last exec so no fork can overlap a write.
+    static FAKE_AOE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Force-on is asserted by aoe's own CLI, and a failure has to fail the
     /// start: a workspace that came up anyway would be serving under a policy
     /// the admin set and CityHall did not apply. The other policies must not run
@@ -563,6 +569,7 @@ mod tests {
     /// have it.
     #[tokio::test]
     async fn force_on_fails_the_start_when_aoe_cannot_apply_it() {
+        let _guard = FAKE_AOE_LOCK.lock().await;
         let orch = scratch("telemetry");
         let home = orch.user_dir(1).join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -610,6 +617,7 @@ mod tests {
     /// into a start failure that says what is likely wrong.
     #[tokio::test]
     async fn a_hung_telemetry_enable_hits_the_deadline() {
+        let _guard = FAKE_AOE_LOCK.lock().await;
         let orch = scratch("telemetry-hang");
         let home = orch.user_dir(1).join("home");
         std::fs::create_dir_all(&home).unwrap();
