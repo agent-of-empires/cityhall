@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    binary_key, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready,
-    Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceMode,
-    WorkspaceSpec, WorkspaceStatus,
+    binary_key, daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
+    wait_ready, Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy,
+    WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -69,6 +69,11 @@ struct RunState {
     /// upgrade alone restarts nothing.
     #[serde(default)]
     mode: String,
+    /// Fingerprint of the daemon token this process was spawned with. Absent
+    /// (empty) in a state.json from the `--auth none` era, which never equals a
+    /// real fingerprint, so every such workspace is respawned once on upgrade.
+    #[serde(default)]
+    daemon_token_fp: String,
 }
 
 impl RunState {
@@ -78,6 +83,12 @@ impl RunState {
         self.version == spec.version
             && self.env_fingerprint == spec.agent_env.fingerprint
             && TelemetryPolicy::from_stored(&self.telemetry) == spec.telemetry
+            && self.daemon_token_fp
+                == spec
+                    .daemon_token
+                    .as_ref()
+                    .map(|t| daemon_token::fingerprint(t.expose()))
+                    .unwrap_or_default()
             // Only called for a live process, which keeps the mode it started
             // with unless this is an explicit restart.
             && (!spec.apply_mode_to_running
@@ -146,11 +157,19 @@ impl ProcessOrchestrator {
             OrchestratorError::Runtime(format!("failed to create workspace home: {e}"))
         })?;
         apply_force_on(spec, &binary, &home, FORCE_ON_TIMEOUT).await?;
+        let token = spec
+            .daemon_token
+            .as_ref()
+            .ok_or_else(daemon_token::missing_token)?;
 
         let mut last_err = None;
         for _ in 0..START_ATTEMPTS {
             let port = free_port()?;
             let addr = format!("127.0.0.1:{port}");
+            // Every attempt, so aoe sees a fresh mtime on the token file.
+            daemon_token::write_serve_token(&home, token.expose()).map_err(|e| {
+                OrchestratorError::Runtime(format!("failed to write workspace serve token: {e}"))
+            })?;
             let pid = self.spawn_once(spec, &binary, &home, port)?;
             self.write_state(
                 spec.user_id,
@@ -161,6 +180,7 @@ impl ProcessOrchestrator {
                     env_fingerprint: spec.agent_env.fingerprint.clone(),
                     telemetry: spec.telemetry.as_str().to_string(),
                     mode: spec.mode.as_str().to_string(),
+                    daemon_token_fp: daemon_token::fingerprint(token.expose()),
                 },
             )?;
             match wait_ready(&addr).await {
@@ -293,6 +313,10 @@ impl ProcessOrchestrator {
 impl Orchestrator for ProcessOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
         validate_version(&spec.version)?;
+        daemon_token::require_token_auth_support(&spec.version)?;
+        if spec.daemon_token.is_none() {
+            return Err(daemon_token::missing_token());
+        }
         if let Some(state) = self.read_state(spec.user_id) {
             if alive(state.pid) {
                 let addr = format!("127.0.0.1:{}", state.port);
@@ -300,7 +324,7 @@ impl Orchestrator for ProcessOrchestrator {
                     return Ok(addr);
                 }
                 // Version drift, a credential change, a telemetry policy
-                // change, a hung process, or a recycled PID that is not our
+                // change, a daemon token change, a hung process, or a recycled PID that is not our
                 // workspace: clear it and start fresh. A credential or policy
                 // change must terminate and respawn because Command::env is
                 // only set once, at spawn.
@@ -464,10 +488,10 @@ fn serve_args(spec: &WorkspaceSpec, port: u16) -> Vec<String> {
         "127.0.0.1",
         "--port",
         &port.to_string(),
-        // CityHall's session gates the proxy; the process only listens on
-        // loopback.
+        // aoe adopts the per-workspace token written to serve.token (see
+        // `daemon_token`); the proxy presents it as the bearer.
         "--auth",
-        "none",
+        "token",
         "--behind-proxy",
         // The proxy forwards the public Host and Origin, both of which
         // aoe's DNS-rebinding gate requires on the allowlist.
@@ -705,6 +729,119 @@ mod tests {
         }
     }
 
+    #[test]
+    fn serve_args_launch_under_token_auth_never_none() {
+        let args = serve_args(&spec_for(1), 4000);
+        let at = args.iter().position(|a| a == "--auth").unwrap();
+        assert_eq!(args[at + 1], "token");
+        assert!(!args.iter().any(|a| a == "none"), "{args:?}");
+    }
+
+    fn token_spec(token: &str) -> WorkspaceSpec {
+        WorkspaceSpec {
+            version: "v1.26.0".to_string(),
+            daemon_token: Some(crate::crypto::Secret::new(token.to_string())),
+            ..spec_for(5)
+        }
+    }
+
+    /// A live process in its own group for `terminate` to signal, reaped in the
+    /// background so `alive` goes false once it dies.
+    fn live_process() -> i32 {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        pid
+    }
+
+    /// A live, healthy process whose recorded token fingerprint is absent (the
+    /// `--auth none` era) or different must be terminated and respawned; one
+    /// that matches is reused.
+    #[tokio::test]
+    async fn token_fingerprint_drift_respawns_and_a_match_reuses() {
+        let orch = scratch("token-drift");
+        std::fs::create_dir_all(orch.user_dir(5)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            while let Ok((mut s, _)) = listener.accept().await {
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n").await;
+            }
+        });
+        let spec = token_spec(&"b".repeat(64));
+        // No download: a recorded failure makes the respawn report the missing
+        // binary instead of fetching one.
+        orch.provisioning
+            .fail(&binary_key(&spec.version), "not installed".to_string());
+        let state = |pid: i32, fp: &str| RunState {
+            pid,
+            port,
+            version: spec.version.clone(),
+            env_fingerprint: String::new(),
+            telemetry: TelemetryPolicy::default().as_str().to_string(),
+            mode: String::new(),
+            daemon_token_fp: fp.to_string(),
+        };
+
+        let pid = live_process();
+        orch.write_state(5, &state(pid, &daemon_token::fingerprint(&"b".repeat(64))))
+            .unwrap();
+        assert_eq!(
+            orch.ensure_started(&spec).await.unwrap(),
+            format!("127.0.0.1:{port}")
+        );
+        assert!(alive(pid), "a matching process must be left running");
+        kill_group(pid, libc::SIGKILL);
+
+        for fp in ["", "0000000000000000"] {
+            let pid = live_process();
+            orch.write_state(5, &state(pid, fp)).unwrap();
+            // Terminated, then a respawn that stops at the missing binary.
+            let err = orch.ensure_started(&spec).await.unwrap_err();
+            assert!(
+                matches!(err, OrchestratorError::ArtifactMissing(_)),
+                "{fp:?}: {err:?}"
+            );
+            assert!(!alive(pid), "{fp:?}: drifted process was not terminated");
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_started_refuses_old_aoe_and_a_missing_token() {
+        let orch = scratch("gate");
+        let old = WorkspaceSpec {
+            version: "v1.25.0".to_string(),
+            ..token_spec(&"c".repeat(64))
+        };
+        assert!(orch
+            .ensure_started(&old)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("v1.25.0"));
+        let no_token = WorkspaceSpec {
+            version: "v1.26.0".to_string(),
+            ..spec_for(1)
+        };
+        let err = orch.ensure_started(&no_token).await.unwrap_err();
+        assert!(err.to_string().contains("daemon token"), "{err}");
+    }
+
+    #[test]
+    fn state_without_daemon_token_fp_reads_back_empty() {
+        let state: RunState =
+            serde_json::from_str(r#"{"pid":1,"port":2,"version":"v1.0.0"}"#).unwrap();
+        assert_eq!(state.daemon_token_fp, "");
+    }
+
     fn scratch(name: &str) -> ProcessOrchestrator {
         let root = std::env::temp_dir().join(format!(
             "cityhall-process-test-{}-{name}",
@@ -742,6 +879,7 @@ mod tests {
                 env_fingerprint: "somefingerprint".to_string(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
+                daemon_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -807,6 +945,7 @@ mod tests {
             env_fingerprint: full.agent_env.fingerprint.clone(),
             telemetry: full.telemetry.as_str().to_string(),
             mode: "full".to_string(),
+            daemon_token_fp: String::new(),
         };
         assert!(state.matches(&full));
         // Permission removed, explicit restart: drift.
@@ -842,7 +981,9 @@ mod tests {
             4000,
         );
         assert!(!full.iter().any(|a| a == "--cityhall"));
-        assert!(full.iter().any(|a| a == "--auth"));
+        let at = full.iter().position(|a| a == "--auth").unwrap();
+        assert_eq!(full[at + 1], "token");
+        assert!(!full.iter().any(|a| a == "none"));
     }
 
     #[tokio::test]
@@ -863,6 +1004,7 @@ mod tests {
                 env_fingerprint: String::new(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
+                daemon_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -879,6 +1021,7 @@ mod tests {
                 env_fingerprint: String::new(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
+                daemon_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -899,7 +1042,7 @@ mod tests {
             version: "v9.9.9".to_string(),
             bundle: None,
             agent_env: crate::agent_credentials::AgentEnv::default(),
-            daemon_token: None,
+            daemon_token: Some(crate::crypto::Secret::new("a".repeat(64))),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
             mode: WorkspaceMode::Composer,
