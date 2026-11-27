@@ -28,7 +28,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("workspaces.use", "Use your own workspace"),
     (
         "workspaces.full",
-        "Full aoe dashboard: terminal, diffs, worktrees, yolo",
+        "Full aoe dashboard: a terminal (shell) in the user's workspace, diffs, worktrees, yolo",
     ),
     ("workspaces.read", "View all workspaces"),
     ("workspaces.write", "Manage workspaces and their versions"),

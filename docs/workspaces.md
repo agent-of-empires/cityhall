@@ -21,30 +21,43 @@ A workspace runs in one of two modes, set by the owner's role (see
 older version fails with an unknown-argument error from `aoe serve`. If no
 release has it yet, see [Unreleased aoe](#unreleased-aoe).
 
-The mode is read from the role when a workspace is created or recreated. A role
-change never restarts a running workspace: it applies on the next restart (the
-restart action, an idle stop, or a CityHall restart). Revoking `workspaces.full`
+The mode is read from the role when a workspace starts from scratch (first
+launch, or after it was stopped) and on an explicit restart. A role change never
+restarts a running workspace, and neither does a CityHall restart: a running
+workspace keeps the mode it started with until it is stopped (an idle stop
+included) or restarted with the restart action. Revoking `workspaces.full`
 therefore leaves a running workspace in Full mode until then; restart it to
 revoke at once.
 
 **Upgrading.** A fresh install seeds the `member` role with `workspaces.full`.
 Existing `member` roles are not changed and stay in Composer mode until an admin
-adds the key. Running workspaces are not recreated by the upgrade.
+adds the key. The upgrade recreates nothing, but roles that already hold the key
+without being named (`admin` through `*`) switch their existing Composer
+workspaces to Full mode on the next stop and start, or the next explicit
+restart.
 
 The first time a user opens a Full mode workspace, aoe shows its optional
 setup wizard at `/setup`. "Go to dashboard" dismisses it; the choice is kept on
 the workspace volume, so it appears once per workspace.
 
-Full mode puts a terminal behind `aoe serve --auth none`, so it is only offered
-where nothing but the CityHall proxy can reach the workspace's port:
+### Granting Full mode gives a shell
+
+Full mode puts a terminal behind `aoe serve --auth none`. Granting
+`workspaces.full` therefore gives that user a shell in their workspace, and
+CityHall's session is the only thing in front of it. **A fresh install seeds the
+`member` role with the key, so every new user gets Full mode by default.** To
+withhold it, remove `workspaces.full` from the `member` role on the Roles page
+(or give users a role without it); the change applies on their next stop and
+start or restart.
+
+The shell is only as contained as the network and the host around the
+workspace, and CityHall can verify none of it:
 
 | Backend | Full mode |
 | --- | --- |
-| docker, published loopback port | Allowed. Trusts every process on the docker host. |
-| docker, `WORKSPACE_DOCKER_NETWORK` set | Not offered. Peer workspaces on the shared network can reach each other's port, so the workspace starts in Composer mode, the log warns, and the workspaces pages show why. |
-| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which needs a CNI that enforces it and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. |
-| process | Allowed. Development only: workspaces run as the CityHall OS user with no isolation from each other or from CityHall. |
-
+| docker | **Refused until the per-workspace bearer (#100) lands.** Workspace containers share a bridge network (docker's default bridge, or `WORKSPACE_DOCKER_NETWORK`) that allows container to container traffic, and aoe listens on `0.0.0.0` without auth, so one user's terminal could reach another user's workspace. Publishing the port on `127.0.0.1` only keeps the host's network out. Users who hold the key get Composer mode, the log warns, and the workspaces pages show why. |
+| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which only works on a CNI that enforces it, and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. CityHall cannot detect whether it is enforced. Egress from a workspace pod is open: it reaches CityHall's API, `cityhall-db` and the kube API (rows 10 to 12 of [credential isolation](research/credential-isolation.md)). The shell can also read the pod's environment, including the bundle token and provider keys. |
+| process | Allowed, **development only**. Every workspace runs as the CityHall OS user, so there is no isolation between users, or from CityHall itself. |
 
 ## How it works
 
@@ -519,8 +532,11 @@ dashboard owns root-absolute paths. Every proxied request is authenticated
 with the regular CityHall session cookie; the container itself runs
 `aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> [--cityhall]
 --dangerously-allow-plaintext-remote` (`--cityhall` only in Composer mode, the
-last flag only on aoe 1.22.0 and later, see below) and is only reachable through a loopback-published port, so
-CityHall is the sole auth boundary. In development nothing needs configuring:
+last flag only on aoe 1.22.0 and later, see below). aoe itself does no
+authentication, so CityHall's session is the only gate in front of it; what else
+can reach the workspace's port depends on the backend, see
+[Granting Full mode gives a shell](#granting-full-mode-gives-a-shell). In
+development nothing needs configuring:
 the cookie set by `127.0.0.1:3000` is also sent to `127.0.0.1:3001` (cookies
 ignore ports).
 
