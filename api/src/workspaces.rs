@@ -475,10 +475,16 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<Endpoint, 
     let token = Secret::new(decrypt_daemon_token(&row)?);
     spec.daemon_token = Some(token.clone());
     let addr = state.orchestrator.ensure_started(&spec).await?;
-    let endpoint = Endpoint { addr, token };
-    state
-        .endpoints
-        .put(user_id, &spec.version, &spec.image, endpoint.clone());
+    let endpoint = state.endpoints.put(
+        user_id,
+        &spec.version,
+        &spec.image,
+        Endpoint {
+            addr,
+            token,
+            generation: 0,
+        },
+    );
     state.activity.touch(user_id);
     Ok(endpoint)
 }
@@ -521,7 +527,11 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
         user_id,
         &spec.version,
         &spec.image,
-        Endpoint { addr, token },
+        Endpoint {
+            addr,
+            token,
+            generation: 0,
+        },
     );
     Ok(())
 }
@@ -935,6 +945,7 @@ mod tests {
         let endpoint = Endpoint {
             addr: "127.0.0.1:1".to_string(),
             token: secret.clone(),
+            generation: 0,
         };
         assert!(!format!("{endpoint:?}").contains(&token));
         let spec = WorkspaceSpec {

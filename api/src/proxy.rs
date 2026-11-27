@@ -105,6 +105,7 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
     // Request-driven start: any hit on the proxy resumes a stopped workspace.
     let endpoint = workspaces::ensure_started(&state, user_id).await?;
     let (addr, token) = (endpoint.addr.as_str(), endpoint.token.expose());
+    let generation = endpoint.generation;
     state.activity.touch(user_id);
 
     let path_q = parts
@@ -115,15 +116,17 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
     let target = format!("http://{addr}{}", strip_token_param(path_q));
 
     let result = if is_websocket_upgrade(&parts.headers) {
-        websocket_tunnel(&state, &mut parts, &target, user_id, token).await
+        websocket_tunnel(&state, &mut parts, &target, user_id, generation, token).await
     } else {
-        http_forward(&state, &parts, body, &target, user_id, token).await
+        http_forward(&state, &parts, body, &target, user_id, generation, token).await
     };
     if result.is_err() {
         // The workspace may have died out-of-band (crashed container, killed
         // process): drop the cached address so the next request reconciles
         // with the backend instead of dialing a dead endpoint forever.
-        state.endpoints.invalidate(user_id);
+        // Generation-scoped: a late failure from an obsolete runtime must
+        // not evict its replacement's cache entry.
+        state.endpoints.invalidate_if(user_id, generation);
     }
     result
 }
@@ -438,14 +441,20 @@ fn is_auth_rejection(status: StatusCode) -> bool {
 /// The workspace's token no longer matches (stale after a restart or lost
 /// serve.token). Stop it so the next request restarts it and mints a fresh
 /// token. Best effort: a failed stop is logged, the error is still returned.
-async fn workspace_auth_failed(state: &AppState, user_id: i32) -> AppError {
-    tracing::error!(
-        user_id,
-        "workspace rejected CityHall bearer token; restarting it"
-    );
-    state.endpoints.invalidate(user_id);
-    if let Err(e) = workspaces::stop(state, user_id).await {
-        tracing::error!(user_id, "failed to stop workspace after auth failure: {e}");
+///
+/// Only the request that still owns the cached entry (`generation`) stops the
+/// workspace. Concurrent requests to a rejecting runtime all see a 401; the
+/// first stops it, and a late one must not stop the healthy replacement a
+/// later request started.
+async fn workspace_auth_failed(state: &AppState, user_id: i32, generation: u64) -> AppError {
+    if state.endpoints.invalidate_if(user_id, generation) {
+        tracing::error!(
+            user_id,
+            "workspace rejected CityHall bearer token; restarting it"
+        );
+        if let Err(e) = workspaces::stop(state, user_id).await {
+            tracing::error!(user_id, "failed to stop workspace after auth failure: {e}");
+        }
     }
     AppError::WorkspaceUnavailable(
         "workspace authentication failed; it is restarting, reload".to_string(),
@@ -458,6 +467,7 @@ async fn http_forward(
     body: Body,
     target: &str,
     user_id: i32,
+    generation: u64,
     token: &str,
 ) -> Result<Response<Body>, AppError> {
     let upstream = state
@@ -470,7 +480,7 @@ async fn http_forward(
         .map_err(|e| AppError::WorkspaceUnavailable(format!("workspace request failed: {e}")))?;
 
     if is_auth_rejection(upstream.status()) {
-        return Err(workspace_auth_failed(state, user_id).await);
+        return Err(workspace_auth_failed(state, user_id, generation).await);
     }
 
     let mut builder = Response::builder().status(upstream.status());
@@ -494,6 +504,7 @@ async fn websocket_tunnel(
     parts: &mut request::Parts,
     target: &str,
     user_id: i32,
+    generation: u64,
     token: &str,
 ) -> Result<Response<Body>, AppError> {
     let on_upgrade = parts
@@ -527,7 +538,7 @@ async fn websocket_tunnel(
         .map_err(|e| AppError::WorkspaceUnavailable(format!("workspace handshake failed: {e}")))?;
 
     if is_auth_rejection(upstream.status()) {
-        return Err(workspace_auth_failed(state, user_id).await);
+        return Err(workspace_auth_failed(state, user_id, generation).await);
     }
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Err(AppError::WorkspaceUnavailable(format!(
