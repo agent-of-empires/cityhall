@@ -34,7 +34,9 @@ Existing `member` roles are not changed and stay in Composer mode until an admin
 adds the key. The upgrade recreates nothing, but roles that already hold the key
 without being named (`admin` through `*`) switch their existing Composer
 workspaces to Full mode on the next stop and start, or the next explicit
-restart.
+restart, on backends that allow Full mode (process, kubernetes). On docker,
+Full mode is refused (see the table below) and these workspaces stay in
+Composer mode.
 
 The first time a user opens a Full mode workspace, aoe shows its optional
 setup wizard at `/setup`. "Go to dashboard" dismisses it; the choice is kept on
@@ -42,13 +44,15 @@ the workspace volume, so it appears once per workspace.
 
 ### Granting Full mode gives a shell
 
-Full mode puts a terminal behind `aoe serve --auth none`. Granting
-`workspaces.full` therefore gives that user a shell in their workspace, and
-CityHall's session is the only thing in front of it. **A fresh install seeds the
-`member` role with the key, so every new user gets Full mode by default.** To
-withhold it, remove `workspaces.full` from the `member` role on the Roles page
-(or give users a role without it); the change applies on their next stop and
-start or restart.
+Full mode puts a terminal behind `aoe serve --auth none`. On backends that
+allow Full mode (process, kubernetes), granting `workspaces.full` therefore
+gives that user a shell in their workspace, and CityHall's session is the only
+thing in front of it. **A fresh install seeds the `member` role with the key, so
+on those backends every new user gets Full mode by default.** On docker the
+key has no effect today: Full mode is refused and every user gets Composer
+mode. To withhold Full mode, remove `workspaces.full` from the `member` role on
+the Roles page (or give users a role without it); the change applies on their
+next stop and start or restart.
 
 The shell is only as contained as the network and the host around the
 workspace, and CityHall can verify none of it:

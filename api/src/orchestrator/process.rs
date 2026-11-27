@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_change_is_drift_in_both_directions() {
+    fn a_mode_change_is_drift_only_on_explicit_restart() {
         let full = WorkspaceSpec {
             mode: WorkspaceMode::Full,
             apply_mode_to_running: true,

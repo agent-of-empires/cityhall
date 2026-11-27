@@ -38,8 +38,6 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 /// sampling interval, and a stuck daemon should leave the last good snapshot in
 /// place rather than pin a sampler tick for a minute.
 const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Marks every container CityHall created, and the only thing that makes a
-/// container ours.
 /// Why Full mode is unavailable on docker. With or without
 /// `WORKSPACE_DOCKER_NETWORK`, workspace containers share a bridge network
 /// that allows container to container traffic, and aoe listens on 0.0.0.0
@@ -49,6 +47,8 @@ pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on d
 
 /// Records a Full mode container. Absent means Composer.
 const MODE_LABEL: &str = "cityhall.workspace.mode";
+/// Marks every container CityHall created, and the only thing that makes a
+/// container ours.
 const MANAGED_FILTER: &str = "label=cityhall.managed=true";
 const USER_ID_LABEL: &str = "cityhall.user_id";
 const VERSION_LABEL: &str = "cityhall.workspace.version";

@@ -804,9 +804,6 @@ mod tests {
         assert!(full.iter().any(|a| a == "--auth"));
     }
 
-    /// Only Full is annotated, so a Composer pod's template is unchanged by
-    /// this feature (an upgrade rolls nothing) and a Full pod's differs (a mode
-    /// change rolls the Deployment).
     #[test]
     fn a_live_deployment_reports_its_recorded_mode_and_a_stopped_one_none() {
         let dep = |replicas: i64, annotation: Option<&str>| {
@@ -824,6 +821,9 @@ mod tests {
         assert_eq!(live_mode("not json"), None);
     }
 
+    /// Only Full is annotated, so a Composer pod's template is unchanged by
+    /// this feature (an upgrade rolls nothing) and a Full pod's differs (a mode
+    /// change rolls the Deployment).
     #[test]
     fn the_mode_annotation_is_written_only_for_full() {
         let composer = deployment_for(&spec());

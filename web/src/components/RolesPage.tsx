@@ -67,8 +67,8 @@ export function RolesPage({ me }: { me: Me }) {
           Members hold <span className="font-mono text-text">workspaces.use</span> by default.{" "}
           <span className="font-mono text-text">workspaces.impersonate</span> is never implied, grant it only for
           support, and every use is written to the log. <span className="font-mono text-text">workspaces.full</span>{" "}
-          gives the owner Full mode, including a terminal (shell) in their workspace; a change applies when their
-          workspace restarts.
+          gives the owner Full mode, including a terminal (shell) in their workspace where the backend allows Full mode;
+          a change applies when their workspace restarts.
         </p>
 
         {error && <ErrorText>{error}</ErrorText>}
