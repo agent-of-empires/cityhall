@@ -113,7 +113,9 @@ pub fn write_serve_token(home: &std::path::Path, token: &str) -> std::io::Result
 /// The preamble both wrapper scripts share: write the token, then drop it from
 /// the environment so nothing started afterwards (telemetry, aoe, agents)
 /// inherits it. `set -eu` plus the explicit guard abort the start on any
-/// failure, including an unset or empty token; `printf %s` never `echo`.
+/// failure, including an unset or empty token; `printf %s` never `echo`. The file
+/// is emptied and made owner-only before the token is written, so a laxer
+/// pre-existing file never holds it.
 macro_rules! preamble {
     () => {
         r#"set -eu
@@ -121,8 +123,10 @@ umask 077
 [ -n "${CITYHALL_DAEMON_TOKEN:-}" ] || { echo "CITYHALL_DAEMON_TOKEN is not set" >&2; exit 1; }
 d="$HOME/.config/agent-of-empires"
 mkdir -p "$d"
-printf %s "$CITYHALL_DAEMON_TOKEN" > "$d/serve.token"
-chmod 600 "$d/serve.token"
+f="$d/serve.token"
+: > "$f"
+chmod 600 "$f"
+printf %s "$CITYHALL_DAEMON_TOKEN" > "$f"
 unset CITYHALL_DAEMON_TOKEN
 "#
     };
@@ -284,6 +288,11 @@ mod tests {
     #[test]
     fn wrapper_writes_the_token_hides_it_and_keeps_argv_intact() {
         let home = scratch("wrap");
+        // A laxer pre-existing file must be tightened before the token lands.
+        let pre = home.join(SERVE_TOKEN_RELATIVE_PATH);
+        std::fs::create_dir_all(pre.parent().unwrap()).unwrap();
+        std::fs::write(&pre, "stale").unwrap();
+        std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o644)).unwrap();
         let out = run_wrapper(TelemetryPolicy::UserChoice, &home, Some(TOKEN), None);
         assert!(
             out.status.success(),
