@@ -112,7 +112,7 @@ async fn proxy(state: AppState, req: Request<Body>) -> Result<Response<Body>, Ap
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
-    let target = format!("http://{addr}{path_q}");
+    let target = format!("http://{addr}{}", strip_token_param(path_q));
 
     let result = if is_websocket_upgrade(&parts.headers) {
         websocket_tunnel(&state, &mut parts, &target, user_id, token).await
@@ -315,6 +315,53 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
+/// Drop every `token` query parameter. aoe accepts a bearer as `?token=` too;
+/// a browser-chosen one (junk or not) must never reach the workspace. aoe
+/// matches the raw name case-sensitively; the percent-decoded name is checked
+/// as well so no encoding of it slips through. Every other parameter keeps its
+/// order and exact bytes.
+fn strip_token_param(path_and_query: &str) -> String {
+    let Some((path, query)) = path_and_query.split_once('?') else {
+        return path_and_query.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|param| {
+            let name = param.split_once('=').map_or(*param, |(n, _)| n);
+            let decoded = url::form_urlencoded::parse(name.as_bytes())
+                .next()
+                .map(|(k, _)| k.into_owned());
+            name != "token" && decoded.as_deref() != Some("token")
+        })
+        .collect();
+    if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
+}
+
+/// Subprotocol prefix under which aoe accepts a bearer.
+const AOE_TOKEN_PROTOCOL_PREFIX: &str = "aoe-token.";
+
+/// The browser's `Sec-WebSocket-Protocol` entries minus any `aoe-token.<x>`
+/// one, re-joined; `None` when nothing remains. The dashboard's own
+/// `aoe-auth` and `aoe-device.<secret>` entries pass through.
+fn filter_ws_protocols(headers: &HeaderMap) -> Option<HeaderValue> {
+    let kept: Vec<&str> = headers
+        .get_all(SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.starts_with(AOE_TOKEN_PROTOCOL_PREFIX))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(&kept.join(", ")).ok()
+}
+
 /// Hop-by-hop headers plus CityHall credentials and inbound forwarding
 /// headers; none of these may reach the workspace.
 const SKIP_REQUEST_HEADERS: &[HeaderName] = &[
@@ -460,12 +507,14 @@ async fn websocket_tunnel(
     for name in [
         SEC_WEBSOCKET_KEY,
         SEC_WEBSOCKET_VERSION,
-        SEC_WEBSOCKET_PROTOCOL,
         SEC_WEBSOCKET_EXTENSIONS,
     ] {
         if let Some(v) = parts.headers.get(&name) {
             headers.insert(name, v.clone());
         }
+    }
+    if let Some(v) = filter_ws_protocols(&parts.headers) {
+        headers.insert(SEC_WEBSOCKET_PROTOCOL, v);
     }
 
     let upstream = state
@@ -588,6 +637,56 @@ mod tests {
         assert!(is_auth_rejection(StatusCode::UNAUTHORIZED));
         assert!(!is_auth_rejection(StatusCode::FORBIDDEN));
         assert!(!is_auth_rejection(StatusCode::OK));
+    }
+
+    #[test]
+    fn token_query_param_is_stripped() {
+        for (input, want) in [
+            ("/p", "/p"),
+            ("/p?", "/p?"),
+            ("/p?a=1&token=x&b=2", "/p?a=1&b=2"),
+            ("/p?token=x", "/p"),
+            ("/p?token=x&token=y", "/p"),
+            ("/p?a=1&token=x&token=y&b=2", "/p?a=1&b=2"),
+            ("/p?token=", "/p"),
+            ("/p?token", "/p"),
+            ("/p?%74oken=x&a=1", "/p?a=1"),
+            ("/p?TOKEN=x", "/p?TOKEN=x"),
+            ("/p?xtoken=1", "/p?xtoken=1"),
+            ("/p?tokens=1&a=token", "/p?tokens=1&a=token"),
+            ("/p?a=%20b&token=x&c=d%2Fe", "/p?a=%20b&c=d%2Fe"),
+            ("/p?a=1&&b=2", "/p?a=1&&b=2"),
+        ] {
+            assert_eq!(strip_token_param(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn aoe_token_subprotocols_are_filtered() {
+        let run = |values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(v).unwrap());
+            }
+            filter_ws_protocols(&h).map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(run(&[]), None);
+        assert_eq!(run(&["aoe-auth"]).as_deref(), Some("aoe-auth"));
+        assert_eq!(
+            run(&["aoe-auth, aoe-token.x, aoe-device.s"]).as_deref(),
+            Some("aoe-auth, aoe-device.s")
+        );
+        assert_eq!(run(&["aoe-token.x"]), None);
+        assert_eq!(run(&["aoe-token.x, aoe-token.y"]), None);
+        assert_eq!(
+            run(&["aoe-auth", "aoe-token.x,aoe-device.s"]).as_deref(),
+            Some("aoe-auth, aoe-device.s")
+        );
+        // Only the exact prefix: a lookalike is some other client's protocol.
+        assert_eq!(
+            run(&["aoe-tokenx, graphql-ws"]).as_deref(),
+            Some("aoe-tokenx, graphql-ws")
+        );
     }
 
     #[test]
