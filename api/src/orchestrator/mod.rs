@@ -439,6 +439,22 @@ pub fn proxy_allowed_origin() -> String {
     }
 }
 
+/// Launch flag aoe >= 1.22.0 needs to serve the proxy's plaintext hop; its
+/// plaintext gate answers 426 `tls_required` without it, and aoe < 1.22.0
+/// rejects it as an unknown argument.
+pub const PLAINTEXT_FLAG: &str = "--dangerously-allow-plaintext-remote";
+
+/// `Some(PLAINTEXT_FLAG)` when workspace `version` is aoe >= 1.22.0.
+///
+/// A version that is not a `major.minor` release tag (`latest`, `main`) gets the
+/// flag: those track the newest aoe.
+pub fn plaintext_flag(version: &str) -> Option<String> {
+    let mut parts = version.trim_start_matches('v').split('.');
+    let minor = |p: Option<&str>| p?.parse::<u32>().ok();
+    let old = matches!((minor(parts.next()), minor(parts.next())), (Some(maj), Some(min)) if (maj, min) < (1, 22));
+    (!old).then(|| PLAINTEXT_FLAG.to_string())
+}
+
 /// Path CityHall serves a workspace's own config bundle on.
 const BUNDLE_PATH: &str = "/api/workspace-bundle";
 
@@ -517,6 +533,24 @@ pub(crate) async fn http_probe(addr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plaintext_flag_is_gated_on_aoe_1_22() {
+        for v in [
+            "v1.22.0",
+            "1.22.0",
+            "v1.26.0",
+            "v2.0.0",
+            "v1.22.0-rc.1",
+            "latest",
+            "main",
+        ] {
+            assert_eq!(plaintext_flag(v).as_deref(), Some(PLAINTEXT_FLAG), "{v}");
+        }
+        for v in ["v1.21.0", "1.21.9", "v1.9.0", "v0.5.0"] {
+            assert_eq!(plaintext_flag(v), None, "{v}");
+        }
+    }
 
     #[test]
     fn allowed_host_comes_from_the_proxy_origin() {

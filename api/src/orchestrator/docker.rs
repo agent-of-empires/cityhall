@@ -21,9 +21,9 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::{
-    proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError,
-    ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceRuntime, WorkspaceSpec,
-    WorkspaceStatus, WorkspaceUsage,
+    plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready, Begin, Orchestrator,
+    OrchestratorError, ProvisioningRegistry, TelemetryPolicy, UsageReport, WorkspaceRuntime,
+    WorkspaceSpec, WorkspaceStatus, WorkspaceUsage,
 };
 
 /// Port aoe serves on inside the workspace container.
@@ -556,6 +556,7 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
             ]
             .iter()
             .map(|s| s.to_string())
+            .chain(plaintext_flag(&spec.version))
             .collect(),
         ),
     );
@@ -913,6 +914,7 @@ fn parse_published_addr(out: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::PLAINTEXT_FLAG;
 
     #[test]
     fn names_are_deterministic() {
@@ -1009,6 +1011,18 @@ mod tests {
     #[test]
     fn env_file_contents_is_empty_with_nothing_to_inject() {
         assert_eq!(env_file_contents(&spec()), "");
+    }
+
+    #[test]
+    fn run_args_pass_the_plaintext_flag_only_for_aoe_1_22_and_later() {
+        for (version, want) in [("v1.21.0", false), ("v1.22.0", true), ("v1.26.0", true)] {
+            let spec = WorkspaceSpec {
+                version: version.to_string(),
+                ..spec()
+            };
+            let args = run_args(&spec, None, None);
+            assert_eq!(args.iter().any(|a| a == PLAINTEXT_FLAG), want, "{version}");
+        }
     }
 
     /// Neither the bundle token nor an agent credential may ever reach argv:
