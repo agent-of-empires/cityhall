@@ -42,7 +42,7 @@ where nothing but the CityHall proxy can reach the workspace's port:
 | --- | --- |
 | docker, published loopback port | Allowed. Trusts every process on the docker host. |
 | docker, `WORKSPACE_DOCKER_NETWORK` set | Not offered. Peer workspaces on the shared network can reach each other's port, so the workspace starts in Composer mode, the log warns, and the workspaces pages show why. |
-| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which needs a CNI that enforces it. |
+| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which needs a CNI that enforces it and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. |
 | process | Allowed. Development only: workspaces run as the CityHall OS user with no isolation from each other or from CityHall. |
 
 

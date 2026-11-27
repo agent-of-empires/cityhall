@@ -292,7 +292,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                 <th className={thClass}>User</th>
                 <th className={thClass}>Status</th>
                 <th className={thClass}>Version</th>
-                <th className={thClass}>Mode</th>
+                <th className={thClass}>Mode (next start)</th>
                 <th className={thClass}>Last active</th>
                 {canWrite && <th className={clsx(thClass, "text-right")}>Actions</th>}
               </tr>
@@ -570,7 +570,7 @@ function MemberWorkspace({ me }: { me: Me }) {
               </p>
               {mode && (
                 <p className="m-0 text-[13px] text-text-dim">
-                  {mode}. A change to your role applies when your workspace restarts.
+                  Next start: {mode}. A change to your role applies when your workspace restarts.
                 </p>
               )}
             </div>
