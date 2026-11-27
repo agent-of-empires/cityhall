@@ -589,13 +589,16 @@ mod tests {
     /// A distinctive credential value: any assertion below that finds this
     /// substring outside the Secret item has found a leak into the
     /// Deployment.
+    /// Distinctive bundle token: a plain substring check on it cannot be
+    /// confused with the word `token` in a manifest.
+    const BUNDLE_PROBE: &str = "bundle-probe-7f3a";
     const SECRET_VALUE: &str = "sk-super-secret-value";
 
     fn spec_with_bundle_and_agent_env() -> WorkspaceSpec {
         WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             agent_env: crate::agent_credentials::AgentEnv {
                 pairs: vec![(
@@ -617,7 +620,7 @@ mod tests {
         );
         assert_eq!(
             values.get("AOE_CITYHALL_BUNDLE_TOKEN").map(String::as_str),
-            Some("tok")
+            Some(BUNDLE_PROBE)
         );
         assert_eq!(
             values.get("ANTHROPIC_API_KEY").map(String::as_str),
@@ -645,7 +648,7 @@ mod tests {
         let spec = WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall.cityhall.svc:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             ..spec()
         };
@@ -750,7 +753,10 @@ mod tests {
         assert_eq!(secret["metadata"]["name"], "cityhall-workspace-u42-env");
         assert_eq!(secret["metadata"]["labels"]["cityhall.user_id"], "42");
         assert_eq!(secret["stringData"]["ANTHROPIC_API_KEY"], SECRET_VALUE);
-        assert_eq!(secret["stringData"]["AOE_CITYHALL_BUNDLE_TOKEN"], "tok");
+        assert_eq!(
+            secret["stringData"]["AOE_CITYHALL_BUNDLE_TOKEN"],
+            BUNDLE_PROBE
+        );
 
         let dep = items.iter().find(|i| i["kind"] == "Deployment").unwrap();
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
@@ -768,7 +774,7 @@ mod tests {
             "credential value leaked into the Deployment: {dep_text}"
         );
         assert!(
-            !dep_text.contains("\"tok\""),
+            !dep_text.contains(BUNDLE_PROBE),
             "bundle token leaked into the Deployment: {dep_text}"
         );
 

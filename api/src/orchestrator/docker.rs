@@ -1035,7 +1035,7 @@ mod tests {
         WorkspaceSpec {
             bundle: Some(super::super::BundleAccess {
                 url: "http://cityhall:3000/api/workspace-bundle".to_string(),
-                token: "tok".to_string(),
+                token: BUNDLE_PROBE.to_string(),
             }),
             ..spec()
         }
@@ -1044,6 +1044,9 @@ mod tests {
     /// A distinctive credential value, checked for absence in argv and error
     /// strings elsewhere: any test that finds this substring outside the
     /// env file content has found a leak.
+    /// Distinctive bundle token: a plain substring check on it cannot be
+    /// confused with the word `token` in argv.
+    const BUNDLE_PROBE: &str = "bundle-probe-7f3a";
     const SECRET_VALUE: &str = "sk-super-secret-value";
 
     fn spec_with_agent_env() -> WorkspaceSpec {
@@ -1074,7 +1077,7 @@ mod tests {
             lines,
             vec![
                 "AOE_CITYHALL_BUNDLE_URL=http://cityhall:3000/api/workspace-bundle",
-                "AOE_CITYHALL_BUNDLE_TOKEN=tok",
+                &format!("AOE_CITYHALL_BUNDLE_TOKEN={BUNDLE_PROBE}"),
                 &format!("ANTHROPIC_API_KEY={SECRET_VALUE}"),
             ]
         );
@@ -1115,7 +1118,7 @@ mod tests {
             "credential value leaked into argv: {args:?}"
         );
         assert!(
-            !args.iter().any(|a| a == "tok"),
+            !args.iter().any(|a| a.contains(BUNDLE_PROBE)),
             "bundle token leaked into argv: {args:?}"
         );
     }
