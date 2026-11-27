@@ -542,6 +542,20 @@ mod tests {
             let db = setup().await;
             let user_id = make_user(&db, "u").await;
             seed(&db, user_id).await;
+            // A workspace that has no daemon token yet is not a slot at all.
+            let tokenless = make_user(&db, "tokenless").await;
+            workspace::ActiveModel {
+                user_id: Set(tokenless),
+                pinned_version: Set(None),
+                last_active_at: Set(None),
+                created_at: Set(Utc::now()),
+                updated_at: Set(Utc::now()),
+                bundle_token: Set(None),
+                daemon_token: Set(None),
+            }
+            .insert(&db)
+            .await
+            .unwrap();
 
             // Before: one legacy row, the rest bound and current.
             assert_eq!(totals(&status(&db).await.unwrap()), (6, 5, 0, 1, 0));
@@ -557,6 +571,12 @@ mod tests {
             assert!(report.unreadable.is_empty());
             assert!(report.skipped.is_empty());
             assert_eq!(totals(&report.after), (6, 6, 0, 0, 0));
+            let row = workspace::Entity::find_by_id(tokenless)
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(row.daemon_token.is_none());
 
             // The point of the exercise: the old key can now go away.
             std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
