@@ -201,13 +201,9 @@ impl ProcessOrchestrator {
         home: &Path,
         port: u16,
     ) -> Result<i32, OrchestratorError> {
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.user_dir(spec.user_id).join("serve.log"))
-            .map_err(|e| {
-                OrchestratorError::Runtime(format!("failed to open workspace log: {e}"))
-            })?;
+        let log = open_log(&self.user_dir(spec.user_id).join("serve.log")).map_err(|e| {
+            OrchestratorError::Runtime(format!("failed to open workspace log: {e}"))
+        })?;
         let mut cmd = std::process::Command::new(binary);
         cmd.args(serve_args(spec, port))
             .env("HOME", home)
@@ -307,6 +303,20 @@ impl ProcessOrchestrator {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
+
+/// Open the workspace log for appending, owner-only. aoe prints its token URL to
+/// stdout, so the log carries the workspace's bearer. A log created by an older
+/// CityHall keeps its old mode unless it is tightened here.
+fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    log.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(log)
 }
 
 #[async_trait]
@@ -840,6 +850,21 @@ mod tests {
         let state: RunState =
             serde_json::from_str(r#"{"pid":1,"port":2,"version":"v1.0.0"}"#).unwrap();
         assert_eq!(state.daemon_token_fp, "");
+    }
+
+    #[test]
+    fn open_log_is_owner_only_new_or_existing() {
+        use std::os::unix::fs::PermissionsExt;
+        let orch = scratch("log-mode");
+        let path = orch.root.join("serve.log");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        open_log(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        open_log(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
     }
 
     fn scratch(name: &str) -> ProcessOrchestrator {

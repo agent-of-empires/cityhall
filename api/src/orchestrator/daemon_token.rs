@@ -9,9 +9,12 @@
 //! change upstream (or the flag landing) is a one-file edit. The minimum aoe
 //! version below is the oldest one the behavior was verified on.
 //!
-//! The token is never put in argv, logs, errors, labels, annotations, or
-//! `state.json`. Only [`fingerprint`] (a one-way, domain-separated digest) may
-//! be recorded on a runtime object, for drift detection.
+//! The token is never put in argv, labels, annotations, or `state.json`, and
+//! never appears in CityHall's own logs, errors or tracing. aoe itself prints
+//! the token URL to stdout, so workspace logs (`docker logs`, `kubectl logs`,
+//! the process backend's `serve.log`) are secret-bearing. Only
+//! [`fingerprint`] (a one-way, domain-separated digest) may be recorded on a
+//! runtime object, for drift detection.
 
 use super::{OrchestratorError, TelemetryPolicy};
 
