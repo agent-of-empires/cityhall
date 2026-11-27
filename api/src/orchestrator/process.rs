@@ -57,6 +57,8 @@ const SCRUBBED_ENV: &[&str] = &[
     // Would point the workspace at another config bundle; re-set below when the spec has one (cli/serve.rs:1741-1748).
     "AOE_CITYHALL_BUNDLE_URL",
     "AOE_CITYHALL_BUNDLE_TOKEN",
+    // Would force every workspace into CityHall mode and override Full mode, which drops `--cityhall` (cli/serve.rs:254, server/startup.rs:716).
+    "AOE_CITYHALL_MODE",
 ];
 
 pub struct ProcessOrchestrator {
