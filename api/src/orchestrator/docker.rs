@@ -1020,6 +1020,7 @@ mod tests {
             ("v1.22.0", true),
             ("v1.26.0", true),
             ("nightly-20261127", true),
+            ("abc1234", true),
         ] {
             let spec = WorkspaceSpec {
                 version: version.to_string(),

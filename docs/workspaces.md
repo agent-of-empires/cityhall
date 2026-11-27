@@ -487,15 +487,16 @@ dashboard owns root-absolute paths. Every proxied request is authenticated
 with the regular CityHall session cookie; the container itself runs
 `aoe serve --auth=none --behind-proxy --allowed-host <proxy-host> --cityhall
 --dangerously-allow-plaintext-remote` (the last flag only on aoe 1.22.0 and
-later, see below) and is only reachable through a loopback-published port, so CityHall is the sole auth boundary. In development
-nothing needs configuring: the cookie set by `127.0.0.1:3000` is also sent to
-`127.0.0.1:3001` (cookies ignore ports).
+later, see below) and is only reachable through a loopback-published port, so
+CityHall is the sole auth boundary. In development nothing needs configuring:
+the cookie set by `127.0.0.1:3000` is also sent to `127.0.0.1:3001` (cookies
+ignore ports).
 
 aoe 1.22.0 added a plaintext gate that answers `426 tls_required` to every
 request it did not receive over HTTPS, and CityHall's proxy talks plain HTTP to
-the workspace. CityHall therefore adds `--dangerously-allow-plaintext-remote` when the
-workspace version is 1.22.0 or later; aoe before 1.22.0 rejects the flag, so
-it is omitted there.
+the workspace. CityHall therefore adds `--dangerously-allow-plaintext-remote`
+when the workspace version is 1.22.0 or later; aoe before 1.22.0 rejects the
+flag, so it is omitted there.
 
 A version that is not a release tag with a `major.minor` number (`latest`,
 `main`, `nightly-20261127`, a git SHA) gets the flag. That side was chosen

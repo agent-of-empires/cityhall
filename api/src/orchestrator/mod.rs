@@ -544,6 +544,8 @@ mod tests {
             "v1.22.0-rc.1",
             "latest",
             "main",
+            "nightly-20261127",
+            "abc1234",
         ] {
             assert_eq!(plaintext_flag(v).as_deref(), Some(PLAINTEXT_FLAG), "{v}");
         }
