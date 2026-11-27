@@ -26,6 +26,10 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("settings.read", "View settings"),
     ("settings.write", "Change settings"),
     ("workspaces.use", "Use your own workspace"),
+    (
+        "workspaces.full",
+        "Full aoe dashboard: terminal, diffs, worktrees, yolo",
+    ),
     ("workspaces.read", "View all workspaces"),
     ("workspaces.write", "Manage workspaces and their versions"),
     (
@@ -47,7 +51,7 @@ pub fn system_roles() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             MEMBER_ROLE,
             "Basic access",
-            vec!["users.read", "workspaces.use"],
+            vec!["users.read", "workspaces.use", "workspaces.full"],
         ),
     ]
 }
