@@ -18,8 +18,11 @@ use tokio::process::Command;
 
 use super::{
     http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, Orchestrator,
-    OrchestratorError, TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
+    OrchestratorError, TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
+
+/// Pod template annotation recording a Full mode workspace. Absent means Composer.
+const MODE_ANNOTATION: &str = "cityhall.workspace/mode";
 
 /// Port aoe serves on inside the workspace pod.
 const AOE_PORT: u16 = 8080;
@@ -186,6 +189,30 @@ impl KubectlOrchestrator {
 #[async_trait]
 impl Orchestrator for KubectlOrchestrator {
     async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
+        // A running pod keeps the mode it started with on a request-driven
+        // start: the mode annotation sits on the pod template, so applying a
+        // different one would roll a healthy workspace. Only an explicit
+        // restart, or a start from scaled to zero, applies the requested mode.
+        let live = if spec.apply_mode_to_running {
+            None
+        } else {
+            self.run(
+                &[
+                    "get",
+                    "deployment",
+                    &object_name(spec.user_id),
+                    "-o",
+                    "json",
+                ],
+                None,
+            )
+            .await?
+            .and_then(|json| live_mode(&json))
+        };
+        let spec = &WorkspaceSpec {
+            mode: live.unwrap_or(spec.mode),
+            ..spec.clone()
+        };
         // Declarative reconcile: apply always renders the desired running
         // state (replicas 1, current image), so first start, resume, and
         // version drift are all the same operation.
@@ -270,6 +297,20 @@ impl Orchestrator for KubectlOrchestrator {
     }
 }
 
+/// The mode a Deployment is running in, or `None` when it is scaled to zero
+/// (or unparseable), in which case the requested mode applies. The mode is
+/// recorded only for Full, so an absent annotation on a live Deployment is
+/// Composer.
+fn live_mode(deployment_json: &str) -> Option<WorkspaceMode> {
+    let v: serde_json::Value = serde_json::from_str(deployment_json.trim()).ok()?;
+    if v["spec"]["replicas"].as_i64().unwrap_or(0) < 1 {
+        return None;
+    }
+    Some(WorkspaceMode::from_stored(
+        v["spec"]["template"]["metadata"]["annotations"][MODE_ANNOTATION].as_str(),
+    ))
+}
+
 /// Every environment value the workspace needs: the bundle location and
 /// token (when configured), plus every agent credential. Empty when there is
 /// nothing to inject, in which case the caller emits neither a Secret nor an
@@ -341,10 +382,13 @@ fn render_manifests(
             // gate requires on the allowlist.
             "--allowed-host".to_string(), proxy_allowed_host(),
             "--allowed-origin".to_string(), proxy_allowed_origin(),
-            // Locked-down end-user client: composer +
-            // structured view only.
-            "--cityhall".to_string(),
-        ].into_iter().chain(plaintext_flag(&spec.version)).collect()),
+        ]
+        .into_iter()
+        // Composer mode is the locked-down end-user client (composer +
+        // structured view only); Full mode omits the flag.
+        .chain(spec.mode.cityhall_flag().map(String::from))
+        .chain(plaintext_flag(&spec.version))
+        .collect()),
         "ports": [{ "containerPort": AOE_PORT }],
         "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
     });
@@ -418,6 +462,13 @@ fn render_manifests(
     // configured, for the same reason the telemetry annotation is.
     if !spec.agents.is_empty() {
         annotations["cityhall.workspace/agents"] = json!(spec.agents);
+    }
+
+    // The mode changes the container's args, so the template has to change for
+    // the Deployment to roll. Written only for Full, so an existing Composer
+    // workspace's template stays byte-identical and an upgrade rolls nothing.
+    if spec.mode == WorkspaceMode::Full {
+        annotations[MODE_ANNOTATION] = json!(spec.mode.as_str());
     }
 
     items.push(json!({
@@ -508,6 +559,8 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         }
     }
 
@@ -721,6 +774,71 @@ mod tests {
             .find(|i| i["kind"] == "Deployment")
             .unwrap()
             .clone()
+    }
+
+    fn deployment_for(spec: &WorkspaceSpec) -> serde_json::Value {
+        let m = render_manifests(spec, "cityhall", "5Gi", None);
+        m["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "Deployment")
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn container_args_omit_cityhall_only_in_full_mode() {
+        let args_of = |spec: &WorkspaceSpec| {
+            deployment_for(spec)["spec"]["template"]["spec"]["containers"][0]["args"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        assert!(args_of(&spec()).iter().any(|a| a == "--cityhall"));
+        let full = args_of(&WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec()
+        });
+        assert!(!full.iter().any(|a| a == "--cityhall"));
+        assert!(full.iter().any(|a| a == "--auth"));
+    }
+
+    #[test]
+    fn a_live_deployment_reports_its_recorded_mode_and_a_stopped_one_none() {
+        let dep = |replicas: i64, annotation: Option<&str>| {
+            let annotations = annotation
+                .map(|m| json!({ MODE_ANNOTATION: m }))
+                .unwrap_or_else(|| json!({}));
+            json!({"spec": {"replicas": replicas,
+                "template": {"metadata": {"annotations": annotations}}}})
+            .to_string()
+        };
+        assert_eq!(live_mode(&dep(1, None)), Some(WorkspaceMode::Composer));
+        assert_eq!(live_mode(&dep(1, Some("full"))), Some(WorkspaceMode::Full));
+        // Scaled to zero: the requested mode applies.
+        assert_eq!(live_mode(&dep(0, Some("full"))), None);
+        assert_eq!(live_mode("not json"), None);
+    }
+
+    /// Only Full is annotated, so a Composer pod's template is unchanged by
+    /// this feature (an upgrade rolls nothing) and a Full pod's differs (a mode
+    /// change rolls the Deployment).
+    #[test]
+    fn the_mode_annotation_is_written_only_for_full() {
+        let composer = deployment_for(&spec());
+        assert!(composer["spec"]["template"]["metadata"]["annotations"]
+            .get("cityhall.workspace/mode")
+            .is_none());
+        let full = deployment_for(&WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec()
+        });
+        assert_eq!(
+            full["spec"]["template"]["metadata"]["annotations"]["cityhall.workspace/mode"],
+            "full"
+        );
+        assert_ne!(composer["spec"]["template"], full["spec"]["template"]);
     }
 
     /// The annotation is what makes the Deployment roll, so it must appear for a

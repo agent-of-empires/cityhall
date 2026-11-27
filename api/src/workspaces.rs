@@ -7,12 +7,13 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
-use crate::entities::{workspace, workspace_settings};
+use crate::entities::{user, workspace, workspace_settings};
 use crate::error::AppError;
 use crate::orchestrator::{
     bundle_url, render_image, telemetry_policy_override, BundleAccess, OrchestratorError,
-    TelemetryPolicy, WorkspaceSpec, WorkspaceStatus,
+    TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
+use crate::rbac::Perms;
 use crate::state::AppState;
 
 pub const SETTINGS_ID: i32 = 1;
@@ -304,7 +305,63 @@ pub fn build_spec(
         // re-derived: the backends compare this exact string against what a
         // running workspace was created with.
         agents: settings.agents.clone(),
+        // Resolved from the owner's role after a cache miss; see `resolve_mode`.
+        mode: WorkspaceMode::Composer,
+        apply_mode_to_running: false,
     })
+}
+
+/// The mode a permission set asks for. Full needs `workspaces.full` (admins
+/// hold it through `*`); a user with no role gets Composer.
+pub fn mode_for_perms(perms: &Perms) -> WorkspaceMode {
+    if perms.can("workspaces.full") {
+        WorkspaceMode::Full
+    } else {
+        WorkspaceMode::Composer
+    }
+}
+
+/// The mode `user_id`'s role asks for, before backend policy.
+pub async fn requested_mode(
+    db: &DatabaseConnection,
+    user_id: i32,
+) -> Result<WorkspaceMode, AppError> {
+    let Some(user) = user::Entity::find_by_id(user_id).one(db).await? else {
+        return Ok(WorkspaceMode::Composer);
+    };
+    let role = match user.role_id {
+        Some(id) => crate::service::find_role_by_id(db, id).await?,
+        None => None,
+    };
+    Ok(mode_for_perms(&Perms::from_role(role.as_ref())))
+}
+
+/// The mode a workspace starts in next, and the reason when Full was asked for
+/// and the backend refused it (Full only when the backend reports no blocker).
+/// A downgrade is never silent; callers surface the reason. A running
+/// workspace keeps its current mode until it restarts.
+pub fn next_mode(
+    requested: WorkspaceMode,
+    blocker: Option<&'static str>,
+) -> (WorkspaceMode, Option<&'static str>) {
+    match (requested, blocker) {
+        (WorkspaceMode::Full, Some(reason)) => (WorkspaceMode::Composer, Some(reason)),
+        (mode, _) => (mode, None),
+    }
+}
+
+/// The mode to launch `user_id`'s workspace in, logging a downgrade.
+async fn resolve_mode(state: &AppState, user_id: i32) -> Result<WorkspaceMode, AppError> {
+    let requested = requested_mode(&state.db, user_id).await?;
+    let (mode, note) = next_mode(requested, state.orchestrator.full_mode_blocker());
+    if let Some(reason) = note {
+        tracing::warn!(
+            user_id,
+            reason,
+            "Full mode unavailable, starting in Composer mode"
+        );
+    }
+    Ok(mode)
 }
 
 impl From<OrchestratorError> for AppError {
@@ -346,6 +403,7 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<String, Ap
     // Only materialize credentials once a container is actually about to be
     // created or reconciled, not on the cache-hit path above.
     spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
+    spec.mode = resolve_mode(state, user_id).await?;
     let addr = state.orchestrator.ensure_started(&spec).await?;
     state
         .endpoints
@@ -380,6 +438,9 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
         return Ok(());
     }
     spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
+    spec.mode = resolve_mode(state, user_id).await?;
+    // An explicit restart is where a changed mode reaches a running workspace.
+    spec.apply_mode_to_running = true;
     state.endpoints.invalidate(user_id);
     let addr = state.orchestrator.ensure_started(&spec).await?;
     state
@@ -499,9 +560,11 @@ async fn sweep_once(state: &AppState) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::role;
     use crate::migration::Migrator;
     use sea_orm::{ConnectOptions, Database};
     use sea_orm_migration::MigratorTrait;
+    use std::sync::Arc;
 
     /// Capped at one connection on purpose. Every connection to
     /// `sqlite::memory:` gets its own empty database, so a pool that opened a
@@ -735,5 +798,183 @@ mod tests {
         );
         assert_eq!(spec.agent_env.fingerprint, "");
         assert!(spec.agent_env.pairs.is_empty());
+    }
+    async fn user_with_perms(db: &DatabaseConnection, name: &str, perms: &[&str]) -> i32 {
+        let keys: Vec<String> = perms.iter().map(|s| s.to_string()).collect();
+        let role = role::ActiveModel {
+            name: Set(name.to_string()),
+            description: Set(None),
+            permissions: Set(crate::rbac::encode(&keys)),
+            is_system: Set(false),
+            created_at: Set(Utc::now()),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        crate::service::create(
+            db,
+            name,
+            None,
+            &crate::auth::random_token(24),
+            false,
+            Some(role.id),
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// Full needs `workspaces.full` on the owner's role; `*` grants it, and a
+    /// user with no role (or no row) is Composer.
+    #[tokio::test]
+    async fn the_mode_follows_the_owners_role() {
+        let db = setup().await;
+        let dev = user_with_perms(&db, "dev", &["workspaces.use", "workspaces.full"]).await;
+        let pm = user_with_perms(&db, "pm", &["workspaces.use"]).await;
+        let admin = user_with_perms(&db, "root", &["*"]).await;
+        let roleless = make_user(&db).await;
+        assert_eq!(requested_mode(&db, dev).await.unwrap(), WorkspaceMode::Full);
+        assert_eq!(
+            requested_mode(&db, pm).await.unwrap(),
+            WorkspaceMode::Composer
+        );
+        assert_eq!(
+            requested_mode(&db, admin).await.unwrap(),
+            WorkspaceMode::Full
+        );
+        assert_eq!(
+            requested_mode(&db, roleless).await.unwrap(),
+            WorkspaceMode::Composer
+        );
+        assert_eq!(
+            requested_mode(&db, 9999).await.unwrap(),
+            WorkspaceMode::Composer
+        );
+    }
+
+    /// A blocker turns a Full request into Composer and never the reverse.
+    #[test]
+    fn the_note_names_a_blocker_only_when_full_was_denied() {
+        use WorkspaceMode::{Composer, Full};
+        assert_eq!(next_mode(Full, Some("why")), (Composer, Some("why")));
+        assert_eq!(next_mode(Full, None), (Full, None));
+        assert_eq!(next_mode(Composer, Some("why")), (Composer, None));
+    }
+
+    /// `build_spec` runs on every proxied request and must not read the role.
+    #[tokio::test]
+    async fn build_spec_defaults_to_composer() {
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let row = get_or_create(&db, uid).await.unwrap();
+        let spec = build_spec(&cfg(Some("v1.0.0")), &row).unwrap();
+        assert_eq!(spec.mode, WorkspaceMode::Composer);
+    }
+
+    /// Records the spec each `ensure_started` receives.
+    #[derive(Default)]
+    struct Recorder {
+        specs: std::sync::Mutex<Vec<WorkspaceSpec>>,
+        blocker: Option<&'static str>,
+        running: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::orchestrator::Orchestrator for Recorder {
+        async fn ensure_started(&self, spec: &WorkspaceSpec) -> Result<String, OrchestratorError> {
+            self.specs.lock().unwrap().push(spec.clone());
+            Ok("127.0.0.1:1".to_string())
+        }
+        fn full_mode_blocker(&self) -> Option<&'static str> {
+            self.blocker
+        }
+        async fn stop(&self, _: i32) -> Result<(), OrchestratorError> {
+            Ok(())
+        }
+        async fn destroy(&self, _: i32) -> Result<(), OrchestratorError> {
+            Ok(())
+        }
+        async fn status(&self, _: i32) -> Result<WorkspaceStatus, OrchestratorError> {
+            Ok(if self.running {
+                WorkspaceStatus::Running {
+                    addr: "127.0.0.1:1".to_string(),
+                }
+            } else {
+                WorkspaceStatus::Stopped
+            })
+        }
+    }
+
+    async fn state_with(db: DatabaseConnection, orch: Arc<Recorder>) -> AppState {
+        workspace_settings::ActiveModel {
+            id: Set(SETTINGS_ID),
+            image_template: Set("cityhall/aoe:{version}".to_string()),
+            default_version: Set(Some("v1.0.0".to_string())),
+            idle_stop_minutes: Set(30),
+            telemetry_policy: Set(TelemetryPolicy::default().as_str().to_string()),
+            updated_at: Set(Utc::now()),
+            agents: Set(String::new()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        AppState {
+            db,
+            orchestrator: orch,
+            activity: Arc::default(),
+            locks: Arc::default(),
+            endpoints: Arc::default(),
+            provisioning: Arc::default(),
+            versions: Arc::default(),
+            metrics: Arc::default(),
+            proxy_client: reqwest::Client::new(),
+        }
+    }
+
+    /// The owner's role reaches the spec the backend sees: Full for a role with
+    /// the key, Composer without it or when the backend refuses Full. Only an
+    /// explicit restart asks the backend to apply a changed mode to a running
+    /// workspace.
+    #[tokio::test]
+    async fn ensure_started_gives_the_backend_the_owners_mode() {
+        let db = setup().await;
+        let dev = user_with_perms(&db, "dev", &["workspaces.use", "workspaces.full"]).await;
+        let pm = user_with_perms(&db, "pm", &["workspaces.use"]).await;
+        let orch = Arc::new(Recorder {
+            running: true,
+            ..Default::default()
+        });
+        let state = state_with(db, orch.clone()).await;
+
+        ensure_started(&state, dev).await.unwrap();
+        ensure_started(&state, pm).await.unwrap();
+        restart_if_running(&state, dev).await.unwrap();
+        let specs = orch.specs.lock().unwrap().clone();
+        let seen: Vec<_> = specs
+            .iter()
+            .map(|s| (s.user_id, s.mode, s.apply_mode_to_running))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (dev, WorkspaceMode::Full, false),
+                (pm, WorkspaceMode::Composer, false),
+                (dev, WorkspaceMode::Full, true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_blocker_makes_the_spec_composer() {
+        let db = setup().await;
+        let dev = user_with_perms(&db, "dev", &["workspaces.use", "workspaces.full"]).await;
+        let orch = Arc::new(Recorder {
+            blocker: Some("why"),
+            ..Default::default()
+        });
+        let state = state_with(db, orch.clone()).await;
+        ensure_started(&state, dev).await.unwrap();
+        assert_eq!(orch.specs.lock().unwrap()[0].mode, WorkspaceMode::Composer);
     }
 }

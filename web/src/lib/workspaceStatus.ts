@@ -1,5 +1,5 @@
 import type { StatusTone } from "../components/ui";
-import type { WorkspaceItem } from "./api";
+import type { WorkspaceItem, WorkspaceMode } from "./api";
 
 /** One status vocabulary for every surface that shows a workspace, so the
  *  dashboard table and the workspaces table cannot drift apart. Glyphs match
@@ -13,3 +13,15 @@ export const WORKSPACE_STATUS_META: Record<
   not_created: { tone: "idle", glyph: "○", label: "not created" },
   unknown: { tone: "error", glyph: "?", label: "unknown" },
 };
+
+/** Names for the two workspace modes (GLOSSARY.md), shared by the admin table
+ *  and the member page. */
+export const WORKSPACE_MODE_LABEL: Record<WorkspaceMode, string> = {
+  full: "Full mode",
+  composer: "Composer mode",
+};
+
+/** The mode label, plus the reason when the backend refused Full mode. */
+export function modeText(mode: WorkspaceMode, note: string | null): string {
+  return note ? `${WORKSPACE_MODE_LABEL[mode]} (${note})` : WORKSPACE_MODE_LABEL[mode];
+}

@@ -22,7 +22,8 @@
 # `cityhall/aoe:{version}`) rendered with the version users are pinned to.
 # CityHall starts containers from this image with:
 #   aoe serve --host 0.0.0.0 --port 8080 --auth none --behind-proxy \
-#     --allowed-host <proxy-host> --cityhall
+#     --allowed-host <proxy-host> [--cityhall]
+# (--cityhall only for Composer mode; Full mode omits it)
 # and mounts a per-user volume at /home/aoe/.config/agent-of-empires.
 #
 # For version 1.22.0 or later it also passes --dangerously-allow-plaintext-remote;

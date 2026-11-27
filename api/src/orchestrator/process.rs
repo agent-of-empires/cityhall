@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     binary_key, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin, wait_ready,
-    Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceSpec,
-    WorkspaceStatus,
+    Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy, WorkspaceMode,
+    WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -64,6 +64,25 @@ struct RunState {
     /// process is in fact running under, so an upgrade alone restarts nothing.
     #[serde(default)]
     telemetry: String,
+    /// `composer` or `full`. `#[serde(default)]` reads a state.json written
+    /// before modes existed as Composer, which is what that process is, so an
+    /// upgrade alone restarts nothing.
+    #[serde(default)]
+    mode: String,
+}
+
+impl RunState {
+    /// Whether the running process was spawned from `spec`. Anything else is
+    /// drift and respawns it.
+    fn matches(&self, spec: &WorkspaceSpec) -> bool {
+        self.version == spec.version
+            && self.env_fingerprint == spec.agent_env.fingerprint
+            && TelemetryPolicy::from_stored(&self.telemetry) == spec.telemetry
+            // Only called for a live process, which keeps the mode it started
+            // with unless this is an explicit restart.
+            && (!spec.apply_mode_to_running
+                || WorkspaceMode::from_stored(Some(&self.mode)) == spec.mode)
+    }
 }
 
 impl ProcessOrchestrator {
@@ -141,6 +160,7 @@ impl ProcessOrchestrator {
                     version: spec.version.clone(),
                     env_fingerprint: spec.agent_env.fingerprint.clone(),
                     telemetry: spec.telemetry.as_str().to_string(),
+                    mode: spec.mode.as_str().to_string(),
                 },
             )?;
             match wait_ready(&addr).await {
@@ -276,11 +296,7 @@ impl Orchestrator for ProcessOrchestrator {
         if let Some(state) = self.read_state(spec.user_id) {
             if alive(state.pid) {
                 let addr = format!("127.0.0.1:{}", state.port);
-                if state.version == spec.version
-                    && state.env_fingerprint == spec.agent_env.fingerprint
-                    && TelemetryPolicy::from_stored(&state.telemetry) == spec.telemetry
-                    && http_probe(&addr).await
-                {
+                if state.matches(spec) && http_probe(&addr).await {
                     return Ok(addr);
                 }
                 // Version drift, a credential change, a telemetry policy
@@ -292,7 +308,7 @@ impl Orchestrator for ProcessOrchestrator {
                     user_id = spec.user_id,
                     from = %state.version,
                     to = %spec.version,
-                    "restarting workspace process for a version, credential, or telemetry policy change"
+                    "restarting workspace process for a version, credential, telemetry policy, or mode change"
                 );
                 self.terminate(state.pid).await;
             }
@@ -459,12 +475,13 @@ fn serve_args(spec: &WorkspaceSpec, port: u16) -> Vec<String> {
         &proxy_allowed_host(),
         "--allowed-origin",
         &proxy_allowed_origin(),
-        // Locked-down end-user client: composer + structured view only.
-        "--cityhall",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
+    // Composer mode is the locked-down end-user client (composer + structured
+    // view only); Full mode omits the flag and serves aoe's whole dashboard.
+    args.extend(spec.mode.cityhall_flag().map(String::from));
     args.extend(plaintext_flag(&spec.version));
     args
 }
@@ -670,6 +687,8 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         }
     }
 
@@ -721,6 +740,7 @@ mod tests {
                 version: "v1.0.0".to_string(),
                 env_fingerprint: "somefingerprint".to_string(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
+                mode: String::new(),
             },
         )
         .unwrap();
@@ -752,6 +772,78 @@ mod tests {
         assert_eq!(state.env_fingerprint, "");
     }
 
+    /// A process from before modes existed has no `mode` in its state.json and
+    /// is a Composer workspace, so a Composer spec is not drift.
+    #[test]
+    fn state_without_mode_reads_as_composer_and_does_not_drift() {
+        let json = r#"{"pid":1,"port":2,"version":"v1.0.0"}"#;
+        let state: RunState = serde_json::from_str(json).unwrap();
+        let spec = spec_for(1);
+        assert_eq!(spec.mode, WorkspaceMode::Composer);
+        assert!(state.matches(&WorkspaceSpec {
+            version: "v1.0.0".to_string(),
+            ..spec.clone()
+        }));
+        assert!(!state.matches(&WorkspaceSpec {
+            version: "v1.0.0".to_string(),
+            mode: WorkspaceMode::Full,
+            apply_mode_to_running: true,
+            ..spec
+        }));
+    }
+
+    #[test]
+    fn a_mode_change_is_drift_only_on_explicit_restart() {
+        let full = WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            apply_mode_to_running: true,
+            ..spec_for(1)
+        };
+        let state = RunState {
+            pid: 1,
+            port: 2,
+            version: full.version.clone(),
+            env_fingerprint: full.agent_env.fingerprint.clone(),
+            telemetry: full.telemetry.as_str().to_string(),
+            mode: "full".to_string(),
+        };
+        assert!(state.matches(&full));
+        // Permission removed, explicit restart: drift.
+        assert!(!state.matches(&WorkspaceSpec {
+            apply_mode_to_running: true,
+            ..spec_for(1)
+        }));
+        // The same mismatch on a request-driven start leaves the live process.
+        assert!(state.matches(&spec_for(1)));
+        let composer = RunState {
+            mode: String::new(),
+            ..state
+        };
+        assert!(composer.matches(&full_without_restart()));
+    }
+
+    fn full_without_restart() -> WorkspaceSpec {
+        WorkspaceSpec {
+            mode: WorkspaceMode::Full,
+            ..spec_for(1)
+        }
+    }
+
+    #[test]
+    fn serve_args_omit_cityhall_only_in_full_mode() {
+        let composer = serve_args(&spec_for(1), 4000);
+        assert!(composer.iter().any(|a| a == "--cityhall"));
+        let full = serve_args(
+            &WorkspaceSpec {
+                mode: WorkspaceMode::Full,
+                ..spec_for(1)
+            },
+            4000,
+        );
+        assert!(!full.iter().any(|a| a == "--cityhall"));
+        assert!(full.iter().any(|a| a == "--auth"));
+    }
+
     #[tokio::test]
     async fn status_reflects_state_file_and_liveness() {
         let orch = scratch("status");
@@ -769,6 +861,7 @@ mod tests {
                 version: "v1".to_string(),
                 env_fingerprint: String::new(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
+                mode: String::new(),
             },
         )
         .unwrap();
@@ -784,6 +877,7 @@ mod tests {
                 version: "v1".to_string(),
                 env_fingerprint: String::new(),
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
+                mode: String::new(),
             },
         )
         .unwrap();
@@ -806,6 +900,8 @@ mod tests {
             agent_env: crate::agent_credentials::AgentEnv::default(),
             telemetry: TelemetryPolicy::default(),
             agents: String::new(),
+            mode: WorkspaceMode::Composer,
+            apply_mode_to_running: false,
         };
         // A recent failed download attempt is surfaced as guidance instead of
         // re-spawning a download on every request.

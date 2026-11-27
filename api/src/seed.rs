@@ -73,3 +73,55 @@ pub async fn ensure_admin(db: &DatabaseConnection) -> Result<(), AppError> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::Migrator;
+    use sea_orm::Database;
+    use sea_orm_migration::MigratorTrait;
+
+    async fn setup() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn member_keys(db: &DatabaseConnection) -> Vec<String> {
+        let member = service::find_role_by_name(db, rbac::MEMBER_ROLE)
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&member.permissions).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_fresh_install_seeds_member_with_full_mode() {
+        let db = setup().await;
+        ensure_roles(&db).await.unwrap();
+        assert!(member_keys(&db)
+            .await
+            .iter()
+            .any(|k| k == "workspaces.full"));
+    }
+
+    /// Existing installs stay in Composer mode until an admin adds the key.
+    #[tokio::test]
+    async fn an_existing_member_role_is_not_backfilled_with_full_mode() {
+        let db = setup().await;
+        let before = vec!["users.read".to_string(), "workspaces.use".to_string()];
+        role::ActiveModel {
+            name: Set(rbac::MEMBER_ROLE.to_string()),
+            description: Set(Some("Basic access".to_string())),
+            permissions: Set(rbac::encode(&before)),
+            is_system: Set(true),
+            created_at: Set(chrono::Utc::now()),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        ensure_roles(&db).await.unwrap();
+        assert_eq!(member_keys(&db).await, before);
+    }
+}
