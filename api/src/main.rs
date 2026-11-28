@@ -1,3 +1,4 @@
+mod activity;
 mod agent_credentials;
 mod agents;
 mod auth;

@@ -26,7 +26,7 @@ Every user has a role, and a role holds a set of permission keys (the wildcard
 gets `403 Forbidden` with `{"error":"insufficient permissions"}`. The current
 keys are `users.read`, `users.write`, `roles.read`, `roles.write`,
 `settings.read`, `settings.write`, `workspaces.use`, `workspaces.read`,
-`workspaces.write`, and `dashboard.read`. `GET /api/auth/me` returns the caller's effective
+`workspaces.write`, `workspaces.activity`, and `dashboard.read`. `GET /api/auth/me` returns the caller's effective
 permission list so a client can gate its UI. Built-in roles are `admin` (all
 permissions) and `member` (`users.read`, `workspaces.use`).
 
@@ -553,6 +553,39 @@ running mode differs from `mode`, the mode for its next start.
     "restart_pending": false
   }
 ]
+```
+
+### `GET /api/workspaces/activity`
+
+Requires `workspaces.activity`. Returns the last session summary of each running
+workspace, read from its aoe by a background poll every 10 seconds. `sampled_at`
+is `null` until the first poll. `users` holds the workspaces polled on the
+last tick. A user absent from it has no fresh observation and is not
+necessarily stopped: on backends without batch status a failed status lookup
+omits the workspace. Only `not_running` is an observed stop (the metrics
+snapshot can lag a stop, so it can list a user that has just stopped). A
+`sampled_at` older than about a minute means the sampler has stalled: treat
+every value as stale. `state` is `ok`,
+`unreachable`, `auth_error`, or `not_running`; when it is not `ok` the counts
+are `0` and the other fields `null`. `last_session_access` is aoe's
+`last_accessed_at`, which aoe stamps on user actions such as attach or send
+keys, not on agent output.
+
+```json
+{
+  "sampled_at": "2026-07-15T09:21:00Z",
+  "users": [
+    {
+      "user_id": 2,
+      "state": "ok",
+      "running_sessions": 1,
+      "waiting_sessions": 1,
+      "pending_approvals": 0,
+      "last_session_access": "2026-07-15T09:20:50Z",
+      "last_error": null
+    }
+  ]
+}
 ```
 
 ### `GET /api/workspaces/me`

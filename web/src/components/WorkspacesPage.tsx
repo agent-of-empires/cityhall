@@ -1,9 +1,10 @@
 import clsx from "clsx";
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
+import { activityText, EMPTY_FEED, type ActivityFeed } from "../lib/workspaceActivity";
 import { PageBody, PageHeader } from "./AppShell";
 import { AgentCredentialsEditor } from "./AgentCredentials";
 import { FirstRunModal } from "./FirstRunModal";
@@ -50,7 +51,9 @@ export function WorkspacesPage({ me }: { me: Me }) {
 function AdminWorkspaces({ me }: { me: Me }) {
   const canWrite = can(me, "workspaces.write");
   const canImpersonate = can(me, "workspaces.impersonate");
+  const canActivity = can(me, "workspaces.activity");
   const [items, setItems] = useState<WorkspaceItem[]>([]);
+  const [activity, setActivity] = useState<ActivityFeed>(EMPTY_FEED);
   const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -61,14 +64,35 @@ function AdminWorkspaces({ me }: { me: Me }) {
   const [latest, setLatest] = useState<string | null>(null);
   const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
 
+  // Overlapping refreshes can finish out of order; only the latest may write.
+  const activitySeq = useRef(0);
+
   const load = useCallback(async () => {
     try {
+      // Activity is an extra: its failure must not break the list.
+      const seq = ++activitySeq.current;
+      const activityLoad = canActivity
+        ? api
+            .workspaceActivity()
+            .then((a) => {
+              if (seq !== activitySeq.current) return;
+              setActivity({
+                users: new Map(a.users.map((u) => [u.user_id, u])),
+                sampledAt: a.sampled_at,
+                failed: false,
+              });
+            })
+            .catch(() => {
+              if (seq === activitySeq.current) setActivity({ ...EMPTY_FEED, failed: true });
+            })
+        : null;
       setItems(await api.listWorkspaces());
+      await activityLoad;
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "could not load workspaces");
     }
-  }, []);
+  }, [canActivity]);
 
   useEffect(() => {
     void load();
@@ -305,12 +329,23 @@ function AdminWorkspaces({ me }: { me: Me }) {
                 <th className={thClass}>Version</th>
                 <th className={thClass}>Mode (next start)</th>
                 <th className={thClass}>Last active</th>
+                {canActivity && (
+                  <>
+                    <th className={thClass}>Running</th>
+                    <th className={thClass}>Waiting</th>
+                    <th className={thClass}>Approvals</th>
+                    <th className={thClass}>Last session access</th>
+                    <th className={thClass}>Last error</th>
+                  </>
+                )}
                 {canWrite && <th className={clsx(thClass, "text-right")}>Actions</th>}
               </tr>
             </thead>
             <tbody>
               {items.map((item) => {
                 const meta = STATUS_META[item.status];
+                const act = canActivity ? activityText(activity.users.get(item.user_id), activity) : null;
+                const stale = act?.stale ? "Stale: the last activity sample is over a minute old" : undefined;
                 return (
                   <Fragment key={item.user_id}>
                     <tr className={trClass}>
@@ -397,6 +432,40 @@ function AdminWorkspaces({ me }: { me: Me }) {
                       <td className={clsx(tdClass, "font-mono text-text-dim")}>
                         {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
                       </td>
+                      {act && (
+                        <>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.running}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.waiting}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.approvals}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.lastAccess}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "max-w-[240px] truncate text-text-dim", act.stale && "opacity-50")}
+                            title={act.lastError}
+                          >
+                            {act.lastError}
+                          </td>
+                        </>
+                      )}
                       {canWrite && (
                         <td className={tdClass}>
                           <div className="flex justify-end gap-3.5">
@@ -457,7 +526,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
                     </tr>
                     {canWrite && item.user_id === expandedUserId && (
                       <tr className={trClass}>
-                        <td colSpan={6} className="bg-surface-elevated px-[18px] py-4">
+                        <td colSpan={canActivity ? 11 : 6} className="bg-surface-elevated px-[18px] py-4">
                           {/* Status is already visible in the row above: an admin seeding or
                             rotating a credential can see whether that user's workspace is
                             currently running before using the existing start/stop controls
@@ -475,7 +544,10 @@ function AdminWorkspaces({ me }: { me: Me }) {
               })}
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={canWrite ? 6 : 4} className="px-4 py-6 text-center text-text-hint">
+                  <td
+                    colSpan={(canWrite ? 6 : 4) + (canActivity ? 5 : 0)}
+                    className="px-4 py-6 text-center text-text-hint"
+                  >
                     No users.
                   </td>
                 </tr>

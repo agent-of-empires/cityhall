@@ -225,6 +225,17 @@ And per-workspace CPU and memory come from `docker stats`, so they are only
 available on the docker backend. The kubernetes and process backends report
 status without usage rather than reporting zeros.
 
+`workspaces.activity` adds session activity columns to the Workspaces page:
+running and waiting sessions, pending approvals, last session access and the
+last error of each running workspace, refreshed every 10 seconds. It is not
+implied by `workspaces.read`. Last session access is aoe's `last_accessed_at`,
+which aoe stamps on user actions such as attach or send keys, not on agent
+output. The poll reads counts, timestamps and the error text only, never
+session titles, prompts or transcripts. The cells read `collecting` before the
+first sample, `unavailable` when the activity request fails (the list still
+loads) and are muted when the sample is over a minute old. A dash means no
+fresh observation, not necessarily a stopped workspace.
+
 `workspaces.impersonate` (never implied by `workspaces.read`) lets an admin
 open another user's workspace for support: the Open action mints a short-lived
 access link, and exchanging it scopes that browser's workspace origin to the
@@ -666,6 +677,14 @@ which talks plain HTTP to the proxy port. Set the proxy's idle timeout to
   aoe's rate limiter keys on the proxy IP and five failures lock everyone out
   for 15 minutes. The workspace starts again on the next request (a reload),
   not automatically.
+- CityHall itself uses the bearer to poll `GET /api/sessions` of running
+  workspaces, read-only, every 10 seconds. The poll never starts or touches a
+  workspace. Every tick re-confirms the address through the orchestrator
+  (`status`), and the bearer is never sent to an address not confirmed in that
+  tick; a failed or timed-out status sends nothing. One 401 parks polling for
+  that user until the workspace address or bearer changes or the workspace is
+  seen not running. An in-place restart with an identical address and bearer
+  inside one 10 second tick does not lift the park.
 
 ### The home volume
 

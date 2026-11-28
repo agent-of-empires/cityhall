@@ -62,6 +62,7 @@ pub fn api_router(state: AppState) -> Router {
             "/workspaces",
             get(workspaces::list).patch(workspaces::bulk_set_version),
         )
+        .route("/workspaces/activity", get(workspaces::activity))
         .route("/workspaces/me", get(workspaces::me))
         .route("/workspaces/me/restart", post(workspaces::restart_mine))
         .route("/workspaces/versions", get(workspaces::versions))
@@ -196,6 +197,7 @@ pub fn build_state(db: DatabaseConnection) -> Result<AppState, Box<dyn std::erro
         provisioning,
         versions: Arc::default(),
         metrics: Arc::default(),
+        session_activity: Arc::default(),
         proxy_client,
     })
 }
@@ -205,6 +207,7 @@ pub async fn serve(db: DatabaseConnection) -> Result<(), Box<dyn std::error::Err
     crate::workspaces::seed_default_version(&state.db).await?;
     tokio::spawn(crate::workspaces::idle_sweeper(state.clone()));
     tokio::spawn(crate::metrics::sampler(state.clone()));
+    tokio::spawn(crate::activity::sampler(state.clone()));
 
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
