@@ -66,11 +66,15 @@ function AdminWorkspaces({ me }: { me: Me }) {
 
   const load = useCallback(async () => {
     try {
+      // Activity is an extra: its failure must not break the list.
+      const activityLoad = canActivity
+        ? api
+            .workspaceActivity()
+            .then((a) => setActivity(new Map(a.users.map((u) => [u.user_id, u]))))
+            .catch(() => setActivity(new Map()))
+        : null;
       setItems(await api.listWorkspaces());
-      if (canActivity) {
-        const a = await api.workspaceActivity();
-        setActivity(new Map(a.users.map((u) => [u.user_id, u])));
-      }
+      await activityLoad;
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "could not load workspaces");
