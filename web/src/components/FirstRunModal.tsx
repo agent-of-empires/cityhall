@@ -144,11 +144,11 @@ function TerminalLoginStep() {
   return (
     <div className="space-y-3">
       <StepHeading
-        title="Everything else signs in from a terminal"
-        subcopy="Open a terminal session in your workspace and run the one you use. The login is written to the agent's own config directory, which lives on your volume, so it survives a restart."
+        title="Subscriptions"
+        subcopy="If your workspace has a terminal (Full mode), open a terminal session and run the one you use. The login is written to the agent's own config directory, which lives on your volume, so it survives a restart. Without a terminal (Composer mode), use an API key from Account."
       />
       <pre className="overflow-x-auto rounded-md border border-border-soft bg-code-bg p-3.5 font-mono text-[12.5px] leading-[1.9] text-text">
-        <span className="text-text-faint">$</span> codex login{" "}
+        <span className="text-text-faint">$</span> codex login --device-auth{" "}
         <span className="text-text-hint"># ChatGPT subscription</span>
         {"\n"}
         <span className="text-text-faint">$</span> gemini <span className="text-text-hint"># prompts on first run</span>
@@ -156,11 +156,13 @@ function TerminalLoginStep() {
         <span className="text-text-faint">$</span> opencode auth login{" "}
         <span className="text-text-hint"># per provider</span>
         {"\n"}
-        <span className="text-text-faint">$</span> claude setup-token{" "}
+        <span className="text-text-faint">$</span> claude auth login{" "}
         <span className="text-text-hint"># Pro/Max subscription</span>
       </pre>
       <p className="text-[12.5px] leading-relaxed text-text-hint">
-        If an agent is missing entirely, aoe prints the exact{" "}
+        In Composer mode, Claude alone also works with a subscription: run{" "}
+        <code className="font-mono text-text">claude setup-token</code> anywhere you are logged in and store the result
+        in Account. If an agent is missing entirely, aoe prints the exact{" "}
         <code className="font-mono text-text">npm install -g</code> command when you pick it.
       </p>
     </div>

@@ -307,10 +307,6 @@ export interface GitSshKey {
 export interface AgentCredential {
   env_var: string;
   label: string;
-  structured_view: boolean;
-  // Non-null means this variable does not reach structured-view agents; the
-  // string is the explanation to show the user.
-  limitation: string | null;
   value_set: boolean;
   // false with value_set true means the stored value no longer decrypts.
   usable: boolean;

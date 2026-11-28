@@ -86,7 +86,7 @@ workspace, and CityHall can verify none of it:
   (live terminals) count as activity, so an open dashboard is never cut off.
   Stopping keeps the volume; the next request resumes with all data intact.
 - **Destroy** (admin action) removes the container AND its volume. This
-  deletes the user's aoe data permanently.
+  deletes the user's aoe data permanently, subscription logins included.
 - **Versions.** Admins set a default aoe version and can pin individual users
   (or a selected group) to a specific version. A version change recreates the
   container on its next start, keeping the volume. The image used is the
@@ -196,7 +196,10 @@ access link, and exchanging it scopes that browser's workspace origin to the
 target user for up to 30 minutes (every workspace tab, not just the new one).
 Each grant and exit is written to the server log as an audit line. Impersonation
 is audited as entry only: what the admin does in the workspace, shell contents
-included, is not recorded. The
+included, is not recorded. Treat it as access to the user's credentials: in Full
+mode the admin gets the user's terminal and can read login files such as
+`~/.codex/auth.json` and the provider keys in the environment, and in either mode
+can ask the user's agent to read them. The
 top-bar "Open workspace" link always exits admin access first; note that
 WebSocket connections opened during access survive until they disconnect,
 even past expiry or permission revocation. Requires `CITYHALL_SECRET_KEY`.
@@ -433,43 +436,48 @@ user can add theirs the first time they need one.
 
 Only these variables can be stored, and nothing else:
 
-| Variable | Agent | Reaches structured-view agents |
-| -------- | ----- | ------------------------------ |
-| `ANTHROPIC_API_KEY` | Claude, API billing | yes |
-| `ANTHROPIC_AUTH_TOKEN` | Claude through a gateway | yes |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude, subscription login | yes |
-| `OPENAI_API_KEY` | Codex | no |
-| `GEMINI_API_KEY` | Gemini | no |
-| `OPENROUTER_API_KEY` | OpenCode, OpenRouter | no |
+| Variable | Agent |
+| -------- | ----- |
+| `ANTHROPIC_API_KEY` | Claude, API billing |
+| `ANTHROPIC_AUTH_TOKEN` | Claude through a gateway |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude, subscription login |
+| `OPENAI_API_KEY` | Codex |
+| `GEMINI_API_KEY` | Gemini |
+| `OPENROUTER_API_KEY` | OpenCode, OpenRouter |
+
+aoe v1.15.0 and later forwards each of these into the structured-view agent it
+belongs to.
 
 The list is closed rather than free-form because these values become the
 workspace's environment, so an arbitrary name would be a way to reconfigure the
 workspace from a credential form.
 
-**Subscriptions work too, by two different routes.** For a Claude Pro or Max
-subscription, run `claude setup-token` anywhere you are already logged in and
-store the result as `CLAUDE_CODE_OAUTH_TOKEN` above; an admin can set it on a
-user's behalf like any other credential. Every other agent authenticates a
-subscription through its own interactive login, run from the workspace terminal,
-which only Full mode has:
+**Subscriptions depend on the mode.** CityHall brokers no subscription login. A
+login happens inside the workspace, or not at all:
 
-```sh
-codex login          # ChatGPT subscription
-gemini              # Google account, prompts on first run
-opencode auth login  # per-provider
-```
+| Agent | Full mode: run in the workspace terminal (not on docker, which refuses Full mode) | Composer mode (no terminal) |
+| ----- | ------------------------------------------------------------------------------ | --------------------------- |
+| Claude | `claude auth login` | `claude setup-token` run anywhere you are logged in, stored as `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex | `codex login --device-auth` | API key |
+| Gemini | `gemini` | API key |
+| OpenCode | `opencode auth login` | API key |
 
-Those write to the agent's own config directory, which the image entrypoint keeps
-on the volume, so the login survives a restart and does not need repeating.
-CityHall never sees these credentials, stores nothing, and cannot set them on a
-user's behalf, which is the trade for not handling the secret at all.
+A Composer mode user who wants a Codex, Gemini or OpenCode subscription needs a
+role with `workspaces.full`. An admin can set `CLAUDE_CODE_OAUTH_TOKEN` on a
+user's behalf like any other credential.
 
-**The last three reach terminal sessions but not structured-view agents.** aoe
-starts a structured-view agent with a cleared environment and forwards a fixed
-set of variables into it, which currently covers the Claude ones only. A key
-outside that set is still available to anything you run in a Full mode shell.
-The UI marks these, and widening the set is tracked in
-[agent-of-empires#3238](https://github.com/agent-of-empires/agent-of-empires/issues/3238).
+The terminal logins write to `~/.claude`, `~/.codex`, `~/.gemini` and OpenCode's
+directories, which the image entrypoint keeps on the volume. They survive an idle
+stop, a restart and an aoe version change, and a destroy deletes them. CityHall
+never holds these credentials and cannot show whether one exists.
+
+**In Full mode, prefer `claude auth login` over a stored
+`CLAUDE_CODE_OAUTH_TOKEN`.** Anthropic's terms allow a user to sign in to the
+unmodified binary with their own subscription. They do not allow a third party to
+"collect, store or intermediate" claude.ai credentials. Whether CityHall storing a
+`setup-token` counts is our reading, not Anthropic's wording, so check the terms
+for your deployment. The stored token sits where an API key sits, and CityHall
+cannot rotate or revoke it: the user revokes it at Anthropic.
 
 Values are encrypted with `CITYHALL_SECRET_KEY` and bound to the user and variable
 they were stored for, so a value moved to another user's row does not decrypt for
@@ -656,8 +664,6 @@ HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
 
 ## Current limitations
 
-- Agent credentials only reach structured-view agents for Claude. See
-  [Agent credentials](#agent-credentials).
 - An operator can choose which agents a workspace arrives with, but cannot
   restrict it to them: a session may pick any agent, and a Full mode shell can
   run any binary on `PATH`. Enforcement needs an aoe-side allowlist

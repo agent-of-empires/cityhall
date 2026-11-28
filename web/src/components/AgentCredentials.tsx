@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle } from "lucide-react";
 import { ApiError, type AgentCredential, type AgentCredentials as AgentCredentialsData } from "../lib/api";
 import { Banner, Button, Card, ErrorText, Input, SectionLabel } from "./ui";
 
@@ -130,12 +129,6 @@ function CredentialRow({
         {credential.label} <code className="text-xs text-text-hint">{credential.env_var}</code>
       </div>
 
-      {credential.limitation && (
-        <p className="flex items-start gap-1.5 text-sm text-waiting">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-          {credential.limitation}
-        </p>
-      )}
       {credential.value_set && !credential.usable && (
         <ErrorText>Stored value cannot be read, it must be re-entered.</ErrorText>
       )}

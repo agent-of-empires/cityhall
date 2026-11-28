@@ -29,12 +29,6 @@ const MAX_VALUE_LEN: usize = 8 * 1024;
 pub struct CredentialKind {
     pub env_var: &'static str,
     pub label: &'static str,
-    /// Whether aoe forwards this variable into structured-view (ACP) agent
-    /// processes. Those spawns `env_clear()` and then forward a fixed
-    /// allowlist, so a variable outside it reaches terminal sessions and is
-    /// stripped from structured-view agents. False means partially functional,
-    /// which the API reports and the UI badges rather than leaving to the docs.
-    pub structured_view: bool,
 }
 
 /// Every variable a user may store, and nothing else.
@@ -42,39 +36,28 @@ pub const CATALOG: &[CredentialKind] = &[
     CredentialKind {
         env_var: "ANTHROPIC_API_KEY",
         label: "Anthropic API key (Claude)",
-        structured_view: true,
     },
     CredentialKind {
         env_var: "ANTHROPIC_AUTH_TOKEN",
         label: "Anthropic auth token (Claude via a gateway)",
-        structured_view: true,
     },
     CredentialKind {
         env_var: "CLAUDE_CODE_OAUTH_TOKEN",
         label: "Claude Code OAuth token (subscription login)",
-        structured_view: true,
     },
     CredentialKind {
         env_var: "OPENAI_API_KEY",
         label: "OpenAI API key (Codex)",
-        structured_view: false,
     },
     CredentialKind {
         env_var: "GEMINI_API_KEY",
         label: "Gemini API key",
-        structured_view: false,
     },
     CredentialKind {
         env_var: "OPENROUTER_API_KEY",
         label: "OpenRouter API key (OpenCode)",
-        structured_view: false,
     },
 ];
-
-/// The message shown next to a credential that a structured-view agent will not
-/// receive. Stated once here so the API and the UI cannot drift apart.
-pub const STRUCTURED_VIEW_LIMITATION: &str =
-    "Available in terminal sessions only. Structured-view agents do not receive this variable yet.";
 
 /// What one stored credential's ciphertext is bound to.
 ///

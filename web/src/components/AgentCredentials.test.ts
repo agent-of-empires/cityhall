@@ -5,8 +5,6 @@ import type { AgentCredential } from "../lib/api";
 const CREDENTIAL: AgentCredential = {
   env_var: "ANTHROPIC_API_KEY",
   label: "Anthropic API key (Claude)",
-  structured_view: true,
-  limitation: null,
   value_set: false,
   usable: false,
 };

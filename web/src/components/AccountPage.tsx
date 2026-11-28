@@ -227,15 +227,15 @@ export function AccountPage({ me }: { me: Me }) {
 
             <Card>
               <div className="flex flex-col gap-2.5">
-                <div className="text-[14.5px] font-semibold text-text-bright">Subscriptions, from a terminal</div>
+                <div className="text-[14.5px] font-semibold text-text-bright">Subscriptions</div>
                 <p className="text-[13px] leading-relaxed text-text-dim">
-                  Codex, Gemini, and OpenCode authenticate through their own interactive login, run in a terminal
-                  session inside your workspace. CityHall never sees these: they write to the agent's own config
-                  directory, which is kept on your volume, so the login survives a restart.
+                  Codex, Gemini, and OpenCode sign in through their own login, run in a terminal session inside your
+                  workspace. Only a workspace in Full mode has a terminal. CityHall never sees these logins: they are
+                  written to the agent's own config directory on your volume, so they survive a restart.
                 </p>
                 <div className="rounded-md bg-code-bg px-3.5 py-3 font-mono text-[12.5px] leading-[1.9] text-text">
                   <div>
-                    <span className="text-text-faint">$</span> codex login
+                    <span className="text-text-faint">$</span> codex login --device-auth
                   </div>
                   <div>
                     <span className="text-text-faint">$</span> gemini
@@ -245,9 +245,10 @@ export function AccountPage({ me }: { me: Me }) {
                   </div>
                 </div>
                 <p className="text-[12.5px] leading-relaxed text-text-hint">
-                  A Claude Pro or Max subscription is different: run{" "}
-                  <span className="font-mono text-text-dim">claude setup-token</span> anywhere you are already logged
-                  in, and store the result above.
+                  Without a terminal (Composer mode), use an API key above, or ask an admin about Full mode. Claude is
+                  the exception: run <span className="font-mono text-text-dim">claude setup-token</span> anywhere you
+                  are already logged in and store the result above. In Full mode, prefer{" "}
+                  <span className="font-mono text-text-dim">claude auth login</span> in the terminal.
                 </p>
               </div>
             </Card>

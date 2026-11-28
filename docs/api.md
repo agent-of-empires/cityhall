@@ -670,16 +670,12 @@ returned.
     {
       "env_var": "ANTHROPIC_API_KEY",
       "label": "Anthropic API key (Claude)",
-      "structured_view": true,
-      "limitation": null,
       "value_set": true,
       "usable": true
     },
     {
       "env_var": "OPENAI_API_KEY",
       "label": "OpenAI API key (Codex)",
-      "structured_view": false,
-      "limitation": "Available in terminal sessions only. Structured-view agents do not receive this variable yet.",
       "value_set": false,
       "usable": false
     }
@@ -691,9 +687,7 @@ returned.
 this user's credential for this variable, so `value_set` true with `usable` false
 means either a `CITYHALL_SECRET_KEY` change without a
 [rotation](configuration.md#rotating-the-key), or a value that does not belong to
-this row. `limitation` is
-non-null for variables that reach terminal sessions but not structured-view
-agents. `secret_key_available` false means nothing can be stored at all.
+this row. `secret_key_available` false means nothing can be stored at all.
 
 ### `PUT /api/me/agent-credentials/{env_var}`
 
