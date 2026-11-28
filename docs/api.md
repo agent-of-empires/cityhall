@@ -560,8 +560,12 @@ running mode differs from `mode`, the mode for its next start.
 Requires `workspaces.activity`. Returns the last session summary of each running
 workspace, read from its aoe by a background poll every 10 seconds. `sampled_at`
 is `null` until the first poll. `users` holds the workspaces polled on the
-last tick; a user absent from it, or listed as `not_running` (the metrics
-snapshot can lag a stop), is not running. `state` is `ok`,
+last tick. A user absent from it has no fresh observation and is not
+necessarily stopped: on backends without batch status a failed status lookup
+omits the workspace. Only `not_running` is an observed stop (the metrics
+snapshot can lag a stop, so it can list a user that has just stopped). A
+`sampled_at` older than about a minute means the sampler has stalled: treat
+every value as stale. `state` is `ok`,
 `unreachable`, `auth_error`, or `not_running`; when it is not `ok` the counts
 are `0` and the other fields `null`. `last_session_access` is aoe's
 `last_accessed_at`, which aoe stamps on user actions such as attach or send

@@ -227,7 +227,10 @@ last error of each running workspace, refreshed every 10 seconds. It is not
 implied by `workspaces.read`. Last session access is aoe's `last_accessed_at`,
 which aoe stamps on user actions such as attach or send keys, not on agent
 output. The poll reads counts, timestamps and the error text only, never
-session titles, prompts or transcripts.
+session titles, prompts or transcripts. The cells read `collecting` before the
+first sample, `unavailable` when the activity request fails (the list still
+loads) and are muted when the sample is over a minute old. A dash means no
+fresh observation, not necessarily a stopped workspace.
 
 `workspaces.impersonate` (never implied by `workspaces.read`) lets an admin
 open another user's workspace for support: the Open action mints a short-lived
