@@ -1,6 +1,6 @@
 # The nginx example (ingress-nginx + cert-manager). Adjust annotations/host for
 # your setup. For the AWS Load Balancer Controller use the Helm chart with
-# helm/cityhall/examples/values-alb.yaml.
+# deploy/helm/cityhall/examples/values-alb.yaml.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
