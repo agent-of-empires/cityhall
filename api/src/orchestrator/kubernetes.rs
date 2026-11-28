@@ -368,7 +368,9 @@ fn parse_deployments(
 ) -> Result<Vec<WorkspaceRuntime>, OrchestratorError> {
     let list: serde_json::Value = serde_json::from_str(json.trim())
         .map_err(|e| OrchestratorError::Runtime(format!("unparseable deployment list: {e}")))?;
-    let items = list["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let items = list["items"]
+        .as_array()
+        .ok_or_else(|| OrchestratorError::Runtime("deployment list has no items array".into()))?;
     Ok(items
         .iter()
         .filter_map(|item| {
@@ -1391,6 +1393,11 @@ mod tests {
             ]
         );
         assert!(parse_deployments("", |_| String::new()).is_err());
+        assert!(parse_deployments("{}", |_| String::new()).is_err());
+        assert!(parse_deployments(r#"{"items":null}"#, |_| String::new()).is_err());
+        assert!(parse_deployments(r#"{"items":[]}"#, |_| String::new())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
