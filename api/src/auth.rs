@@ -23,6 +23,31 @@ fn cookie_scope() -> (String, bool) {
     (domain, secure)
 }
 
+/// True when `domain` (one leading dot ignored) equals the host of `base_url`
+/// or is a parent of it.
+fn domain_covers_base_url(domain: &str, base_url: &str) -> bool {
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+    let Some(host) = url::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    else {
+        return true; // ponytail: unparseable base URL, nothing to compare
+    };
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+/// Warn at startup when browsers would reject the session cookie.
+pub fn warn_if_cookie_domain_mismatch() {
+    let domain = std::env::var("CITYHALL_COOKIE_DOMAIN").unwrap_or_default();
+    let base = std::env::var("CITYHALL_BASE_URL").unwrap_or_default();
+    if !domain.is_empty() && !base.is_empty() && !domain_covers_base_url(&domain, &base) {
+        tracing::warn!(
+            "CITYHALL_COOKIE_DOMAIN={domain} does not cover the CITYHALL_BASE_URL host; \
+             browsers will reject the session cookie and login will fail"
+        );
+    }
+}
+
 fn scope(cookie: &mut Cookie<'static>, domain: &str, secure: bool) {
     if !domain.is_empty() {
         cookie.set_domain(domain.to_string());
@@ -43,6 +68,9 @@ fn session_cookie_scoped(token: String, domain: &str, secure: bool) -> Cookie<'s
 
 fn clear_cookie_scoped(domain: &str, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::from(SESSION_COOKIE);
+    // Logout is POST /api/auth/logout; without Path=/ the browser defaults to
+    // /api/auth and the removal misses the Path=/ session cookie.
+    cookie.set_path("/");
     scope(&mut cookie, domain, secure);
     cookie
 }
@@ -269,10 +297,9 @@ mod tests {
             session_cookie_scoped("t".into(), "", false).to_string(),
             "cityhall_session=t; HttpOnly; SameSite=Lax; Path=/"
         );
-        assert_eq!(
-            cleared(clear_cookie_scoped("", false)),
-            cleared(Cookie::from(SESSION_COOKIE))
-        );
+        let h = cleared(clear_cookie_scoped("", false));
+        assert!(h.contains("Path=/"), "{h}");
+        assert!(!h.contains("Domain") && !h.contains("Secure"), "{h}");
     }
 
     #[test]
@@ -284,6 +311,17 @@ mod tests {
         let h = cleared(clear_cookie_scoped("cityhall.example.com", true));
         assert!(h.contains("Domain=cityhall.example.com"), "{h}");
         assert!(h.contains("Secure"), "{h}");
+        assert!(h.contains("Path=/"), "{h}");
+    }
+
+    #[test]
+    fn cookie_domain_coverage() {
+        let f = domain_covers_base_url;
+        assert!(f("cityhall.example.com", "https://cityhall.example.com"));
+        assert!(f(".example.com", "https://cityhall.example.com:8443/x"));
+        assert!(f("Example.com", "https://cityhall.example.com"));
+        assert!(!f("example.com", "https://notexample.com"));
+        assert!(!f("ws.example.com", "https://cityhall.example.com"));
     }
 
     async fn setup() -> DatabaseConnection {

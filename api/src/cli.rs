@@ -88,6 +88,7 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             seed::ensure_roles(&db).await?;
             seed::ensure_admin(&db).await?;
             secrets::warn_about_legacy_secrets(&db).await;
+            crate::auth::warn_if_cookie_domain_mismatch();
             server::serve(db).await?;
         }
         Command::User { action } => {
