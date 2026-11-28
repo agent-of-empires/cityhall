@@ -1,13 +1,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use axum_extra::extract::cookie::{Cookie, CookieJar};
+use axum_extra::extract::cookie::CookieJar;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    consume_reset_token, create_reset_token, create_session, delete_session, session_cookie,
-    verify_password, AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
+    clear_session_cookie, consume_reset_token, create_reset_token, create_session, delete_session,
+    session_cookie, verify_password, AuthUser, RESET_TOKEN_TTL_HOURS, SESSION_COOKIE,
 };
 use crate::entities::user;
 use crate::error::AppError;
@@ -102,7 +102,7 @@ pub async fn logout(
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         delete_session(&db, cookie.value()).await?;
     }
-    Ok(jar.remove(Cookie::from(SESSION_COOKIE)))
+    Ok(jar.remove(clear_session_cookie()))
 }
 
 pub async fn me(
