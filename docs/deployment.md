@@ -157,6 +157,15 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
   [SSO](configuration.md#single-sign-on-oidc).
 - `ingress.*` mirrors the Kustomize Ingress (className, host, cert-manager
   annotations, TLS secret).
+- `workspaces.proxy.ingress.*` exposes the workspace proxy (port 3001) on its
+  own host, off by default. Set `enabled=true` and `host` (required), plus
+  `tlsSecretName` when `tls` is on. The host also sets
+  `WORKSPACE_PROXY_PUBLIC_ORIGIN`. The Ingress carries 3600 s read and send
+  timeouts for WebSocket.
+- `config.cookieDomain` sets `CITYHALL_COOKIE_DOMAIN`. Use a dedicated parent
+  of both hosts so the session cookie reaches the proxy host. The API ignores
+  this variable until #157 lands; until then the cookie stays host-only and
+  workspace requests on the proxy host are rejected.
 
 Upgrades: `helm upgrade cityhall deploy/helm/cityhall …` with the same values;
 CityHall runs its own migrations on startup.

@@ -7,5 +7,9 @@ spec:
   selector:
     app: cityhall
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 3000
+    - name: ws-proxy
+      port: 3001
+      targetPort: ws-proxy

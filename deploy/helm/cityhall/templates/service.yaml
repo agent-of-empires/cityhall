@@ -8,5 +8,11 @@ spec:
   selector:
     {{- include "cityhall.selector" . | nindent 4 }}
   ports:
-    - port: {{ .Values.service.port }}
+    - name: http
+      port: {{ .Values.service.port }}
       targetPort: 3000
+    {{- if .Values.workspaces.enabled }}
+    - name: ws-proxy
+      port: {{ .Values.workspaces.proxy.port }}
+      targetPort: ws-proxy
+    {{- end }}

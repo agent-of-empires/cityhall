@@ -13,7 +13,7 @@ Copy-paste starting points for running CityHall in production. Full walkthrough:
 | `reverse-proxy/docker-compose.traefik.yml` | Traefik edge with automatic HTTPS via labels. |
 | `systemd/cityhall.service` | Run the binary on a bare VPS under systemd. |
 | `systemd/cityhall.env.example` | Config for the systemd unit (`/etc/cityhall.env`). |
-| `k8s/` | Kustomize bundle: namespace, secret, Postgres, deployment, service, ingress, workspace RBAC + NetworkPolicy. |
+| `k8s/` | Kustomize bundle: namespace, secret, Postgres, deployment, service, ingress, workspace proxy ingress (`proxy-ingress.yaml`), workspace RBAC + NetworkPolicy. |
 | `helm/cityhall/` | Helm chart: the same resources, templated with a `values.yaml`. |
 
 Quick starts:
@@ -37,3 +37,8 @@ helm install cityhall deploy/helm/cityhall \
 Every path needs the same essentials: a `DATABASE_URL`, a stable
 `CITYHALL_SECRET_KEY` (`openssl rand -base64 32`), `CITYHALL_BASE_URL`, and TLS
 terminated by a reverse proxy. See [Configuration](../docs/configuration.md).
+
+On Kubernetes the workspace proxy (port 3001) needs its own hostname: enable
+`workspaces.proxy.ingress` in the chart, or edit `k8s/proxy-ingress.yaml`. Set
+`CITYHALL_COOKIE_DOMAIN` to a parent domain shared by both hosts; the API
+ignores it until #157 lands, so the proxy host rejects requests until then.

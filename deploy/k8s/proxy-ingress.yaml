@@ -1,0 +1,29 @@
+# Workspace proxy on its own hostname. Edit the host, and set
+# WORKSPACE_PROXY_PUBLIC_ORIGIN and CITYHALL_COOKIE_DOMAIN in deployment.yaml.
+# The long timeouts keep WebSocket connections open.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cityhall-ws-proxy
+  namespace: cityhall
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ws.cityhall.example.com
+      secretName: cityhall-ws-tls
+  rules:
+    - host: ws.cityhall.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cityhall
+                port:
+                  name: ws-proxy

@@ -29,10 +29,20 @@ spec:
               value: kubernetes
             - name: WORKSPACE_K8S_VOLUME_SIZE
               value: {{ .Values.workspaces.volumeSize | quote }}
+            - name: WORKSPACE_PROXY_BIND_ADDR
+              value: {{ printf "0.0.0.0:%v" .Values.workspaces.proxy.port | quote }}
+            {{- with .Values.workspaces.proxy.ingress.host }}
+            - name: WORKSPACE_PROXY_PUBLIC_ORIGIN
+              value: {{ printf "https://%s" . | quote }}
+            {{- end }}
             {{- if .Values.workspaces.storageClass }}
             - name: WORKSPACE_K8S_STORAGE_CLASS
               value: {{ .Values.workspaces.storageClass | quote }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.config.cookieDomain }}
+            - name: CITYHALL_COOKIE_DOMAIN
+              value: {{ . | quote }}
             {{- end }}
             {{- range $k, $v := .Values.config.extraEnv }}
             - name: {{ $k }}
@@ -43,6 +53,10 @@ spec:
                 name: {{ include "cityhall.secretName" . }}
           ports:
             - containerPort: 3000
+            {{- if .Values.workspaces.enabled }}
+            - name: ws-proxy
+              containerPort: {{ .Values.workspaces.proxy.port }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /api/health
