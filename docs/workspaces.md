@@ -85,8 +85,9 @@ workspace, and CityHall can verify none of it:
   (default 30 minutes) is stopped automatically. Open WebSocket connections
   (live terminals) count as activity, so an open dashboard is never cut off.
   Stopping keeps the volume; the next request resumes with all data intact.
-- **Destroy** (admin action) removes the container AND its volume. This
-  deletes the user's aoe data permanently, subscription logins included.
+- **Destroy** (admin action) removes the container AND its volume. The volume
+  is the user's whole home, so this permanently deletes their clones, installs,
+  agent and subscription logins and unpushed work along with their aoe data.
 - **Versions.** Admins set a default aoe version and can pin individual users
   (or a selected group) to a specific version. A version change recreates the
   container on its next start, keeping the volume. The image used is the
@@ -346,16 +347,9 @@ npm install -g @google/gemini-cli                             # Gemini
 curl -fsSL https://opencode.ai/install | bash                 # OpenCode
 ```
 
-**That install survives a restart.** Only the per-user volume persists, and it is
-mounted at the aoe data dir, so every agent's own state directory would otherwise
-be lost each time the container is recreated, which happens on a version change
-or a credential change. The image entrypoint relocates them onto the volume with
-symlinks: `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`,
-`~/.config/opencode`, `~/.local/share/opencode`, plus the three install prefixes
-(`~/.npm-global`, `~/.local/bin`, `~/.opencode`). Symlinks rather than
-`CODEX_HOME`-style variables because aoe clears the environment when it spawns a
-structured-view agent, so an env-based approach would work in a shell
-and quietly fail in structured view.
+**That install survives a restart.** The per-user volume is the whole `$HOME`,
+so an installed agent and its login both persist across a container recreate.
+See [The home volume](#the-home-volume).
 
 #### Handing users a workspace that is already set up
 
@@ -631,6 +625,71 @@ HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
   aoe's rate limiter keys on the proxy IP and five failures lock everyone out
   for 15 minutes. The workspace starts again on the next request (a reload),
   not automatically.
+
+### The home volume
+
+On the docker and kubernetes backends the per-user volume is mounted at
+`/home/aoe`, the whole `$HOME` (kubernetes uses `subPath: home`, which keeps the
+volume's `lost+found` out of it). The process backend's `HOME` is already a
+persistent directory. Everything under it survives a restart: clones and
+worktrees, rc files, npm, cargo and pipx installs, agent logins, and aoe's own
+data in `~/.config/agent-of-empires`. Anything an image bakes under `/home/aoe`
+is hidden by the mount, so image configuration lives elsewhere:
+
+- `PATH` (`~/.local/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, ahead of the
+  image's dirs) and `NPM_CONFIG_PREFIX` are image `ENV`. Defaults for login and
+  interactive shells are in `/etc/profile.d/cityhall.sh` and `/etc/bash.bashrc`.
+- The entrypoint copies `/etc/skel` into `$HOME` with `cp -n`, so a file the
+  user edited is never overwritten, and writes nothing else there.
+
+**System packages go in a derived image.** Workspaces run as uid 1000 with no
+root and no `apt`. Build a team image from the reference one and point the
+image template at it:
+
+```dockerfile
+FROM cityhall/aoe:v1.26.0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config libssl-dev python3 python3-venv pipx \
+      openssh-client jq ripgrep less vim \
+    && rm -rf /var/lib/apt/lists/*
+USER aoe
+```
+
+Toolchains (rustup, Node versions, Python tools) install into `$HOME` and persist.
+
+**Sizing.** The kubernetes PVC is `20Gi` per workspace by default
+(`WORKSPACE_K8S_VOLUME_SIZE`, helm `workspaces.volumeSize`), one value for every
+user. A full volume shows up as `ENOSPC` in the shell and can stop aoe writing
+its own config; nothing detects or reports it. To grow it, raise the value and
+let the workspace restart; the StorageClass needs `allowVolumeExpansion: true`,
+and a PVC never shrinks. The StorageClass also needs `reclaimPolicy: Delete`:
+`Retain` leaves the users' credentials on an orphaned volume after destroy.
+
+**Runbook.**
+
+- A stale dotfile: delete it and restart; the seed restores the current one.
+- A tool in `~/.local/bin` shadows a newer one in the image: `which -a <tool>`.
+- After a Node major bump in the image: `npm rebuild -g`.
+- A full reset: destroy the workspace.
+
+**Kubernetes pod spec.** The pod runs as uid 1000 with `fsGroup: 1000` and no
+ServiceAccount token. The kubelet creates the `subPath` directory root-owned and
+world-writable, and aoe refuses to run under a `$HOME` like that, so a root init
+container (only `CHOWN` and `FOWNER`) creates `home` as uid 1000, mode 0755,
+before the workspace container starts. `fsGroupChangePolicy: OnRootMismatch`
+stops the kubelet re-adding group write to every directory on each pod start,
+which aoe also refuses. An existing PVC from an earlier build keeps its old
+content at the volume root, outside `home`, where it is not read; there is no
+migration.
+
+**Upgrading an existing docker volume.** An older volume holds aoe's data at its
+root. On the first start after the upgrade the entrypoint moves everything at the
+volume root into `~/.config/agent-of-empires` (it logs one line), so sessions and
+config carry over and nothing is deleted. The agent installs and logins from the
+old layout come along but sit in `~/.config/agent-of-empires/cityhall-agents/`,
+not where the agents look, so install and log in again once, then delete that
+directory.
 
 ## Backends
 
