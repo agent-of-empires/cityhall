@@ -27,7 +27,7 @@ pub async fn settings(db: &DatabaseConnection) -> Result<workspace_settings::Mod
         .await?
         .unwrap_or(workspace_settings::Model {
             id: SETTINGS_ID,
-            image_template: "cityhall/aoe:{version}".to_string(),
+            image_template: "ghcr.io/agent-of-empires/cityhall-aoe:{version}".to_string(),
             default_version: None,
             idle_stop_minutes: 30,
             telemetry_policy: TelemetryPolicy::default().as_str().to_string(),
@@ -875,7 +875,10 @@ mod tests {
         let _key = test_key();
         let db = setup().await;
         let s = settings(&db).await.unwrap();
-        assert_eq!(s.image_template, "cityhall/aoe:{version}");
+        assert_eq!(
+            s.image_template,
+            "ghcr.io/agent-of-empires/cityhall-aoe:{version}"
+        );
         assert_eq!(s.idle_stop_minutes, 30);
         // No agents by default: an install that has never configured this keeps
         // shipping a workspace the user installs their own agent into.

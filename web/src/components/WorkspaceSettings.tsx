@@ -165,7 +165,7 @@ export function WorkspaceSettingsSection({ section }: { section: "defaults" | "a
               <Input
                 value={imageTemplate}
                 onChange={(e) => setImageTemplate(e.target.value)}
-                placeholder="cityhall/aoe:{version}"
+                placeholder="ghcr.io/agent-of-empires/cityhall-aoe:{version}"
               />
             </Field>
 

@@ -8,7 +8,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: i32,
     /// Image reference with a `{version}` placeholder, e.g.
-    /// `cityhall/aoe:{version}`.
+    /// `ghcr.io/agent-of-empires/cityhall-aoe:{version}`.
     pub image_template: String,
     /// Version served to users without a pin; workspaces cannot start while
     /// unset.

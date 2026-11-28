@@ -1,6 +1,8 @@
 image:
-  repository: cityhall
-  tag: latest
+  # Published by .github/workflows/images.yml. Pin a sha-<commit> or version tag;
+  # main moves.
+  repository: ghcr.io/agent-of-empires/cityhall
+  tag: main
   pullPolicy: IfNotPresent
 
 replicas: 1

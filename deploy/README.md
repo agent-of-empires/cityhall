@@ -34,6 +34,11 @@ helm install cityhall deploy/helm/cityhall \
   --set ingress.host=cityhall.example.com
 ```
 
+Images are published to `ghcr.io/agent-of-empires/cityhall` (app) and
+`ghcr.io/agent-of-empires/cityhall-aoe` (workspace); pin a `sha-<commit>` or
+version tag, not `main`. See
+[Deployment](../docs/deployment.md#the-image).
+
 Every path needs the same essentials: a `DATABASE_URL`, a stable
 `CITYHALL_SECRET_KEY` (`openssl rand -base64 32`), `CITYHALL_BASE_URL`, and TLS
 terminated by a reverse proxy. See [Configuration](../docs/configuration.md).

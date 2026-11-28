@@ -2,13 +2,13 @@
 # Reference image for CityHall workspaces: the aoe binary serving its web
 # dashboard, one container per user. Build one image per aoe version:
 #
-#   docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
+#   docker build --build-arg AOE_VERSION=v0.5.0 -t ghcr.io/agent-of-empires/cityhall-aoe:v0.5.0 deploy/aoe-image/
 #
 # To run an aoe that has no release yet, compile a commit instead of
 # downloading a tarball, and tag it as a version you then pin users to:
 #
 #   docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA=<full-commit-sha> \
-#     -t cityhall/aoe:main-20260804 deploy/aoe-image/
+#     -t ghcr.io/agent-of-empires/cityhall-aoe:main-20260804 deploy/aoe-image/
 #
 # A full commit id, not a branch or a tag: the build refuses anything else, so
 # one image tag keeps meaning one build.
@@ -19,7 +19,7 @@
 # docs/workspaces.md.
 #
 # The tag must match the workspace settings image template (default
-# `cityhall/aoe:{version}`) rendered with the version users are pinned to.
+# `ghcr.io/agent-of-empires/cityhall-aoe:{version}`) rendered with the version users are pinned to.
 # CityHall starts containers from this image with:
 #   aoe serve --host 0.0.0.0 --port 8080 --auth token --behind-proxy \
 #     --allowed-host <proxy-host> [--cityhall]
