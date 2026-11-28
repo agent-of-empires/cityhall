@@ -507,6 +507,15 @@ fn render_manifests(
                     "annotations": annotations,
                 },
                 "spec": {
+                    // The workspace never talks to the Kubernetes API, so it
+                    // gets no ServiceAccount token. The reference image runs as
+                    // uid 1000; fsGroup makes the volume writable by it.
+                    "automountServiceAccountToken": false,
+                    "securityContext": {
+                        "runAsNonRoot": true,
+                        "runAsUser": 1000,
+                        "fsGroup": 1000,
+                    },
                     "containers": [container],
                     "volumes": [{
                         "name": "data",
@@ -705,6 +714,11 @@ mod tests {
                 ["cityhall.workspace/env-fingerprint"],
             ""
         );
+        let pod = &dep["spec"]["template"]["spec"];
+        assert_eq!(pod["automountServiceAccountToken"], false);
+        assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+        assert_eq!(pod["securityContext"]["runAsUser"], 1000);
+        assert_eq!(pod["securityContext"]["fsGroup"], 1000);
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
         // The whole command travels in `args`, and `command` stays absent so the
