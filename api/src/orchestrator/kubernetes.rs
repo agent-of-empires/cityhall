@@ -346,9 +346,11 @@ impl Orchestrator for KubectlOrchestrator {
                 ],
                 None,
             )
-            .await?
-            .unwrap_or_default();
-        Ok(Some(parse_deployments(&out, |id| self.addr(id))))
+            .await?;
+        let Some(json) = out else {
+            return Ok(Some(Vec::new()));
+        };
+        parse_deployments(&json, |id| self.addr(id)).map(Some)
     }
 }
 
@@ -356,12 +358,14 @@ impl Orchestrator for KubectlOrchestrator {
 /// with no parseable `cityhall.user_id` label is skipped, not fatal. `addr`
 /// is filled only for a ready one, the same condition `status()` reports
 /// `Running` under.
-fn parse_deployments(json: &str, addr: impl Fn(i32) -> String) -> Vec<WorkspaceRuntime> {
-    let Ok(list) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
-        return Vec::new();
-    };
+fn parse_deployments(
+    json: &str,
+    addr: impl Fn(i32) -> String,
+) -> Result<Vec<WorkspaceRuntime>, OrchestratorError> {
+    let list: serde_json::Value = serde_json::from_str(json.trim())
+        .map_err(|e| OrchestratorError::Runtime(format!("unparseable deployment list: {e}")))?;
     let items = list["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-    items
+    Ok(items
         .iter()
         .filter_map(|item| {
             let user_id: i32 = item["metadata"]["labels"]["cityhall.user_id"]
@@ -380,7 +384,7 @@ fn parse_deployments(json: &str, addr: impl Fn(i32) -> String) -> Vec<WorkspaceR
                 addr: running.then(|| addr(user_id)),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// The mode a Deployment is running in, or `None` when it is scaled to zero
@@ -1328,7 +1332,9 @@ mod tests {
     fn running_mode_needs_a_ready_pod_and_a_live_template() {
         // The same rule `running_mode()` applies to one `get deployment`.
         let mode = |item: serde_json::Value| {
-            parse_deployments(&json!({ "items": [item] }).to_string(), |_| String::new())[0].mode
+            parse_deployments(&json!({ "items": [item] }).to_string(), |_| String::new()).unwrap()
+                [0]
+            .mode
         };
         assert_eq!(
             mode(dep_item("1", Some(1), 1, Some("full"))),
@@ -1353,7 +1359,7 @@ mod tests {
             dep_item("not-a-number", Some(1), 1, None),
         ]})
         .to_string();
-        let rows = parse_deployments(&list, |id| format!("w{id}:{AOE_PORT}"));
+        let rows = parse_deployments(&list, |id| format!("w{id}:{AOE_PORT}")).unwrap();
         assert_eq!(
             rows,
             vec![
@@ -1380,7 +1386,7 @@ mod tests {
                 },
             ]
         );
-        assert!(parse_deployments("", |_| String::new()).is_empty());
+        assert!(parse_deployments("", |_| String::new()).is_err());
     }
 
     #[test]
