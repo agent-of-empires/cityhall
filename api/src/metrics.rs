@@ -229,11 +229,16 @@ async fn sample_once(state: &AppState, system: &mut SystemSampler) -> Snapshot {
         }
     };
 
+    let system = system.sample();
+    if system.is_none() {
+        errors.push("system metrics: unavailable".to_string());
+    }
+
     Snapshot {
         sampled_at: Some(Utc::now()),
         runtimes,
         usage,
-        system: system.sample(),
+        system,
         errors,
     }
 }
