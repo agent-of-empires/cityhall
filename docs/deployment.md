@@ -103,8 +103,8 @@ workspace proxy as a second origin; see [Workspaces](workspaces.md#backends).
 
 [`deploy/k8s/`](../deploy/k8s) is a minimal Kustomize bundle: a namespace, a
 Secret, a single-replica Postgres with a `PersistentVolumeClaim`, the CityHall
-Deployment + Service, and an Ingress (nginx-ingress + cert-manager annotations
-for TLS).
+Deployment + Service, and an Ingress (an nginx-ingress + cert-manager example;
+adjust the class and annotations for another controller).
 
 ```sh
 # 1. Edit deploy/k8s/secret.yaml (DB password, CITYHALL_SECRET_KEY) and
@@ -175,17 +175,56 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
   them. To keep them from role holders, use an external database and leave
   `extraEnv` empty: put those variables (e.g. `SMTP_PASSWORD`) in the Secret named
   by `existingSecret`, which is loaded with `envFrom`.
-- `ingress.*` mirrors the Kustomize Ingress (className, host, cert-manager
-  annotations, TLS secret).
+- `ingress.*` mirrors the Kustomize Ingress (className, host, annotations, TLS
+  secret). The defaults assume no controller (empty `className` uses the cluster
+  default class, no annotations, `tls: false`); see
+  [Ingress controllers](#ingress-controllers). `tls: true` requires
+  `tlsSecretName`.
 - `workspaces.proxy.ingress.*` exposes the workspace proxy (port 3001) on its
   own host, off by default. Set `enabled=true` and `host` (required), plus
   `tlsSecretName` when `tls` is on. The host also sets
-  `WORKSPACE_PROXY_PUBLIC_ORIGIN`. The Ingress carries 3600 s read and send
-  timeouts for WebSocket.
+  `WORKSPACE_PROXY_PUBLIC_ORIGIN`. WebSocket connections need a 3600 s idle
+  timeout, set through the controller's annotations (see the examples below).
 - `config.cookieDomain` sets `CITYHALL_COOKIE_DOMAIN`. Use a dedicated parent
   of both hosts so the session cookie reaches the proxy host. The API ignores
   this variable until #157 lands; until then the cookie stays host-only and
   workspace requests on the proxy host are rejected.
+
+#### Ingress controllers
+
+The chart does not assume a controller. Pass the example values that match
+yours with `-f`:
+
+- [`examples/values-nginx.yaml`](../deploy/helm/cityhall/examples/values-nginx.yaml):
+  ingress-nginx and cert-manager, with 3600 s `proxy-read-timeout` and
+  `proxy-send-timeout` on the proxy Ingress.
+- [`examples/values-alb.yaml`](../deploy/helm/cityhall/examples/values-alb.yaml):
+  the AWS Load Balancer Controller. One ALB serves both hosts through an
+  IngressGroup (`alb.ingress.kubernetes.io/group.name`). TLS ends at the ALB
+  with an ACM certificate (`certificate-arn`, which must cover both hosts), so
+  both Ingresses keep `tls: false`. `scheme` is `internal` or `internet-facing`
+  and must match on every Ingress in the group. `target-type: ip` registers pod
+  IPs, because the Service is ClusterIP. `idle_timeout.timeout_seconds=3600`
+  keeps WebSocket connections open; the ALB maximum is 4000 s, and the attribute
+  applies to the whole ALB.
+
+Notes for the ALB:
+
+- Health checks. The app target group checks `/api/health` (200). The proxy
+  port has no health path: every unauthenticated request gets 401. The example
+  sets `success-codes: "401"` on the proxy Ingress, which only proves that the
+  proxy answers HTTP, not that workspaces work.
+- The ALB sends `X-Forwarded-Proto` to its targets with the client protocol
+  ([AWS docs](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/x-forwarded-headers.html)),
+  so the proxy admin-access cookie gets the `Secure` flag behind it.
+- Annotation names: see the
+  [controller annotations](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/).
+
+**Breaking change.** The chart defaults used to be `className: nginx`, the
+cert-manager annotation, `tls: true` and (app Ingress) `tlsSecretName:
+cityhall-tls`. Existing nginx users must add `-f examples/values-nginx.yaml` (or
+set those values) when they upgrade; otherwise the Ingress loses its class,
+annotations and TLS block.
 
 Upgrades: `helm upgrade cityhall deploy/helm/cityhall …` with the same values;
 CityHall runs its own migrations on startup.

@@ -1,0 +1,35 @@
+# AWS Load Balancer Controller: one ALB for both hosts through an IngressGroup.
+# TLS ends at the ALB with an ACM certificate, so tls stays false (no Secret).
+# Pass with: helm install ... -f examples/values-alb.yaml
+# Set both hosts, the certificate ARN (it must cover both hosts) and the scheme.
+# Annotation names: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/
+ingress:
+  className: alb
+  host: cityhall.example.com
+  annotations:
+    alb.ingress.kubernetes.io/group.name: cityhall
+    # internal or internet-facing; all Ingresses in the group must agree.
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # The Service is ClusterIP, so register pod IPs.
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
+    # Applies to the whole ALB (WebSocket). ALB maximum is 4000.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+
+workspaces:
+  proxy:
+    ingress:
+      enabled: true
+      className: alb
+      host: ws.cityhall.example.com
+      annotations:
+        alb.ingress.kubernetes.io/group.name: cityhall
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+        alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
+        # The proxy has no health path: every unauthenticated request gets 401.
+        alb.ingress.kubernetes.io/healthcheck-path: /
+        alb.ingress.kubernetes.io/success-codes: "401"

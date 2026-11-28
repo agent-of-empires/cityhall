@@ -631,9 +631,11 @@ the CityHall host such as `ws.cityhall.<domain>`, and set
 one origin serves every workspace: the proxy routes by session cookie, not by
 `Host`. Set `CITYHALL_COOKIE_DOMAIN` to a dedicated parent such as
 `cityhall.<domain>` so the session cookie reaches the proxy host; empty, its
-default, keeps the cookie host-only. TLS ends at the ingress, which talks plain
-HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
-`proxy-send-timeout` of 3600 seconds for WebSocket.
+default, keeps the cookie host-only. TLS ends at the ingress or load balancer,
+which talks plain HTTP to the proxy port. The proxy needs an idle timeout of
+3600 seconds for WebSocket (ingress-nginx: `proxy-read-timeout` and
+`proxy-send-timeout`; ALB: `idle_timeout.timeout_seconds`). See
+[Ingress controllers](deployment.md#ingress-controllers).
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
