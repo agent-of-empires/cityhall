@@ -20,9 +20,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    binary_key, daemon_token, http_probe, is_refusal, plaintext_flag, proxy_allowed_host,
-    proxy_allowed_origin, wait_ready, Begin, Orchestrator, OrchestratorError, Probe,
-    ProvisioningRegistry, TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
+    binary_key, daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
+    wait_ready, Begin, Orchestrator, OrchestratorError, Probe, ProvisioningRegistry,
+    TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -213,10 +213,6 @@ impl ProcessOrchestrator {
                 Ok(()) => return Ok(addr),
                 Err(e) => {
                     kill_group(pid, libc::SIGKILL);
-                    // A refusal is not a stolen port; a new port would be refused too.
-                    if is_refusal(&e) {
-                        return Err(e);
-                    }
                     last_err = Some(e);
                 }
             }

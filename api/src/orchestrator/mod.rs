@@ -560,14 +560,10 @@ const REFUSALS: [(u16, &str); 2] = [
     ),
 ];
 
-const REFUSED_PREFIX: &str = "refused the readiness probe";
-
 pub(crate) fn refused_error(addr: &str, detail: &str) -> OrchestratorError {
-    OrchestratorError::Runtime(format!("workspace at {addr} {REFUSED_PREFIX}: {detail}"))
-}
-
-pub(crate) fn is_refusal(e: &OrchestratorError) -> bool {
-    matches!(e, OrchestratorError::Runtime(m) if m.contains(REFUSED_PREFIX))
+    OrchestratorError::Runtime(format!(
+        "workspace at {addr} refused the readiness probe: {detail}"
+    ))
 }
 
 /// Probe `addr` for an HTTP answer. A bare TCP connect is not enough:
