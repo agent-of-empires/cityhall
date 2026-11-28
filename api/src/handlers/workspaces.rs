@@ -126,6 +126,16 @@ pub(crate) fn runtime_status(runtime: Option<&WorkspaceRuntime>) -> &'static str
     }
 }
 
+/// GET /api/workspaces/activity: the last session summary per running
+/// workspace, as sampled by the background poller.
+pub async fn activity(
+    State(state): State<AppState>,
+    caller: AuthUser,
+) -> Result<Json<crate::activity::Snapshot>, AppError> {
+    caller.require("workspaces.activity")?;
+    Ok(Json((*state.session_activity.snapshot()).clone()))
+}
+
 /// GET /api/workspaces: every user with their workspace state.
 pub async fn list(
     State(state): State<AppState>,

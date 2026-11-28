@@ -25,6 +25,9 @@ pub struct AppState {
     /// Last fleet and system sample, published by the background sampler. The
     /// dashboard reads it instead of shelling out per request.
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Last per-user session summary, published by the activity sampler. Not
+    /// `activity`, which is the idle-stop registry.
+    pub session_activity: Arc<crate::activity::ActivityCache>,
     /// Client for proxied HTTP requests to workspaces (no redirects, HTTP/1.1
     /// so WebSocket upgrades tunnel through).
     pub proxy_client: reqwest::Client,

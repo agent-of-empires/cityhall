@@ -1300,6 +1300,7 @@ mod tests {
             provisioning: Arc::default(),
             versions: Arc::default(),
             metrics: Arc::default(),
+            session_activity: Arc::default(),
             proxy_client: reqwest::Client::new(),
         }
     }
