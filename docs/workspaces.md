@@ -72,9 +72,33 @@ workspace, and CityHall can verify none of it:
 
 | Backend | Full mode |
 | --- | --- |
-| docker | **Refused.** Workspace containers share a bridge network (docker's default bridge, or `WORKSPACE_DOCKER_NETWORK`) that allows container to container traffic, and aoe listens on `0.0.0.0`. A peer container can reach the port but gets 401 without the workspace token (checked on docker's default bridge; `GET /` still serves aoe's static shell unauthenticated). Lifting the refusal is a follow-up. Publishing the port on `127.0.0.1` only keeps the host's network out. Users who hold the key get Composer mode, the log warns, and the workspaces pages show why. |
-| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which only works on a CNI that enforces it, and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. CityHall cannot detect whether it is enforced. Egress from a workspace pod is open: it reaches CityHall's API, `cityhall-db` and the kube API (rows 10 to 12 of [credential isolation](research/credential-isolation.md)). The shell can also read the pod's environment, including the bundle token and provider keys. |
+| docker | **Refused.** Workspace containers share a bridge network (docker's default bridge, or `WORKSPACE_DOCKER_NETWORK`) that allows container to container traffic, and nothing isolates one workspace from another (see [Network isolation between workspaces](#network-isolation-between-workspaces)). Use the kubernetes backend for Full mode. Publishing the port on `127.0.0.1` only keeps the host's network out. Users who hold the key get Composer mode, the log warns, and the workspaces pages show why. |
+| kubernetes | Allowed. Relies on the shipped `cityhall-workspaces` NetworkPolicy, which **requires a CNI that enforces NetworkPolicy** (see [Network isolation between workspaces](#network-isolation-between-workspaces)), and is written for namespace `cityhall`; apply it to any other `WORKSPACE_K8S_NAMESPACE`. CityHall cannot detect whether it is enforced. Egress from a workspace pod is open: it reaches CityHall's API, `cityhall-db` and the kube API (rows 10 to 12 of [credential isolation](research/credential-isolation.md)). The shell can also read the pod's environment, including the bundle token and provider keys. |
 | process | Allowed, **development only**. Every workspace runs as the CityHall OS user, so there is no isolation between users, or from CityHall itself. |
+
+### Network isolation between workspaces
+
+**Docker (Full mode refused).** Containers on docker's default bridge, or on
+`WORKSPACE_DOCKER_NETWORK`, can open connections to each other, and aoe listens
+on `0.0.0.0:8080`. A peer container, or a Full mode shell, reaches every other
+workspace's daemon port at network level. Only the per-workspace bearer stops
+it: on the default bridge, a peer request got 401 with no token and with a wrong
+token (bearer or `?token=`), recorded in the verification of PR 152. `GET /`
+still returns 200 without a token; only aoe's static shell was observed there,
+nothing beyond it was checked. A Full mode agent runs commands and can send many
+requests, so the bearer is the only barrier, and docker has no network
+isolation between workspaces: no per-workspace network, and inter-container
+traffic is not disabled. The refusal therefore stays, and the supported backend
+for Full mode is kubernetes.
+
+**Kubernetes (Full mode allowed).** Isolation between workspace pods comes from
+the shipped `cityhall-workspaces` NetworkPolicy, which admits only the CityHall
+pod on port 8080. **The cluster CNI must enforce NetworkPolicy.** Without
+enforcement the API server still accepts the object and nothing is enforced:
+every workspace pod can reach every other workspace's daemon port, protected
+only by the bearer. CityHall cannot detect this. To check, request port 8080 of
+one workspace pod from another workspace pod: it must time out. Any HTTP
+response, even 401, means the policy is not enforced.
 
 ## How it works
 

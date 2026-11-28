@@ -40,11 +40,12 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Why Full mode is unavailable on docker. Workspace containers share a bridge
 /// network that allows container to container traffic (with or without
-/// `WORKSPACE_DOCKER_NETWORK`), so a Full mode terminal can reach every other
-/// workspace's aoe port. aoe runs `--auth token` and a peer container gets 401
-/// without the token (checked on the default bridge); lifting the refusal is a
-/// follow-up.
-pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on docker: workspace containers share a network, and lifting this is a follow-up";
+/// `WORKSPACE_DOCKER_NETWORK`), and docker has no network isolation between
+/// workspaces, so a Full mode terminal can reach every other workspace's aoe
+/// port. aoe runs `--auth token` and a peer container gets 401 without the
+/// token (checked on the default bridge), but the bearer is the only barrier.
+/// The refusal is deliberate; kubernetes is the supported backend for Full mode.
+pub(crate) const DOCKER_FULL_MODE_BLOCKER: &str = "Full mode is unavailable on docker: workspaces share a network with no isolation between them. Use the kubernetes backend for Full mode";
 
 /// Records a Full mode container. Absent means Composer.
 const MODE_LABEL: &str = "cityhall.workspace.mode";
