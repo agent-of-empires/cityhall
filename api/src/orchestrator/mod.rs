@@ -225,6 +225,8 @@ pub struct WorkspaceRuntime {
     /// The version the runtime object was created with, when the backend
     /// records one.
     pub version: Option<String>,
+    /// The mode the workspace is running in. `Some` only when `running`.
+    pub mode: Option<WorkspaceMode>,
 }
 
 /// Instantaneous resource usage of one workspace.
@@ -313,6 +315,12 @@ pub trait Orchestrator: Send + Sync {
 
     /// Current runtime state.
     async fn status(&self, user_id: i32) -> Result<WorkspaceStatus, OrchestratorError>;
+
+    /// The mode the workspace is running in right now: `Some` only when it is
+    /// running (the same definition as [`Orchestrator::status`]), `None`
+    /// otherwise. Compared with the mode it should start in next to tell
+    /// whether a restart is pending.
+    async fn running_mode(&self, user_id: i32) -> Result<Option<WorkspaceMode>, OrchestratorError>;
 
     /// Runtime state of every managed workspace in ONE round-trip, for callers
     /// that would otherwise call [`Orchestrator::status`] once per user.

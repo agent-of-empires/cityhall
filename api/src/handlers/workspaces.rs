@@ -35,6 +35,9 @@ pub struct WorkspaceItem {
     pub mode: WorkspaceMode,
     /// Why `mode` is Composer although the owner's role grants Full.
     pub mode_note: Option<&'static str>,
+    /// True when the workspace is running in a different mode than `mode`, so
+    /// a restart would change it.
+    pub restart_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -85,6 +88,30 @@ impl Fleet {
             Fleet::Batched(map) => runtime_status(map.get(&user_id)),
             Fleet::Unavailable => "unknown",
             Fleet::PerUser => status_str(state.orchestrator.status(user_id).await),
+        }
+    }
+
+    /// The mode a running workspace is in. `status` is what `status_of`
+    /// returned for this user, so a stopped or unknown one costs no call.
+    async fn running_mode_of(
+        &self,
+        state: &AppState,
+        user_id: i32,
+        status: &str,
+    ) -> Option<WorkspaceMode> {
+        match self {
+            Fleet::Batched(map) => map.get(&user_id).and_then(|r| r.mode),
+            Fleet::Unavailable => None,
+            Fleet::PerUser if status == "running" => {
+                match state.orchestrator.running_mode(user_id).await {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        tracing::warn!("workspace mode check failed: {e}");
+                        None
+                    }
+                }
+            }
+            Fleet::PerUser => None,
         }
     }
 }
@@ -142,13 +169,15 @@ pub async fn list(
             user.role_id.and_then(|id| roles.get(&id)),
         ));
         let (mode, mode_note) = workspaces::next_mode(requested, blocker);
+        let status = match row {
+            Some(_) => fleet.status_of(&state, user.id).await,
+            // No intent row: never used, skip the runtime round-trip.
+            None => "not_created",
+        };
+        let running = fleet.running_mode_of(&state, user.id, status).await;
         items.push(WorkspaceItem {
             user_id: user.id,
-            status: match row {
-                Some(_) => fleet.status_of(&state, user.id).await,
-                // No intent row: never used, skip the runtime round-trip.
-                None => "not_created",
-            },
+            status,
             pinned_version: row.and_then(|r| r.pinned_version.clone()),
             effective_version: effective,
             last_active_at: row.and_then(|r| r.last_active_at),
@@ -156,6 +185,7 @@ pub async fn list(
             provisioning,
             mode,
             mode_note,
+            restart_pending: workspaces::restart_pending(running, mode),
         });
     }
     Ok(Json(items))
@@ -181,12 +211,21 @@ pub async fn me(
         workspaces::mode_for_perms(&caller.perms),
         state.orchestrator.full_mode_blocker(),
     );
+    let running = state
+        .orchestrator
+        .running_mode(caller.user.id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("workspace mode check failed: {e}");
+            None
+        });
     Ok(Json(serde_json::json!({
         "status": status,
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),
         "effective_version": effective,
         "mode": mode,
         "mode_note": mode_note,
+        "restart_pending": workspaces::restart_pending(running, mode),
         "proxy_origin": proxy::public_origin(&headers),
     })))
 }
@@ -702,11 +741,13 @@ mod tests {
             user_id: 1,
             running: true,
             version: None,
+            mode: None,
         };
         let stopped = WorkspaceRuntime {
             user_id: 1,
             running: false,
             version: None,
+            mode: None,
         };
         assert_eq!(runtime_status(Some(&running)), "running");
         assert_eq!(runtime_status(Some(&stopped)), "stopped");

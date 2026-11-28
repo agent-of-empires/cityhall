@@ -692,6 +692,14 @@ impl Orchestrator for DockerCliOrchestrator {
         }
     }
 
+    async fn running_mode(&self, user_id: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
+        Ok(self
+            .inspect(&container_name(user_id))
+            .await?
+            .filter(|state| state.running)
+            .map(|state| WorkspaceMode::from_stored(state.mode_label.as_deref())))
+    }
+
     /// One `docker ps` for the whole fleet, replacing a `container inspect` per
     /// user.
     async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {
@@ -820,9 +828,13 @@ fn parse_ps(out: &str) -> Vec<WorkspaceRuntime> {
                 // Pre-label containers, and any runtime whose ps output omits
                 // labels, still carry the id in their deterministic name.
                 .or_else(|| user_id_from_name(row.names.as_ref()?.first()))?;
+            let running = row.state.as_deref() == Some("running");
             Some(WorkspaceRuntime {
                 user_id,
-                running: row.state.as_deref() == Some("running"),
+                running,
+                mode: running.then(|| {
+                    WorkspaceMode::from_stored(row.labels.as_ref().and_then(|l| l.get(MODE_LABEL)))
+                }),
                 version: row
                     .labels
                     .as_ref()
@@ -1644,7 +1656,7 @@ mod tests {
     fn ps_output_becomes_fleet_runtime_rows() {
         // Real docker shapes: Labels joined, Names a string, State a word.
         let out = concat!(
-            r#"{"ID":"a1","Names":"cityhall-workspace-u1","State":"running","Labels":"cityhall.managed=true,cityhall.user_id=1,cityhall.workspace.version=v1.2.3"}"#,
+            r#"{"ID":"a1","Names":"cityhall-workspace-u1","State":"running","Labels":"cityhall.managed=true,cityhall.user_id=1,cityhall.workspace.version=v1.2.3,cityhall.workspace.mode=full"}"#,
             "\n",
             r#"{"ID":"b2","Names":"cityhall-workspace-u2","State":"exited","Labels":"cityhall.managed=true,cityhall.user_id=2,cityhall.workspace.version=v1.0.0"}"#,
             "\n"
@@ -1657,11 +1669,13 @@ mod tests {
                 user_id: 1,
                 running: true,
                 version: Some("v1.2.3".to_string()),
+                mode: Some(WorkspaceMode::Full),
             }
         );
         // Anything that is not literally "running" is not running: created,
         // paused, and restarting must not read as live.
         assert!(!rows[1].running);
+        assert_eq!(rows[1].mode, None);
         assert_eq!(rows[1].user_id, 2);
     }
 
@@ -1680,6 +1694,7 @@ mod tests {
                 user_id: 7,
                 running: true,
                 version: Some("v2.0.0".to_string()),
+                mode: Some(WorkspaceMode::Composer),
             }]
         );
     }
