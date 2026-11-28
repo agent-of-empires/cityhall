@@ -193,13 +193,7 @@ impl DockerCliOrchestrator {
             ])
             .await?
             .unwrap_or_default();
-        if label.trim() != "1" {
-            return Err(OrchestratorError::Runtime(format!(
-                "image {} predates the whole-home volume layout; rebuild it from \
-                 deploy/aoe-image/Dockerfile or pull a current tag",
-                spec.image
-            )));
-        }
+        require_home_volume_label(&spec.image, &label)?;
         if let Some(net) = &self.network {
             // Surface a clear error now instead of `docker run`'s "not found"
             // (which run() would misread as a missing container).
@@ -271,6 +265,17 @@ impl DockerCliOrchestrator {
             }
         }
     }
+}
+
+/// `label` is the image's `cityhall.home-volume` label value ("" when absent).
+fn require_home_volume_label(image: &str, label: &str) -> Result<(), OrchestratorError> {
+    if label.trim() == "1" {
+        return Ok(());
+    }
+    Err(OrchestratorError::Runtime(format!(
+        "image {image} predates the whole-home volume layout; rebuild it from \
+         deploy/aoe-image/Dockerfile or pull a current tag"
+    )))
 }
 
 async fn provision_image_job(
@@ -1163,6 +1168,15 @@ mod tests {
         let args = run_args(&spec(), None, None);
         assert!(!args.iter().any(|a| a == "--env-file"), "{args:?}");
         assert!(!args.iter().any(|a| a == "-e"), "{args:?}");
+    }
+
+    #[test]
+    fn an_image_without_the_home_volume_label_is_refused() {
+        assert!(require_home_volume_label("cityhall/aoe:v1", "1\n").is_ok());
+        for label in ["", "0", "<no value>"] {
+            let err = require_home_volume_label("cityhall/aoe:v1", label).unwrap_err();
+            assert!(err.to_string().contains("predates the whole-home"), "{err}");
+        }
     }
 
     /// The whole `$HOME` is the volume, same layout as the kubernetes backend.

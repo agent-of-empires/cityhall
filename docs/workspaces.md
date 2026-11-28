@@ -461,7 +461,7 @@ role with `workspaces.full`. An admin can set `CLAUDE_CODE_OAUTH_TOKEN` on a
 user's behalf like any other credential.
 
 The terminal logins write to `~/.claude`, `~/.codex`, `~/.gemini` and OpenCode's
-directories, which the image entrypoint keeps on the volume. They survive an idle
+directories, which are in the home directory on the volume. They survive an idle
 stop, a restart and an aoe version change, and a destroy deletes them. CityHall
 never holds these credentials and cannot show whether one exists.
 
@@ -678,7 +678,10 @@ and a PVC never shrinks. The StorageClass also needs `reclaimPolicy: Delete`:
 - A full reset: destroy the workspace.
 
 **Kubernetes pod spec.** The pod runs as uid 1000 with `fsGroup: 1000` and no
-ServiceAccount token. The kubelet creates the `subPath` directory root-owned and
+ServiceAccount token. The workspace container also sets
+`allowPrivilegeEscalation: false`, drops all capabilities and uses the
+`RuntimeDefault` seccomp profile, so a setuid binary in a derived image cannot
+elevate. The kubelet creates the `subPath` directory root-owned and
 world-writable, and aoe refuses to run under a `$HOME` like that, so a root init
 container (only `CHOWN` and `FOWNER`; a namespace enforcing the Pod Security
 `restricted` profile rejects it) creates `home` as uid 1000, mode 0755,
@@ -689,8 +692,8 @@ content at the volume root, outside `home`, where it is not read; there is no
 migration.
 
 **Upgrading an existing docker volume.** An older volume holds aoe's data at its
-root. On the first start after the upgrade the entrypoint moves everything at the
-volume root into `~/.config/agent-of-empires` (it logs one line), so sessions and
+root, recognised by `serve.token`, `serve.lock` or `cityhall-agents` there. On the
+first start after the upgrade the entrypoint moves everything at the volume root into `~/.config/agent-of-empires` (it logs one line), so sessions and
 config carry over and nothing is deleted. The agent installs and logins from the
 old layout come along but sit in `~/.config/agent-of-empires/cityhall-agents/`,
 not where the agents look, so install and log in again once, then delete that

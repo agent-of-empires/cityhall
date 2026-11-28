@@ -404,6 +404,14 @@ fn render_manifests(
         .chain(plaintext_flag(&spec.version))
         .collect()),
         "ports": [{ "containerPort": AOE_PORT }],
+        // No root and no sudo in a workspace: without this a setuid binary in a
+        // derived image could still elevate. No read-only root filesystem, a
+        // workspace writes outside $HOME (tmux sockets, /tmp, installs).
+        "securityContext": {
+            "allowPrivilegeEscalation": false,
+            "capabilities": { "drop": ["ALL"] },
+            "seccompProfile": { "type": "RuntimeDefault" },
+        },
         // `subPath` keeps the volume's `lost+found` out of `$HOME`.
         "volumeMounts": [{ "name": "data", "mountPath": HOME_DIR, "subPath": "home" }],
     });
@@ -753,8 +761,40 @@ mod tests {
         // container sets no user of its own, so it keeps the pod's non-root one.
         let init = &pod["initContainers"][0];
         assert_eq!(init["securityContext"]["runAsUser"], 0);
+        assert_eq!(init["securityContext"]["runAsNonRoot"], false);
+        assert_eq!(init["securityContext"]["allowPrivilegeEscalation"], false);
+        assert_eq!(init["securityContext"]["readOnlyRootFilesystem"], true);
+        assert_eq!(
+            init["securityContext"]["capabilities"]["drop"],
+            json!(["ALL"])
+        );
+        assert_eq!(
+            init["securityContext"]["capabilities"]["add"],
+            json!(["CHOWN", "FOWNER"])
+        );
+        assert_eq!(
+            init["command"],
+            json!([
+                "install",
+                "-d",
+                "-o",
+                "1000",
+                "-g",
+                "1000",
+                "-m",
+                "0755",
+                "/vol/home"
+            ])
+        );
         assert_eq!(init["volumeMounts"][0]["mountPath"], "/vol");
-        assert!(pod["containers"][0].get("securityContext").is_none());
+        // The workspace container keeps the pod's non-root user and is hardened
+        // without a read-only root filesystem.
+        let main_sc = &pod["containers"][0]["securityContext"];
+        assert_eq!(main_sc["allowPrivilegeEscalation"], false);
+        assert_eq!(main_sc["capabilities"]["drop"], json!(["ALL"]));
+        assert_eq!(main_sc["seccompProfile"]["type"], "RuntimeDefault");
+        assert!(main_sc.get("readOnlyRootFilesystem").is_none());
+        assert!(main_sc.get("runAsUser").is_none());
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
         // The whole command travels in `args`, and `command` stays absent so the

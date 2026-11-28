@@ -227,12 +227,23 @@ STORE="$APP/cityhall-agents"
 
 # A volume from before $HOME was the volume holds the aoe data dir at its root,
 # so under this mount that data sits in $HOME instead of in $APP and aoe would
-# start empty. Move every top-level entry into $APP, nothing is deleted. A new
-# volume starts empty and an upgraded one already has $APP, so neither gets here.
+# start empty. Move every top-level entry into $APP, nothing is deleted.
+#
+# An old layout is recognised by what only it has at the volume root: files aoe
+# itself writes into its data dir (the serve token and lock) or the agent store
+# this entrypoint keeps there. Not by an absent $APP: a user who deleted $APP on
+# a new volume must not have their whole $HOME moved into it. A leftover staging
+# dir means an earlier move was cut short, so it is finished too.
+#
 # The move targets a staging dir that is renamed into place last, so an
 # interrupted move is finished by the next start instead of leaving a half-filled
 # $APP that would hide the rest.
-if [ ! -d "$APP" ] && [ -n "$(ls -A "$HOME")" ]; then
+old_layout=
+[ -d "$APP.migrating" ] && old_layout=1
+for marker in serve.token serve.lock cityhall-agents; do
+    [ -e "$HOME/$marker" ] && old_layout=1
+done
+if [ ! -d "$APP" ] && [ -n "$old_layout" ]; then
     echo "entrypoint: moving the old volume layout into $APP" >&2
     mkdir -p "$APP.migrating"
     for entry in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
