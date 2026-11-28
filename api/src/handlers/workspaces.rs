@@ -211,14 +211,20 @@ pub async fn me(
         workspaces::mode_for_perms(&caller.perms),
         state.orchestrator.full_mode_blocker(),
     );
-    let running = state
-        .orchestrator
-        .running_mode(caller.user.id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("workspace mode check failed: {e}");
-            None
-        });
+    // Only a running workspace has a mode to ask for; a failed or stopped
+    // status must not cost a second backend round-trip.
+    let running = if status == "running" {
+        state
+            .orchestrator
+            .running_mode(caller.user.id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("workspace mode check failed: {e}");
+                None
+            })
+    } else {
+        None
+    };
     Ok(Json(serde_json::json!({
         "status": status,
         "pinned_version": row.as_ref().and_then(|r| r.pinned_version.clone()),
