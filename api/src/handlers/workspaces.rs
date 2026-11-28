@@ -272,6 +272,25 @@ pub async fn restart_mine(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// POST /api/workspaces/{user_id}/rotate-bundle-token: replace the user's
+/// bundle token. A running workspace is left alone; the new token reaches it
+/// when its container is next created.
+pub async fn rotate_bundle_token(
+    State(state): State<AppState>,
+    caller: AuthUser,
+    Path(user_id): Path<i32>,
+) -> Result<StatusCode, AppError> {
+    caller.require("workspaces.write")?;
+    ensure_user_exists(&state, user_id).await?;
+    workspaces::rotate_bundle_token(&state.db, user_id).await?;
+    tracing::info!(
+        actor_id = caller.user.id,
+        target_user_id = user_id,
+        "workspace bundle token rotated"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// DELETE /api/workspaces/{user_id}: destroys the workspace AND its volume.
 pub async fn destroy(
     State(state): State<AppState>,
