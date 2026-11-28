@@ -206,7 +206,11 @@ function AdminWorkspaces({ me }: { me: Me }) {
   }
 
   async function rotateToken(item: WorkspaceItem) {
-    if (!confirm(`Rotate ${item.username}'s bundle token? The old one stops working now; a running workspace gets the new one when its container is next created.`)) {
+    if (
+      !confirm(
+        `Rotate ${item.username}'s bundle token? The old one stops working now; a running workspace gets the new one when its container is next created.`,
+      )
+    ) {
       return;
     }
     await run(() => api.rotateWorkspaceBundleToken(item.user_id), "could not rotate bundle token");
