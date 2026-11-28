@@ -271,6 +271,7 @@ async fn statuses(state: &AppState) -> Result<Vec<WorkspaceRuntime>, String> {
                 // This path has no version to report; the effective version
                 // from the database covers the display.
                 version: None,
+                mode: None,
             });
         }
     }

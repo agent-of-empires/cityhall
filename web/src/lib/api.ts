@@ -118,6 +118,8 @@ export interface WorkspaceItem {
   provisioning: { message: string; failed: boolean } | null;
   mode: WorkspaceMode;
   mode_note: string | null;
+  /** Running in a different mode than `mode`; applies on restart. */
+  restart_pending: boolean;
 }
 
 /** The aoe client a workspace starts in next. A running workspace keeps its
@@ -210,6 +212,8 @@ export interface MyWorkspace {
   effective_version: string | null;
   mode: WorkspaceMode;
   mode_note: string | null;
+  /** Running in a different mode than `mode`; applies on restart. */
+  restart_pending: boolean;
   proxy_origin: string;
 }
 

@@ -425,6 +425,13 @@ impl Orchestrator for ProcessOrchestrator {
             Some(_) => Ok(WorkspaceStatus::Stopped),
         }
     }
+
+    async fn running_mode(&self, user_id: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
+        Ok(self
+            .read_state(user_id)
+            .filter(|state| alive(state.pid))
+            .map(|state| WorkspaceMode::from_stored(Some(&state.mode))))
+    }
 }
 
 /// The release tarball's binary name for this host, e.g. `aoe-linux-amd64`.
@@ -1221,6 +1228,14 @@ mod tests {
             WorkspaceStatus::Running {
                 addr: "127.0.0.1:45678".to_string()
             }
+        );
+
+        // The mode is reported only for the live one.
+        assert_eq!(orch.running_mode(1).await.unwrap(), None);
+        assert_eq!(orch.running_mode(2).await.unwrap(), None);
+        assert_eq!(
+            orch.running_mode(3).await.unwrap(),
+            Some(WorkspaceMode::Composer)
         );
     }
 

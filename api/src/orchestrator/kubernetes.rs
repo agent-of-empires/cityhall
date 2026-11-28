@@ -312,6 +312,24 @@ impl Orchestrator for KubectlOrchestrator {
             Ok(WorkspaceStatus::Stopped)
         }
     }
+
+    async fn running_mode(&self, user_id: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
+        let out = self
+            .run(
+                &["get", "deployment", &object_name(user_id), "-o", "json"],
+                None,
+            )
+            .await?;
+        let Some(json) = out else {
+            return Ok(None);
+        };
+        let deployment: Deployment = serde_json::from_str(json.trim())
+            .map_err(|e| OrchestratorError::Runtime(format!("unparseable deployment: {e}")))?;
+        if deployment.status.ready_replicas.unwrap_or(0) < 1 {
+            return Ok(None);
+        }
+        Ok(live_mode(&json))
+    }
 }
 
 /// The mode a Deployment is running in, or `None` when it is scaled to zero

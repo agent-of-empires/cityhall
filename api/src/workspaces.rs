@@ -272,10 +272,10 @@ pub async fn ensure_bundle_token(
 /// Replace a user's bundle token, if they have a workspace row.
 ///
 /// Called when the material the token protects changes (git credential, SSH
-/// key) or an admin asks. It does not touch a running workspace: the bundle
-/// token is not part of the drift check, so the old container keeps running and
-/// the new token reaches it at its next creation. The old token is refused by
-/// the bundle endpoint at once, so a copy of it stops working immediately.
+/// key) or an admin asks. It does not interrupt a running workspace: the old
+/// container keeps running, and the new token reaches it at the next explicit
+/// restart or recreation. The old token is refused by the bundle endpoint at
+/// once, so a copy of it stops working immediately.
 /// A user with no row needs nothing: [`get_or_create`] mints one on first use.
 pub async fn rotate_bundle_token(db: &DatabaseConnection, user_id: i32) -> Result<(), AppError> {
     workspace::Entity::update_many()
@@ -435,6 +435,12 @@ pub fn next_mode(
         (WorkspaceMode::Full, Some(reason)) => (WorkspaceMode::Composer, Some(reason)),
         (mode, _) => (mode, None),
     }
+}
+
+/// Whether a restart would change the mode: the workspace is running (`Some`)
+/// in a mode other than the one it would start in next.
+pub fn restart_pending(running: Option<WorkspaceMode>, wanted: WorkspaceMode) -> bool {
+    running.is_some_and(|mode| mode != wanted)
 }
 
 /// The mode to launch `user_id`'s workspace in, logging a downgrade.
@@ -1264,6 +1270,12 @@ mod tests {
                 WorkspaceStatus::Stopped
             })
         }
+        async fn running_mode(&self, _: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
+            Ok(self
+                .running
+                .then(|| self.specs.lock().unwrap().last().map(|s| s.mode))
+                .flatten())
+        }
     }
 
     async fn state_with(db: DatabaseConnection, orch: Arc<Recorder>) -> AppState {
@@ -1336,5 +1348,66 @@ mod tests {
         let state = state_with(db, orch.clone()).await;
         ensure_started(&state, dev).await.unwrap();
         assert_eq!(orch.specs.lock().unwrap()[0].mode, WorkspaceMode::Composer);
+    }
+
+    #[test]
+    fn restart_pending_needs_a_running_workspace_in_another_mode() {
+        use WorkspaceMode::{Composer, Full};
+        assert!(!restart_pending(None, Full));
+        assert!(!restart_pending(Some(Full), Full));
+        assert!(!restart_pending(Some(Composer), Composer));
+        assert!(restart_pending(Some(Composer), Full));
+        assert!(restart_pending(Some(Full), Composer));
+    }
+
+    /// Drives the same comparison the list and `/me` handlers make: the mode
+    /// the backend reports running against the owner's current requested mode.
+    async fn pending(state: &AppState, user_id: i32) -> bool {
+        let wanted = requested_mode(&state.db, user_id).await.unwrap();
+        let running = state.orchestrator.running_mode(user_id).await.unwrap();
+        restart_pending(running, wanted)
+    }
+
+    #[tokio::test]
+    async fn a_role_change_is_pending_until_the_workspace_restarts() {
+        let db = setup().await;
+        let uid = user_with_perms(&db, "dev", &["workspaces.use"]).await;
+        let orch = Arc::new(Recorder {
+            running: true,
+            ..Default::default()
+        });
+        let state = state_with(db, orch).await;
+        ensure_started(&state, uid).await.unwrap();
+        assert!(!pending(&state, uid).await);
+
+        let user = user::Entity::find_by_id(uid)
+            .one(&state.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let role = role::Entity::find_by_id(user.role_id.unwrap())
+            .one(&state.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut role: role::ActiveModel = role.into();
+        role.permissions = Set(crate::rbac::encode(&[
+            "workspaces.use".to_string(),
+            "workspaces.full".to_string(),
+        ]));
+        role.update(&state.db).await.unwrap();
+        assert!(pending(&state, uid).await);
+
+        restart_if_running(&state, uid).await.unwrap();
+        assert!(!pending(&state, uid).await);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_pending_for_a_stopped_workspace() {
+        let db = setup().await;
+        let uid = user_with_perms(&db, "dev", &["workspaces.use", "workspaces.full"]).await;
+        let state = state_with(db, Arc::new(Recorder::default())).await;
+        ensure_started(&state, uid).await.unwrap();
+        assert!(!pending(&state, uid).await);
     }
 }

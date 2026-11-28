@@ -538,7 +538,8 @@ anything else returns `400`. Concurrent saves are last-write-wins.
 Requires `workspaces.read`. Returns every user with their workspace state (see
 [Workspaces](workspaces.md)). `status` is `not_created`, `stopped`, `running`,
 or `unknown` (runtime unreachable); `effective_version` is the pin or the
-default.
+default. `restart_pending` is `true` when the workspace is running and its
+running mode differs from `mode`, the mode for its next start.
 
 ```json
 [
@@ -548,7 +549,8 @@ default.
     "status": "running",
     "pinned_version": null,
     "effective_version": "v0.5.0",
-    "last_active_at": "2026-07-15T09:20:50Z"
+    "last_active_at": "2026-07-15T09:20:50Z",
+    "restart_pending": false
   }
 ]
 ```
@@ -556,13 +558,15 @@ default.
 ### `GET /api/workspaces/me`
 
 Requires `workspaces.use`. The caller's own workspace plus the origin browsers
-use to reach the workspace proxy:
+use to reach the workspace proxy. `restart_pending` is as in
+`GET /api/workspaces`:
 
 ```json
 {
   "status": "stopped",
   "pinned_version": null,
   "effective_version": "v0.5.0",
+  "restart_pending": false,
   "proxy_origin": "http://127.0.0.1:3001"
 }
 ```

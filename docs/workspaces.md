@@ -27,7 +27,10 @@ restarts a running workspace, and neither does a CityHall restart: a running
 workspace keeps the mode it started with until it is stopped (an idle stop
 included) or restarted with the restart action. Revoking `workspaces.full`
 therefore leaves a running workspace in Full mode until then; restart it to
-revoke at once.
+revoke at once. Both workspace endpoints and the Workspaces page show `restart pending`
+when a running workspace's mode differs from what the role gives now; it clears
+after a stop and start or a restart. On docker, Full mode is refused, so a Full
+grant never shows pending there.
 
 **Upgrading.** A fresh install seeds the `member` role with `workspaces.full`.
 Existing `member` roles are not changed and stay in Composer mode until an admin
