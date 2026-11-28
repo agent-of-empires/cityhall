@@ -719,8 +719,11 @@ an error (it lacks the `cityhall.home-volume` label); rebuild or pull a current 
   `WORKSPACE_K8S_NAMESPACE`). Stop scales to zero keeping the PVC; destroy
   deletes all of them. The image template must point at a registry the cluster
   can pull. Requires the RBAC and NetworkPolicy shipped in `deploy/k8s/` and
-  the helm chart; the NetworkPolicy is defense in depth on top of the bearer token. Restrict who else may read Secrets in that
-  namespace, per the note above.
+  the helm chart; the NetworkPolicy is defense in depth on top of the bearer token. Team members get at most `view` in
+  that namespace: `secrets` get, list or watch; `pods/exec` and
+  `pods/ephemeralcontainers`; and create, update or patch of `pods` or workload
+  controllers such as `deployments` are cluster-admin verbs there (see
+  [Deployment](deployment.md#kubernetes)).
 - **`process`** (unix). Data isolation only: all workspaces share one OS user,
   so the bearer token is not a peer boundary here. One detached `aoe serve` per user with an isolated
   HOME under `WORKSPACE_PROCESS_DIR`, for VPS hosts without docker. Version

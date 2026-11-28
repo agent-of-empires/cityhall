@@ -1,0 +1,24 @@
+# EXAMPLE, not applied by kustomization.yaml. Apply it yourself and bind it to
+# your team members: kubectl apply -f deploy/k8s/example-human-role.yaml
+#
+# What a human may hold in this namespace. Three permission groups here are each
+# equivalent to every user's credentials, so this Role grants none of them:
+#   - secrets get/list/watch (per-user Secrets, and the cityhall Secret with
+#     CITYHALL_SECRET_KEY and DATABASE_URL)
+#   - pods/exec and pods/ephemeralcontainers (print the same environment)
+#   - create/update/patch of pods or workload controllers such as deployments
+#     (mounts any user's PVC)
+# The stock "edit" and "admin" ClusterRoles include all three; do not bind them
+# in this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cityhall-viewer
+  namespace: cityhall
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]

@@ -1,0 +1,19 @@
+{{- if .Values.humanRole.enabled }}
+# Example Role for team members; bind it yourself. It grants none of: secrets
+# get/list/watch, pods/exec, pods/ephemeralcontainers, or create/update/patch of
+# pods or workload controllers. Each of those equals every user's credentials in
+# this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-viewer
+  labels:
+    {{- include "cityhall.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+{{- end }}
