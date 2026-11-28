@@ -11,5 +11,7 @@ mode (a shell in the workspace) depends on this isolation. CityHall cannot detec
 no value or probe for it.
 
 To check, request port 8080 of one workspace pod from another workspace pod: it
-must time out. Any HTTP response, even 401, means the policy is not enforced.
+must time out (some CNIs refuse at once instead; either way the connection
+must not succeed). An HTTP response, even 401, means the peer is not blocked:
+look for another NetworkPolicy that selects the pod, then at the CNI.
 See [Workspaces](../../../docs/workspaces.md#network-isolation-between-workspaces).
