@@ -1,0 +1,150 @@
+name: Images
+
+# Builds the app image (root Dockerfile) and the reference workspace image
+# (deploy/aoe-image/Dockerfile) and pushes them to ghcr.io on main and on
+# version tags. Pull requests build only: fork PRs get no write token.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - Dockerfile
+      - deploy/aoe-image/**
+      - .github/workflows/images.yml
+  workflow_dispatch:
+    inputs:
+      aoe_version:
+        description: aoe release tag to build the workspace image for
+        default: v1.26.0
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The workspace image is published once per aoe version, tagged with that
+  # version, so the default image_template (<repo>:{version}) resolves. A new
+  # aoe release gets its image by bumping this value or by running this
+  # workflow manually with aoe_version set.
+  AOE_VERSION: ${{ inputs.aoe_version || 'v1.26.0' }}
+  APP_IMAGE: ghcr.io/agent-of-empires/cityhall
+  WORKSPACE_IMAGE: ghcr.io/agent-of-empires/cityhall-aoe
+  PUSH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+
+jobs:
+  app:
+    name: App image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.APP_IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=main,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+      # Single-platform build into the local daemon, for the smoke test below.
+      - name: Build (amd64, local)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: cityhall-smoke
+          cache-from: type=gha,scope=app
+      - name: Smoke test GET /api/health
+        run: |
+          docker run -d --name smoke -p 3000:3000 cityhall-smoke
+          for _ in $(seq 30); do
+            curl -fsS http://localhost:3000/api/health && exit 0
+            sleep 1
+          done
+          docker logs smoke
+          exit 1
+      - name: Build and push (amd64, arm64)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,scope=app,mode=max
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.PUSH == 'true'
+        with:
+          subject-name: ${{ env.APP_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  workspace:
+    name: Workspace image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Single-platform build into the local daemon, to check the label the
+      # docker backend refuses to start an image without.
+      - name: Build (amd64, local)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/aoe-image
+          platforms: linux/amd64
+          build-args: AOE_VERSION=${{ env.AOE_VERSION }}
+          load: true
+          tags: cityhall-aoe-check
+          cache-from: type=gha,scope=workspace
+      - name: Check cityhall.home-volume label
+        run: |
+          label=$(docker image inspect --format '{{index .Config.Labels "cityhall.home-volume"}}' cityhall-aoe-check)
+          test "$label" = 1 || { echo "cityhall.home-volume label is '$label', want 1"; exit 1; }
+      - name: Build and push (amd64, arm64)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/aoe-image
+          platforms: linux/amd64,linux/arm64
+          build-args: AOE_VERSION=${{ env.AOE_VERSION }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ${{ env.WORKSPACE_IMAGE }}:${{ env.AOE_VERSION }}
+            ${{ env.WORKSPACE_IMAGE }}:${{ env.AOE_VERSION }}-sha-${{ github.sha }}
+          cache-from: type=gha,scope=workspace
+          cache-to: type=gha,scope=workspace,mode=max
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.PUSH == 'true'
+        with:
+          subject-name: ${{ env.WORKSPACE_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

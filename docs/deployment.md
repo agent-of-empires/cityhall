@@ -29,7 +29,7 @@ deploy/
 
 Pick the section that matches how you run things:
 
-- [Build the image](#build-the-image) once, then either
+- [Get the image](#the-image) once, then either
 - [Docker Compose](#docker-compose-production) (simplest self-host), or
 - [Kubernetes](#kubernetes), or
 - [Bare VPS with systemd](#bare-vps-with-systemd).
@@ -52,25 +52,36 @@ The initial `admin` password is printed **once** in the logs on first launch
 against an empty database. Capture it (`docker compose logs cityhall`,
 `kubectl logs`, `journalctl -u cityhall`) and change it on first login.
 
-## Build the image
+## The image
 
-There is no published image yet, so build it from the repo `Dockerfile` (it
-builds the frontend and backend and produces a ~small Debian-based runtime
-image):
+CI publishes two public images to ghcr.io on every push to `main` and on `v*`
+tags:
+
+- `ghcr.io/agent-of-empires/cityhall`, the app. Tags: `sha-<full commit sha>`,
+  `main` (moves), and `X.Y.Z` on release tags. Both `linux/amd64` and
+  `linux/arm64`.
+- `ghcr.io/agent-of-empires/cityhall-aoe`, the reference
+  [workspace image](workspaces.md#setup). One tag per aoe version, for example
+  `v1.26.0`, which is what the default image template
+  `ghcr.io/agent-of-empires/cityhall-aoe:{version}` resolves to. A
+  `<version>-sha-<full commit sha>` tag pins the exact build.
+
+Pin a `sha-` or version tag in deployments, never `main`:
+
+```sh
+docker pull ghcr.io/agent-of-empires/cityhall:sha-<full commit sha>
+```
+
+To build it yourself (for a fork, or to push to a private registry):
 
 ```sh
 docker build -t cityhall:latest .
-```
-
-Push it to your own registry for multi-node or Kubernetes deployments:
-
-```sh
 docker tag cityhall:latest registry.example.com/cityhall:latest
 docker push registry.example.com/cityhall:latest
 ```
 
-The examples below use `cityhall:latest`; replace it with your registry path
-where relevant.
+The examples below use `cityhall:latest`; replace it with the ghcr path above or
+your registry path.
 
 ## Docker Compose (production)
 
@@ -149,7 +160,7 @@ Prefer Helm? The same resources ship as a chart in
 ```sh
 helm install cityhall deploy/helm/cityhall \
   --namespace cityhall --create-namespace \
-  --set image.repository=registry.example.com/cityhall \
+  --set image.tag=sha-<full commit sha> \
   --set config.baseUrl=https://cityhall.example.com \
   --set config.secretKey="$(openssl rand -base64 32)" \
   --set ingress.host=cityhall.example.com \
