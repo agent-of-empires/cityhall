@@ -12,7 +12,7 @@ Docker, Compose, or Kubernetes deployment without a config file.
 | `RUST_LOG`      | _(unset)_                        | Per-target log filter (overrides the default).      |
 | `CITYHALL_SECRET_KEY` | _(unset)_                  | Base64 32-byte key; encrypts stored secrets at rest. |
 | `CITYHALL_SECRET_KEY_PREVIOUS` | _(unset)_       | Comma-separated former keys, used to decrypt only (see [Rotating the key](#rotating-the-key)). |
-| `CITYHALL_BASE_URL` | _(request host)_             | Public base URL used to build links in emails (e.g. password reset). Also the only `Origin` accepted on non-GET `/api` requests (403 otherwise); requests with no `Origin` and no cross-site `Sec-Fetch-Site` pass. |
+| `CITYHALL_BASE_URL` | _(request host)_             | Public base URL used to build links in emails (e.g. password reset). Also the only `Origin` accepted on non-GET `/api` requests (403 otherwise); a request without `Origin` passes only when `Sec-Fetch-Site` is absent, `same-origin` or `none`. |
 | `CITYHALL_COOKIE_DOMAIN` | _(empty: host-only)_      | `Domain` of the session cookie, e.g. `cityhall.example.com`, so it reaches the workspace proxy host. Keep the parent dedicated to CityHall. The cookie is `Secure` when `CITYHALL_BASE_URL` is https. |
 | `SMTP_HOST`     | _(unset)_                        | SMTP host. Setting it makes SMTP env-managed (see below). |
 | `SMTP_PORT`     | _(per encryption)_               | SMTP port; defaults to 25/587/465 for none/starttls/tls. |

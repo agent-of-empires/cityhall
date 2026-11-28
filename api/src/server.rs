@@ -129,6 +129,15 @@ pub fn api_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Whether `origin` (an `Origin` header value) is the origin of `base`.
+/// `Url::origin` drops the path and default ports, as browsers do, and an
+/// opaque origin (`null`) never parses to a match.
+fn is_base_origin(origin: &str, base: &str) -> bool {
+    let parse = |s: &str| url::Url::parse(s).ok().map(|u| u.origin());
+    let origin = parse(origin);
+    origin.is_some() && origin == parse(base)
+}
+
 /// CSRF guard. The session cookie is shared with the workspace proxy host once
 /// scoped to the parent domain, so a page served there could otherwise fire
 /// cookie-bearing POSTs (some need no preflight). Unsafe methods must come
@@ -139,17 +148,7 @@ async fn same_origin_only(req: Request, next: Next) -> Response {
     if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         let h = req.headers();
         let allowed = match h.get(ORIGIN) {
-            Some(origin) => {
-                let base = base_url(h);
-                // `CITYHALL_BASE_URL` may carry a path; an Origin never does.
-                let scheme_end = base.find("://").map(|i| i + 3);
-                scheme_end.is_some_and(|i| {
-                    let end = base[i..].find('/').map_or(base.len(), |j| i + j);
-                    origin
-                        .as_bytes()
-                        .eq_ignore_ascii_case(&base.as_bytes()[..end])
-                })
-            }
+            Some(origin) => is_base_origin(origin.to_str().unwrap_or(""), &base_url(h)),
             None => h
                 .get("sec-fetch-site")
                 .is_none_or(|v| matches!(v.as_bytes(), b"same-origin" | b"none")),
@@ -257,12 +256,35 @@ mod tests {
     async fn same_site_sibling_origin_post_is_refused() {
         let got = status("POST", LOGOUT, &[("origin", "http://ws.cityhall.test")]).await;
         assert_eq!(got, StatusCode::FORBIDDEN);
+        // A state-changing route other than logout.
+        let got = status(
+            "POST",
+            "/workspaces/1/stop",
+            &[("origin", "http://ws.cityhall.test")],
+        )
+        .await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn cityhall_origin_post_passes() {
-        let got = status("POST", LOGOUT, &[("origin", "http://cityhall.test")]).await;
-        assert_eq!(got, StatusCode::OK);
+    async fn null_origin_is_refused() {
+        let got = status("POST", LOGOUT, &[("origin", "null")]).await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn base_url_origin_ignores_default_ports_and_path() {
+        let base = "http://cityhall.test:80/app";
+        assert!(is_base_origin("http://cityhall.test", base));
+        assert!(is_base_origin("http://CITYHALL.test", base));
+        assert!(is_base_origin(
+            "https://cityhall.test",
+            "https://cityhall.test:443"
+        ));
+        assert!(!is_base_origin("http://cityhall.test:8080", base));
+        assert!(!is_base_origin("https://cityhall.test", base));
+        assert!(!is_base_origin("", "cityhall.test"));
+        assert!(!is_base_origin("null", base));
     }
 
     #[tokio::test]
