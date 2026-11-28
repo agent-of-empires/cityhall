@@ -86,8 +86,10 @@ registry path. The Compose stack builds from the checkout and tags the result
 `build:` block, set `image:` to the pinned ghcr tag, and start it without
 `--build`.
 
-Workspace images are built only for aoe versions CI has been set up for (the
-`AOE_VERSION` in `images.yml`, or a manual run). On Kubernetes, which cannot
+The latest stable aoe release is resolved at run time and its workspace image
+is published by a daily check (skipped if the tag exists) and rebuilt on each
+push to `main`; a manual run of `images.yml` can
+build another version. On Kubernetes, which cannot
 build images, set the default workspace version to one that has a tag.
 
 ## Docker Compose (production)
