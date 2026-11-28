@@ -84,7 +84,9 @@ pub struct DiskUsage {
 /// two refreshes, so the sampler has to outlive a single measurement; a
 /// per-request sampler would report either zero or nonsense.
 pub struct SystemSampler {
-    system: System,
+    /// `None` when sysinfo could not initialise; the sampler then reports no
+    /// system figures rather than failing the API.
+    system: Option<System>,
     scope: MetricScope,
     disk_path: Option<PathBuf>,
 }
@@ -92,7 +94,9 @@ pub struct SystemSampler {
 impl SystemSampler {
     pub fn from_env() -> Self {
         SystemSampler {
-            system: System::new(),
+            system: System::new()
+                .inspect_err(|e| tracing::warn!("system metrics unavailable: {e}"))
+                .ok(),
             scope: scope(),
             disk_path: disk_path(),
         }
@@ -101,27 +105,33 @@ impl SystemSampler {
     /// Prime the CPU delta. `global_cpu_usage` compares against the previous
     /// refresh, so without this the first published snapshot reports 0%.
     pub async fn prime(&mut self) {
-        self.system.refresh_cpu_usage();
+        let Some(system) = self.system.as_mut() else {
+            return;
+        };
+        system.refresh_cpu_usage();
         tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     }
 
-    pub fn sample(&mut self) -> SystemUsage {
-        self.system.refresh_cpu_usage();
-        self.system.refresh_memory();
+    pub fn sample(&mut self) -> Option<SystemUsage> {
+        let system = self.system.as_mut()?;
+        system.refresh_cpu_usage();
+        system.refresh_memory();
 
-        let memory_total_bytes = self.system.total_memory();
-        SystemUsage {
+        let memory_total_bytes = system.total_memory();
+        Some(SystemUsage {
             scope: self.scope,
-            cpu_percent: self.system.global_cpu_usage(),
-            cpu_count: self.system.cpus().len(),
-            memory_used_bytes: self.system.used_memory(),
+            cpu_percent: system.global_cpu_usage(),
+            cpu_count: system.cpus().len(),
+            memory_used_bytes: system.used_memory(),
             memory_total_bytes,
-            cgroup_memory: cgroup_memory(self.system.cgroup_limits(), memory_total_bytes),
-            disk: self
-                .disk_path
-                .as_deref()
-                .and_then(|path| disk_usage(&sysinfo::Disks::new_with_refreshed_list(), path)),
-        }
+            cgroup_memory: cgroup_memory(system.cgroup_limits(), memory_total_bytes),
+            disk: self.disk_path.as_deref().and_then(|path| {
+                let disks = sysinfo::Disks::new_with_refreshed_list()
+                    .inspect_err(|e| tracing::warn!("disk metrics unavailable: {e}"))
+                    .ok()?;
+                disk_usage(&disks, path)
+            }),
+        })
     }
 }
 
@@ -219,11 +229,16 @@ async fn sample_once(state: &AppState, system: &mut SystemSampler) -> Snapshot {
         }
     };
 
+    let system = system.sample();
+    if system.is_none() {
+        errors.push("system metrics: unavailable".to_string());
+    }
+
     Snapshot {
         sampled_at: Some(Utc::now()),
         runtimes,
         usage,
-        system: Some(system.sample()),
+        system,
         errors,
     }
 }
@@ -333,7 +348,6 @@ fn cgroup_memory(limits: Option<sysinfo::CGroupLimits>, system_total: u64) -> Op
 
 fn disk_usage(disks: &sysinfo::Disks, path: &Path) -> Option<DiskUsage> {
     let mounts: Vec<(&Path, u64, u64)> = disks
-        .list()
         .iter()
         .map(|d| (d.mount_point(), d.total_space(), d.available_space()))
         .collect();
@@ -483,11 +497,11 @@ mod tests {
     #[test]
     fn a_sample_reports_real_memory_and_cpu_bounds() {
         let mut sampler = SystemSampler {
-            system: System::new(),
+            system: Some(System::new().unwrap()),
             scope: MetricScope::Host,
             disk_path: None,
         };
-        let usage = sampler.sample();
+        let usage = sampler.sample().unwrap();
         assert!(usage.memory_total_bytes > 0);
         assert!(usage.memory_used_bytes <= usage.memory_total_bytes);
         assert!(usage.cpu_count > 0);
