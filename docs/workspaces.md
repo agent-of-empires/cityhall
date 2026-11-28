@@ -261,6 +261,11 @@ own container hostname is not resolvable by its peers, so leaving it unset simpl
 turns config provisioning off and workspaces start unconfigured. CityHall then
 passes each workspace `AOE_CITYHALL_BUNDLE_URL` and a per-workspace
 `AOE_CITYHALL_BUNDLE_TOKEN`, and aoe fetches and applies the document at startup.
+The token is durable: it survives stop and idle stop. Saving or deleting the
+user's git credential or SSH key rotates it, as does the admin **rotate** action
+on the Workspaces page. The old token is refused at once. A running workspace
+is not restarted: a stopped one gets the new token on its next start, a running
+one on an explicit restart.
 
 Applying is idempotent, because it happens on every start: an existing checkout
 is left untouched so a user's uncommitted work survives a restart, and a repo
