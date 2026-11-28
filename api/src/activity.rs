@@ -36,6 +36,10 @@ const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Per aoe call, so one wedged workspace cannot stall a tick.
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
 const CONCURRENCY: usize = 8;
+/// A session list larger than this counts as unreachable.
+const MAX_BODY: usize = 1 << 20;
+/// `last_error` is shown in a table cell and is aoe's text, so it is cut.
+const MAX_ERROR_CHARS: usize = 200;
 
 /// The only parts of an aoe session row CityHall reads.
 #[derive(Deserialize)]
@@ -139,11 +143,13 @@ fn summarize(sessions: &[SessionRow]) -> Summary {
             .iter()
             .filter(|s| s.last_error.is_some())
             .max_by_key(|s| parse_time(&s.last_accessed_at))
-            .and_then(|s| s.last_error.clone()),
+            .and_then(|s| s.last_error.as_deref())
+            .map(|e| e.chars().take(MAX_ERROR_CHARS).collect()),
     }
 }
 
 /// A bearer aoe refused, and the runtime it refused it on.
+#[derive(Clone)]
 struct AuthMark {
     addr: String,
     token: Secret,
@@ -152,7 +158,7 @@ struct AuthMark {
 /// Per-user sampler memory, private to this module. The address comes from
 /// `Orchestrator::status` on a miss or a connection failure, never from
 /// `EndpointCache`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Entry {
     addr: Option<String>,
     auth_error: Option<AuthMark>,
@@ -167,6 +173,20 @@ enum Fetch {
     Sessions(Vec<SessionRow>),
     Unauthorized,
     Failed { connect: bool },
+}
+
+/// The body, or `None` on a read error or when it exceeds [`MAX_BODY`].
+async fn read_capped(mut response: reqwest::Response) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_BODY => {
+                body.extend_from_slice(&chunk)
+            }
+            Ok(None) => return Some(body),
+            _ => return None,
+        }
+    }
 }
 
 async fn fetch(state: &AppState, addr: &str, token: &Secret) -> Fetch {
@@ -193,10 +213,9 @@ async fn fetch(state: &AppState, addr: &str, token: &Secret) -> Fetch {
     if !response.status().is_success() {
         return Fetch::Failed { connect: false };
     }
-    let list = match response.bytes().await {
-        Ok(body) => serde_json::from_slice::<SessionList>(&body).ok(),
-        Err(_) => None,
-    };
+    let list = read_capped(response)
+        .await
+        .and_then(|body| serde_json::from_slice::<SessionList>(&body).ok());
     match list {
         Some(list) => Fetch::Sessions(list.sessions),
         None => Fetch::Failed { connect: false },
@@ -297,18 +316,37 @@ async fn poll_once(state: &AppState, poller: &mut Poller, running: &[i32]) -> Ve
     poller.entries.retain(|id, _| running.contains(id));
     let permits = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
+    // What a failed task's user had, so its park state outlives the task.
+    let mut before = HashMap::new();
     for &user_id in running {
         let entry = poller.entries.remove(&user_id).unwrap_or_default();
-        let (state, permits) = (state.clone(), permits.clone());
-        tasks.spawn(async move {
+        let (state, permits, moved) = (state.clone(), permits.clone(), entry.clone());
+        let task = tasks.spawn(async move {
             let _permit = permits.acquire().await;
-            (user_id, poll_user(&state, user_id, entry).await)
+            (user_id, poll_user(&state, user_id, moved).await)
         });
+        before.insert(task.id(), (user_id, entry));
     }
     let mut users = Vec::with_capacity(running.len());
-    while let Some(Ok((user_id, (entry, activity)))) = tasks.join_next().await {
-        poller.entries.insert(user_id, entry);
-        users.extend(activity);
+    while let Some(joined) = tasks.join_next_with_id().await {
+        match joined {
+            Ok((_, (user_id, (entry, activity)))) => {
+                poller.entries.insert(user_id, entry);
+                users.extend(activity);
+            }
+            Err(e) => {
+                // Never log the error itself: it may carry a panic message.
+                if let Some((user_id, entry)) = before.remove(&e.id()) {
+                    tracing::error!(
+                        user_id,
+                        panicked = e.is_panic(),
+                        "activity poll task failed"
+                    );
+                    poller.entries.insert(user_id, entry);
+                    users.push(bare(user_id, State::Unreachable));
+                }
+            }
+        }
     }
     users.sort_by_key(|u| u.user_id);
     users
@@ -458,6 +496,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         addr: Mutex<String>,
+        /// `status` panics for this user, to exercise a failed poll task.
+        panic_for: Mutex<Option<i32>>,
         starts: AtomicUsize,
         stops: AtomicUsize,
     }
@@ -475,7 +515,10 @@ mod tests {
         async fn destroy(&self, _: i32) -> Result<(), OrchestratorError> {
             Ok(())
         }
-        async fn status(&self, _: i32) -> Result<WorkspaceStatus, OrchestratorError> {
+        async fn status(&self, user_id: i32) -> Result<WorkspaceStatus, OrchestratorError> {
+            if *self.panic_for.lock().unwrap() == Some(user_id) {
+                panic!("status exploded");
+            }
             Ok(WorkspaceStatus::Running {
                 addr: self.addr.lock().unwrap().clone(),
             })
@@ -609,6 +652,56 @@ mod tests {
         assert_eq!(third[0].state, State::Ok);
         assert_eq!(healthy.hits.load(Ordering::SeqCst), 1);
         assert_eq!(rejecting.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_panicked_poll_task_does_not_drop_the_others() {
+        let _key = test_key();
+        let d = daemon(StatusCode::UNAUTHORIZED, "").await;
+        let (state, orch, first) = fixture(&d.addr).await;
+        let second = user_with_perms(&state.db, "dev2", &[]).await.id;
+        get_or_create(&state.db, second).await.unwrap();
+        let mut poller = Poller::default();
+
+        // `second` is parked after its 401.
+        poll_once(&state, &mut poller, &[second]).await;
+        assert_eq!(d.hits.load(Ordering::SeqCst), 1);
+
+        // `first` panics in the task that is joined first.
+        *orch.panic_for.lock().unwrap() = Some(first);
+        let users = poll_once(&state, &mut poller, &[first, second]).await;
+
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].state, State::Unreachable);
+        assert_eq!(users[1].state, State::AuthError);
+        // The park survived, so the daemon was not asked again.
+        poll_once(&state, &mut poller, &[second]).await;
+        assert_eq!(d.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_session_list_is_unreachable() {
+        let _key = test_key();
+        let big: &'static str = Box::leak(
+            format!(
+                r#"{{"sessions":[{{"status":"running","last_error":"{}"}}]}}"#,
+                "x".repeat(MAX_BODY)
+            )
+            .into_boxed_str(),
+        );
+        let d = daemon(StatusCode::OK, big).await;
+        let (state, _orch, uid) = fixture(&d.addr).await;
+
+        let users = poll_once(&state, &mut Poller::default(), &[uid]).await;
+
+        assert_eq!(users[0].state, State::Unreachable);
+    }
+
+    #[test]
+    fn a_long_last_error_is_cut_on_a_char_boundary() {
+        let long = "é".repeat(MAX_ERROR_CHARS + 50);
+        let got = summarize(&[row("running", None, 0, Some(&long))]);
+        assert_eq!(got.last_error.unwrap().chars().count(), MAX_ERROR_CHARS);
     }
 
     #[tokio::test]
