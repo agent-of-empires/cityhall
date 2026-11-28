@@ -1371,6 +1371,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_role_change_is_pending_until_the_workspace_restarts() {
+        let _key = test_key();
         let db = setup().await;
         let uid = user_with_perms(&db, "dev", &["workspaces.use"]).await;
         let orch = Arc::new(Recorder {
