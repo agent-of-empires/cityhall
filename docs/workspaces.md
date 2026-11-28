@@ -58,8 +58,11 @@ Composer mode has no shell: aoe refuses both shell routes under `--cityhall`,
 even on a direct connection to the workspace. CityHall adds no exception, so a
 user who needs a shell gets a role with `workspaces.full` and a restart.
 CityHall has no shell of its own, only aoe's. Shell contents are not recorded.
-A workspace has no root and no sudo. System packages go in the team base image;
-user-space installs (`~/.local/bin`, npm, cargo, pipx) need no root.
+CityHall gives a workspace no root or sudo path. System packages go in the team
+base image; user-space installs (`~/.local/bin`, npm, cargo, pipx) need no root.
+CityHall does not set the user a workspace runs as: the process backend uses the
+CityHall OS user, and kubernetes uses the image's user, so a root-run process or
+a root image gives the shell root.
 
 If aoe is broken inside a kubernetes pod, there is no shell to open. Use
 `kubectl exec` with your own cluster RBAC; CityHall has no `pods/exec`.
@@ -593,9 +596,10 @@ the CityHall host such as `ws.cityhall.<domain>`, and set
 `WORKSPACE_PROXY_PUBLIC_ORIGIN` so the "Open workspace" link points at it. That
 one origin serves every workspace: the proxy routes by session cookie, not by
 `Host`. Set `CITYHALL_COOKIE_DOMAIN` to a dedicated parent such as
-`cityhall.<domain>` so the session cookie reaches the proxy host. TLS ends at
-the ingress, which talks plain HTTP to the proxy port. WebSocket upgrade
-forwarding must be enabled on the ingress.
+`cityhall.<domain>` so the session cookie reaches the proxy host; empty, its
+default, keeps the cookie host-only. TLS ends at the ingress, which talks plain
+HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
+`proxy-send-timeout` of 3600 seconds for WebSocket.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
