@@ -1,0 +1,21 @@
+# ingress-nginx + cert-manager. Pass with: helm install ... -f examples/values-nginx.yaml
+# Same ingress behavior as chart versions before the controller-neutral defaults.
+# Set ingress.host and workspaces.proxy.ingress.host to your hosts.
+ingress:
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls: true
+  tlsSecretName: cityhall-tls
+
+workspaces:
+  proxy:
+    ingress:
+      className: nginx
+      tls: true
+      tlsSecretName: cityhall-ws-tls
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        # WebSocket connections stay open; raise the nginx idle timeouts.
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"

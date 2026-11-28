@@ -56,27 +56,32 @@ workspaces:
   # Workspace proxy: serves workspace UIs to browsers on its own hostname.
   proxy:
     port: 3001
+    # Controller-neutral defaults. Set className, annotations and TLS for your
+    # ingress controller; see examples/values-nginx.yaml and
+    # examples/values-alb.yaml. WebSocket connections stay open, so raise the
+    # controller's idle timeout to 3600 s.
     ingress:
       enabled: false
-      className: nginx
+      # Empty uses the cluster default IngressClass.
+      className: ""
       # Required when enabled. Also sets WORKSPACE_PROXY_PUBLIC_ORIGIN when set.
       host: ""
-      tls: true
+      # tls: true requires tlsSecretName. Leave false when TLS ends at a load
+      # balancer (e.g. ALB with an ACM certificate annotation).
+      tls: false
       tlsSecretName: ""
-      annotations:
-        cert-manager.io/cluster-issuer: letsencrypt-prod
-        # WebSocket connections stay open; raise the nginx idle timeouts.
-        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-        nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      annotations: {}
 
+# Controller-neutral defaults, same as workspaces.proxy.ingress above.
 ingress:
   enabled: true
-  className: nginx
+  # Empty uses the cluster default IngressClass.
+  className: ""
   host: cityhall.example.com
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-  tls: true
-  tlsSecretName: cityhall-tls
+  annotations: {}
+  # tls: true requires tlsSecretName.
+  tls: false
+  tlsSecretName: ""
 
 resources:
   requests:

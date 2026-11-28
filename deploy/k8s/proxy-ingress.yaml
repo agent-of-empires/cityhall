@@ -1,6 +1,6 @@
 # Workspace proxy on its own hostname. Edit the host, and set
 # WORKSPACE_PROXY_PUBLIC_ORIGIN and CITYHALL_COOKIE_DOMAIN in deployment.yaml.
-# The long timeouts keep WebSocket connections open.
+# The nginx timeouts keep WebSocket connections open.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -42,3 +42,7 @@ On Kubernetes the workspace proxy (port 3001) needs its own hostname: enable
 `workspaces.proxy.ingress` in the chart, or edit `k8s/proxy-ingress.yaml`. Set
 `CITYHALL_COOKIE_DOMAIN` to a parent domain shared by both hosts; the API
 ignores it until #157 lands, so the proxy host rejects requests until then.
+
+The chart assumes no ingress controller. Add `-f deploy/helm/cityhall/examples/values-nginx.yaml`
+or `values-alb.yaml` (AWS Load Balancer Controller); see
+[Ingress controllers](../docs/deployment.md#ingress-controllers).

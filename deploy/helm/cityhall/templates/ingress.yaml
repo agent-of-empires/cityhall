@@ -15,7 +15,7 @@ spec:
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
-      secretName: {{ .Values.ingress.tlsSecretName }}
+      secretName: {{ required "ingress.tlsSecretName is required when ingress.tls is true" .Values.ingress.tlsSecretName }}
   {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
