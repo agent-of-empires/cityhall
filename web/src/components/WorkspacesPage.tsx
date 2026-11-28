@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
@@ -64,20 +64,27 @@ function AdminWorkspaces({ me }: { me: Me }) {
   const [latest, setLatest] = useState<string | null>(null);
   const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
 
+  // Overlapping refreshes can finish out of order; only the latest may write.
+  const activitySeq = useRef(0);
+
   const load = useCallback(async () => {
     try {
       // Activity is an extra: its failure must not break the list.
+      const seq = ++activitySeq.current;
       const activityLoad = canActivity
         ? api
             .workspaceActivity()
-            .then((a) =>
+            .then((a) => {
+              if (seq !== activitySeq.current) return;
               setActivity({
                 users: new Map(a.users.map((u) => [u.user_id, u])),
                 sampledAt: a.sampled_at,
                 failed: false,
-              }),
-            )
-            .catch(() => setActivity({ ...EMPTY_FEED, failed: true }))
+              });
+            })
+            .catch(() => {
+              if (seq === activitySeq.current) setActivity({ ...EMPTY_FEED, failed: true });
+            })
         : null;
       setItems(await api.listWorkspaces());
       await activityLoad;
