@@ -516,7 +516,32 @@ fn render_manifests(
                         "runAsNonRoot": true,
                         "runAsUser": 1000,
                         "fsGroup": 1000,
+                        // The default re-applies group-write to every directory in
+                        // the volume on each pod start, and aoe refuses a $HOME
+                        // whose directories are writable by their group.
+                        "fsGroupChangePolicy": "OnRootMismatch",
                     },
+                    // The kubelet creates a `subPath` directory root-owned and
+                    // world-writable, which fsGroup does not change, and aoe
+                    // refuses to run under a $HOME like that. So the directory
+                    // is created first, owned by uid 1000 and not writable by
+                    // anyone else. Root only here, with just the two
+                    // capabilities the chown and chmod need; the workspace
+                    // container never runs as root. Overriding `command` skips
+                    // the image entrypoint.
+                    "initContainers": [{
+                        "name": "init-home",
+                        "image": spec.image,
+                        "command": ["install", "-d", "-o", "1000", "-g", "1000", "-m", "0755", "/vol/home"],
+                        "securityContext": {
+                            "runAsUser": 0,
+                            "runAsNonRoot": false,
+                            "allowPrivilegeEscalation": false,
+                            "readOnlyRootFilesystem": true,
+                            "capabilities": { "drop": ["ALL"], "add": ["CHOWN", "FOWNER"] },
+                        },
+                        "volumeMounts": [{ "name": "data", "mountPath": "/vol" }],
+                    }],
                     "containers": [container],
                     "volumes": [{
                         "name": "data",
@@ -720,6 +745,16 @@ mod tests {
         assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
         assert_eq!(pod["securityContext"]["runAsUser"], 1000);
         assert_eq!(pod["securityContext"]["fsGroup"], 1000);
+        assert_eq!(
+            pod["securityContext"]["fsGroupChangePolicy"],
+            "OnRootMismatch"
+        );
+        // The only root container creates `home` for uid 1000; the workspace
+        // container sets no user of its own, so it keeps the pod's non-root one.
+        let init = &pod["initContainers"][0];
+        assert_eq!(init["securityContext"]["runAsUser"], 0);
+        assert_eq!(init["volumeMounts"][0]["mountPath"], "/vol");
+        assert!(pod["containers"][0].get("securityContext").is_none());
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
         // The whole command travels in `args`, and `command` stays absent so the
