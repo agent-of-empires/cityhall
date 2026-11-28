@@ -15,6 +15,10 @@ config:
   secretKey: ""
   # Overrides the built-in postgres DATABASE_URL. Set when using an external DB.
   databaseUrl: ""
+  # Domain attribute of the session cookie (CITYHALL_COOKIE_DOMAIN). Set a
+  # dedicated parent of the CityHall and workspace proxy hosts so the cookie
+  # reaches the proxy host. Empty keeps the cookie host-only.
+  cookieDomain: ""
   # Extra env vars passed through verbatim (e.g. SMTP_*, OIDC_*).
   extraEnv: {}
 
@@ -42,6 +46,21 @@ workspaces:
   volumeSize: 5Gi
   # Storage class for workspace PVCs; empty uses the cluster default.
   storageClass: ""
+  # Workspace proxy: serves workspace UIs to browsers on its own hostname.
+  proxy:
+    port: 3001
+    ingress:
+      enabled: false
+      className: nginx
+      # Required when enabled. Also sets WORKSPACE_PROXY_PUBLIC_ORIGIN when set.
+      host: ""
+      tls: true
+      tlsSecretName: ""
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        # WebSocket connections stay open; raise the nginx idle timeouts.
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
 ingress:
   enabled: true

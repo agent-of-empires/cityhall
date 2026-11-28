@@ -1,0 +1,32 @@
+{{- if and .Values.workspaces.enabled .Values.workspaces.proxy.ingress.enabled }}
+{{- $host := required "workspaces.proxy.ingress.host is required when workspaces.proxy.ingress.enabled" .Values.workspaces.proxy.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ws-proxy
+  labels:
+    {{- include "cityhall.labels" . | nindent 4 }}
+  {{- with .Values.workspaces.proxy.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.workspaces.proxy.ingress.className }}
+  {{- if .Values.workspaces.proxy.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ required "workspaces.proxy.ingress.tlsSecretName is required when workspaces.proxy.ingress.tls is true" .Values.workspaces.proxy.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: ws-proxy
+{{- end }}

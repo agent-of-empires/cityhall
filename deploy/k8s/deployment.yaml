@@ -26,6 +26,15 @@ spec:
               value: 0.0.0.0:3000
             - name: WORKSPACE_BACKEND
               value: kubernetes
+            - name: WORKSPACE_PROXY_BIND_ADDR
+              value: 0.0.0.0:3001
+            # Set to the public https origin of proxy-ingress.yaml's host.
+            # - name: WORKSPACE_PROXY_PUBLIC_ORIGIN
+            #   value: https://ws.cityhall.example.com
+            # Parent domain shared by both hosts, so the session cookie reaches
+            # the proxy host.
+            # - name: CITYHALL_COOKIE_DOMAIN
+            #   value: cityhall.example.com
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -43,6 +52,8 @@ spec:
                   key: CITYHALL_BASE_URL
           ports:
             - containerPort: 3000
+            - name: ws-proxy
+              containerPort: 3001
           readinessProbe:
             httpGet:
               path: /api/health
