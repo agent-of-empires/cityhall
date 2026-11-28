@@ -35,6 +35,10 @@ use crate::workspaces::decrypt_daemon_token;
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Per aoe call, so one wedged workspace cannot stall a tick.
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Per user, status lookups and fetches together: the docker and kubernetes
+/// CLIs can take far longer than [`CALL_TIMEOUT`], and a tick publishes only
+/// when every user is done. Below [`POLL_INTERVAL`].
+const USER_TIMEOUT: Duration = Duration::from_secs(8);
 const CONCURRENCY: usize = 8;
 /// A session list larger than this counts as unreachable.
 const MAX_BODY: usize = 1 << 20;
@@ -91,9 +95,11 @@ pub struct UserActivity {
     pub summary: Summary,
 }
 
-/// `users` holds the workspaces polled on the last tick (running ones). A user
-/// absent from it, or listed as `not_running` when the metrics snapshot lagged
-/// a stop, is not running. `sampled_at` is `None` until the first tick.
+/// `users` holds the workspaces polled on the last tick. A user absent from it
+/// has no fresh observation and is not necessarily stopped: on backends
+/// without batch status a failed lookup omits the user from the running list.
+/// Only `not_running` is an observed stop. `sampled_at` is `None` until the
+/// first tick.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Snapshot {
     pub sampled_at: Option<DateTime<Utc>>,
@@ -314,21 +320,41 @@ async fn poll_user(
 
 /// One tick over the running workspaces, at most [`CONCURRENCY`] at a time.
 async fn poll_once(state: &AppState, poller: &mut Poller, running: &[i32]) -> Vec<UserActivity> {
-    poller.entries.retain(|id, _| running.contains(id));
+    poll_once_within(state, poller, running, USER_TIMEOUT).await
+}
+
+/// `running` can miss a running user (a failed status lookup on a backend
+/// without batch status), so a parked user stays polled until `status` says
+/// otherwise.
+async fn poll_once_within(
+    state: &AppState,
+    poller: &mut Poller,
+    running: &[i32],
+    limit: Duration,
+) -> Vec<UserActivity> {
+    poller
+        .entries
+        .retain(|id, e| e.auth_error.is_some() || running.contains(id));
+    let mut ids = running.to_vec();
+    ids.extend(poller.entries.keys().filter(|id| !running.contains(id)));
     let permits = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
     // What a failed task's user had, so its park state outlives the task.
     let mut before = HashMap::new();
-    for &user_id in running {
+    for user_id in ids {
         let entry = poller.entries.remove(&user_id).unwrap_or_default();
         let (state, permits, moved) = (state.clone(), permits.clone(), entry.clone());
         let task = tasks.spawn(async move {
             let _permit = permits.acquire().await;
-            (user_id, poll_user(&state, user_id, moved).await)
+            let kept = moved.clone();
+            let polled = tokio::time::timeout(limit, poll_user(&state, user_id, moved))
+                .await
+                .unwrap_or_else(|_| (kept, Some(bare(user_id, State::Unreachable))));
+            (user_id, polled)
         });
         before.insert(task.id(), (user_id, entry));
     }
-    let mut users = Vec::with_capacity(running.len());
+    let mut users = Vec::with_capacity(before.len());
     while let Some(joined) = tasks.join_next_with_id().await {
         match joined {
             Ok((_, (user_id, (entry, activity)))) => {
@@ -499,6 +525,8 @@ mod tests {
         addr: Mutex<String>,
         /// `status` panics for this user, to exercise a failed poll task.
         panic_for: Mutex<Option<i32>>,
+        /// `status` never returns for this user, like a wedged docker CLI.
+        hang_for: Mutex<Option<i32>>,
         starts: AtomicUsize,
         stops: AtomicUsize,
     }
@@ -519,6 +547,10 @@ mod tests {
         async fn status(&self, user_id: i32) -> Result<WorkspaceStatus, OrchestratorError> {
             if *self.panic_for.lock().unwrap() == Some(user_id) {
                 panic!("status exploded");
+            }
+            let hang = *self.hang_for.lock().unwrap() == Some(user_id);
+            if hang {
+                std::future::pending::<()>().await;
             }
             Ok(WorkspaceStatus::Running {
                 addr: self.addr.lock().unwrap().clone(),
@@ -678,6 +710,49 @@ mod tests {
         // The park survived, so the daemon was not asked again.
         poll_once(&state, &mut poller, &[second]).await;
         assert_eq!(d.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_park_survives_ticks_where_the_user_is_not_in_the_running_list() {
+        let _key = test_key();
+        let d = daemon(StatusCode::UNAUTHORIZED, "").await;
+        let (state, _orch, uid) = fixture(&d.addr).await;
+        let mut poller = Poller::default();
+        poll_once(&state, &mut poller, &[uid]).await;
+        assert_eq!(d.hits.load(Ordering::SeqCst), 1);
+
+        // The metrics snapshot lost the user (a failed status lookup).
+        poll_once(&state, &mut poller, &[]).await;
+        let back = poll_once(&state, &mut poller, &[uid]).await;
+
+        assert_eq!(back[0].state, State::AuthError);
+        assert_eq!(d.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_slow_status_lookup_does_not_stall_the_others_or_lose_the_park() {
+        let _key = test_key();
+        let rejecting = daemon(StatusCode::UNAUTHORIZED, "").await;
+        let (state, orch, slow) = fixture(&rejecting.addr).await;
+        let healthy = user_with_perms(&state.db, "dev2", &[]).await.id;
+        get_or_create(&state.db, healthy).await.unwrap();
+        let mut poller = Poller::default();
+        let limit = Duration::from_millis(200);
+        poll_once_within(&state, &mut poller, &[slow], limit).await;
+        assert_eq!(rejecting.hits.load(Ordering::SeqCst), 1);
+
+        *orch.hang_for.lock().unwrap() = Some(slow);
+        let users = poll_once_within(&state, &mut poller, &[slow, healthy], limit).await;
+
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].state, State::Unreachable);
+        assert_eq!(users[1].state, State::AuthError);
+        // `healthy` hit the same rejecting daemon once; `slow` was not asked again.
+        assert_eq!(rejecting.hits.load(Ordering::SeqCst), 2);
+        // Once the lookup works again the park still holds.
+        *orch.hang_for.lock().unwrap() = None;
+        poll_once_within(&state, &mut poller, &[slow], limit).await;
+        assert_eq!(rejecting.hits.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
