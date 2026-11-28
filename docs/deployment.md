@@ -80,8 +80,15 @@ docker tag cityhall:latest registry.example.com/cityhall:latest
 docker push registry.example.com/cityhall:latest
 ```
 
-The examples below use `cityhall:latest`; replace it with the ghcr path above or
-your registry path.
+The Kubernetes and Helm examples below take the ghcr path above or your
+registry path. The Compose stack builds from the checkout and tags the result
+`cityhall:latest`; to run a published image there instead, remove the service's
+`build:` block, set `image:` to the pinned ghcr tag, and start it without
+`--build`.
+
+Workspace images are built only for aoe versions CI has been set up for (the
+`AOE_VERSION` in `images.yml`, or a manual run). On Kubernetes, which cannot
+build images, set the default workspace version to one that has a tag.
 
 ## Docker Compose (production)
 
