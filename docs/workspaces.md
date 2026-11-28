@@ -44,8 +44,8 @@ the workspace volume, so it appears once per workspace.
 
 ### Granting Full mode gives a shell
 
-Full mode puts a terminal behind `aoe serve --auth token`. On backends that
-allow Full mode (process, kubernetes), granting `workspaces.full` therefore
+Full mode puts aoe's own terminal behind `aoe serve --auth token`. On backends
+that allow Full mode (process, kubernetes), granting `workspaces.full` therefore
 gives that user a shell in their workspace, protected by CityHall's session and
 the per-workspace bearer token. **A fresh install seeds the `member` role with the key, so
 on those backends every new user gets Full mode by default.** On docker the
@@ -53,6 +53,19 @@ key has no effect today: Full mode is refused and every user gets Composer
 mode. To withhold Full mode, remove `workspaces.full` from the `member` role on
 the Roles page (or give users a role without it); the change applies on their
 next stop and start or restart.
+
+Composer mode has no shell: aoe refuses both shell routes under `--cityhall`,
+even on a direct connection to the workspace. CityHall adds no exception, so a
+user who needs a shell gets a role with `workspaces.full` and a restart.
+CityHall has no shell of its own, only aoe's. Shell contents are not recorded.
+CityHall gives a workspace no root or sudo path. System packages go in the team
+base image; user-space installs (`~/.local/bin`, npm, cargo, pipx) need no root.
+CityHall does not set the user a workspace runs as: the process backend uses the
+CityHall OS user, and kubernetes uses the image's user, so a root-run process or
+a root image gives the shell root.
+
+If aoe is broken inside a kubernetes pod, there is no shell to open. Use
+`kubectl exec` with your own cluster RBAC; CityHall has no `pods/exec`.
 
 The shell is only as contained as the network and the host around the
 workspace, and CityHall can verify none of it:
@@ -181,7 +194,9 @@ status without usage rather than reporting zeros.
 open another user's workspace for support: the Open action mints a short-lived
 access link, and exchanging it scopes that browser's workspace origin to the
 target user for up to 30 minutes (every workspace tab, not just the new one).
-Each grant and exit is written to the server log as an audit line. The
+Each grant and exit is written to the server log as an audit line. Impersonation
+is audited as entry only: what the admin does in the workspace, shell contents
+included, is not recorded. The
 top-bar "Open workspace" link always exits admin access first; note that
 WebSocket connections opened during access survive until they disconnect,
 even past expiry or permission revocation. Requires `CITYHALL_SECRET_KEY`.
@@ -317,8 +332,8 @@ until it is upgraded.
 tmux, and a Node runtime, and nothing else. Which agent a workspace runs is the
 user's choice, made per session in aoe's own session wizard.
 
-A user installs the agent they want from a terminal session inside their
-workspace. aoe prints the exact command when a chosen agent is missing, so
+A user installs the agent they want from the workspace terminal, which only
+Full mode has. aoe prints the exact command when a chosen agent is missing, so
 nothing here needs memorising:
 
 ```sh
@@ -336,7 +351,7 @@ symlinks: `~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`,
 `~/.config/opencode`, `~/.local/share/opencode`, plus the three install prefixes
 (`~/.npm-global`, `~/.local/bin`, `~/.opencode`). Symlinks rather than
 `CODEX_HOME`-style variables because aoe clears the environment when it spawns a
-structured-view agent, so an env-based approach would work in a terminal session
+structured-view agent, so an env-based approach would work in a shell
 and quietly fail in structured view.
 
 #### Handing users a workspace that is already set up
@@ -382,7 +397,7 @@ default_agent = "claude"
 ```
 
 **The installed set is a default, not a restriction.** aoe applies no allowlist
-to the agents a session may pick, and a terminal session can run whatever is on
+to the agents a session may pick, and a Full mode shell can run whatever is on
 `PATH` regardless, so an admin choosing the set decides what a workspace *arrives
 with*, not what it is *limited to*. A user can install and run anything else.
 Making a restriction actually hold needs an aoe-side allowlist, tracked in
@@ -435,8 +450,8 @@ workspace from a credential form.
 subscription, run `claude setup-token` anywhere you are already logged in and
 store the result as `CLAUDE_CODE_OAUTH_TOKEN` above; an admin can set it on a
 user's behalf like any other credential. Every other agent authenticates a
-subscription through its own interactive login, run from a terminal session
-inside the workspace:
+subscription through its own interactive login, run from the workspace terminal,
+which only Full mode has:
 
 ```sh
 codex login          # ChatGPT subscription
@@ -452,7 +467,7 @@ user's behalf, which is the trade for not handling the secret at all.
 **The last three reach terminal sessions but not structured-view agents.** aoe
 starts a structured-view agent with a cleared environment and forwards a fixed
 set of variables into it, which currently covers the Claude ones only. A key
-outside that set is still available to anything you run in a terminal session.
+outside that set is still available to anything you run in a Full mode shell.
 The UI marks these, and widening the set is tracked in
 [agent-of-empires#3238](https://github.com/agent-of-empires/agent-of-empires/issues/3238).
 
@@ -576,12 +591,15 @@ and aoe's DNS-rebinding gate refuses `--behind-proxy` without an allowlist
 entry. Set that variable to the origin browsers actually use, or workspaces
 answer 403 to every proxied request.
 
-For production, expose the proxy listener through your reverse proxy as either
-a subdomain or a second external port, and set `WORKSPACE_PROXY_PUBLIC_ORIGIN`
-so the "Open workspace" link points at the public address. A subdomain needs
-the session cookie to be visible there; today the cookie is host-only, so use
-the same hostname with a second port, or terminate both origins on the same
-host. WebSocket upgrade forwarding must be enabled on the external proxy.
+For production, expose the proxy listener on one extra hostname, a sibling of
+the CityHall host such as `ws.cityhall.<domain>`, and set
+`WORKSPACE_PROXY_PUBLIC_ORIGIN` so the "Open workspace" link points at it. That
+one origin serves every workspace: the proxy routes by session cookie, not by
+`Host`. Set `CITYHALL_COOKIE_DOMAIN` to a dedicated parent such as
+`cityhall.<domain>` so the session cookie reaches the proxy host; empty, its
+default, keeps the cookie host-only. TLS ends at the ingress, which talks plain
+HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
+`proxy-send-timeout` of 3600 seconds for WebSocket.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
@@ -641,7 +659,7 @@ host. WebSocket upgrade forwarding must be enabled on the external proxy.
 - Agent credentials only reach structured-view agents for Claude. See
   [Agent credentials](#agent-credentials).
 - An operator can choose which agents a workspace arrives with, but cannot
-  restrict it to them: a session may pick any agent, and a terminal session can
+  restrict it to them: a session may pick any agent, and a Full mode shell can
   run any binary on `PATH`. Enforcement needs an aoe-side allowlist
   ([agent-of-empires#3241](https://github.com/agent-of-empires/agent-of-empires/issues/3241)).
   See [Coding agents](#coding-agents).
