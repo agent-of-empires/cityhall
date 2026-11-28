@@ -2,6 +2,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::Request;
+use axum::http::header::ORIGIN;
+use axum::http::Method;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use sea_orm::DatabaseConnection;
@@ -13,6 +18,7 @@ use crate::handlers::{
     agent_credentials, auth, dashboard, oidc, roles, settings, setup, signup, users,
     workspace_config, workspaces,
 };
+use crate::mailer::base_url;
 use crate::proxy;
 use crate::state::AppState;
 
@@ -119,7 +125,39 @@ pub fn api_router(state: AppState) -> Router {
         // Unknown /api/* paths return a JSON 404 instead of falling through to
         // the SPA index (which the outer fallback_service would otherwise serve).
         .fallback(|| async { AppError::NotFound("not found") })
+        .layer(middleware::from_fn(same_origin_only))
         .with_state(state)
+}
+
+/// CSRF guard. The session cookie is shared with the workspace proxy host once
+/// scoped to the parent domain, so a page served there could otherwise fire
+/// cookie-bearing POSTs (some need no preflight). Unsafe methods must come
+/// from the CityHall origin: a foreign `Origin` is refused, and without
+/// `Origin` a `Sec-Fetch-Site` other than `same-origin`/`none` is refused.
+/// Requests carrying neither header (curl, API clients) pass.
+async fn same_origin_only(req: Request, next: Next) -> Response {
+    if !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        let h = req.headers();
+        let allowed = match h.get(ORIGIN) {
+            Some(origin) => {
+                let base = base_url(h);
+                // `CITYHALL_BASE_URL` may carry a path; an Origin never does.
+                let end = base.find("://").map_or(0, |i| {
+                    base[i + 3..].find('/').map_or(base.len(), |j| i + 3 + j)
+                });
+                origin
+                    .as_bytes()
+                    .eq_ignore_ascii_case(&base.as_bytes()[..end])
+            }
+            None => h
+                .get("sec-fetch-site")
+                .is_none_or(|v| matches!(v.as_bytes(), b"same-origin" | b"none")),
+        };
+        if !allowed {
+            return AppError::Forbidden("cross-origin request refused").into_response();
+        }
+    }
+    next.run(req).await
 }
 
 pub fn router(state: AppState) -> Router {
@@ -180,4 +218,75 @@ pub async fn serve(db: DatabaseConnection) -> Result<(), Box<dyn std::error::Err
     );
     tokio::try_join!(main_srv, proxy_srv)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use sea_orm::Database;
+    use tower::ServiceExt;
+
+    async fn status(method: &str, path: &str, headers: &[(&str, &str)]) -> StatusCode {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "cityhall.test");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let app = api_router(build_state(db).unwrap());
+        app.oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    const LOGOUT: &str = "/auth/logout";
+
+    #[tokio::test]
+    async fn foreign_origin_post_is_refused() {
+        let got = status("POST", LOGOUT, &[("origin", "https://evil.test")]).await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn same_site_sibling_origin_post_is_refused() {
+        let got = status("POST", LOGOUT, &[("origin", "http://ws.cityhall.test")]).await;
+        assert_eq!(got, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn cityhall_origin_post_passes() {
+        let got = status("POST", LOGOUT, &[("origin", "http://cityhall.test")]).await;
+        assert_eq!(got, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_without_origin_or_fetch_metadata_passes() {
+        assert_eq!(status("POST", LOGOUT, &[]).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn fetch_metadata_decides_when_origin_is_absent() {
+        for (site, want) in [
+            ("same-site", StatusCode::FORBIDDEN),
+            ("cross-site", StatusCode::FORBIDDEN),
+            ("same-origin", StatusCode::OK),
+            ("none", StatusCode::OK),
+        ] {
+            assert_eq!(
+                status("POST", LOGOUT, &[("sec-fetch-site", site)]).await,
+                want
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_is_unaffected() {
+        let got = status("GET", "/health", &[("origin", "https://evil.test")]).await;
+        assert_eq!(got, StatusCode::OK);
+    }
 }

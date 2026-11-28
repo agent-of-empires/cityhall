@@ -10,9 +10,11 @@
 //!
 //! Every request is gated on the CityHall session (`workspaces.use`), request-
 //! starts the caller's workspace, and is forwarded to it. The workspace itself
-//! runs `aoe serve --auth token --behind-proxy --allowed-host <proxy-host> --cityhall`
-//! and is only reachable through
-//! loopback, so CityHall is the sole auth boundary.
+//! runs `aoe serve --auth token --behind-proxy --allowed-host <proxy-host> --cityhall`.
+//! It is reachable through loopback on the process backend and over the
+//! container or cluster network on docker and kube; either way it only accepts
+//! the per-workspace bearer CityHall attaches, so CityHall is the sole auth
+//! boundary.
 
 use std::net::SocketAddr;
 
