@@ -225,7 +225,9 @@ pub struct WorkspaceRuntime {
     /// The version the runtime object was created with, when the backend
     /// records one.
     pub version: Option<String>,
-    /// The mode the workspace is running in. `Some` only when `running`.
+    /// The mode the workspace is running in. `Some` only when `running`, and
+    /// only filled by a batch path that records it (docker); elsewhere use
+    /// [`Orchestrator::running_mode`].
     pub mode: Option<WorkspaceMode>,
 }
 
