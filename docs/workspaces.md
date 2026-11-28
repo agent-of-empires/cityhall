@@ -634,7 +634,9 @@ volume's `lost+found` out of it). The process backend's `HOME` is already a
 persistent directory. Everything under it survives a restart: clones and
 worktrees, rc files, npm, cargo and pipx installs, agent logins, and aoe's own
 data in `~/.config/agent-of-empires`. Anything an image bakes under `/home/aoe`
-is hidden by the mount, so image configuration lives elsewhere:
+is hidden by the mount (docker copies it into a brand new volume once, and the
+entrypoint would then mistake it for an old-layout volume), so do not bake files
+there; image configuration lives elsewhere:
 
 - `PATH` (`~/.local/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, ahead of the
   image's dirs) and `NPM_CONFIG_PREFIX` are image `ENV`. Defaults for login and
@@ -676,7 +678,8 @@ and a PVC never shrinks. The StorageClass also needs `reclaimPolicy: Delete`:
 **Kubernetes pod spec.** The pod runs as uid 1000 with `fsGroup: 1000` and no
 ServiceAccount token. The kubelet creates the `subPath` directory root-owned and
 world-writable, and aoe refuses to run under a `$HOME` like that, so a root init
-container (only `CHOWN` and `FOWNER`) creates `home` as uid 1000, mode 0755,
+container (only `CHOWN` and `FOWNER`; a namespace enforcing the Pod Security
+`restricted` profile rejects it) creates `home` as uid 1000, mode 0755,
 before the workspace container starts. `fsGroupChangePolicy: OnRootMismatch`
 stops the kubelet re-adding group write to every directory on each pod start,
 which aoe also refuses. An existing PVC from an earlier build keeps its old

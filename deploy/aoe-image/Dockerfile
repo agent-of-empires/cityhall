@@ -33,8 +33,8 @@
 #
 # The image ships no coding agent. A user installs the one they want from
 # inside their workspace. The whole $HOME is the volume, so that install and the
-# agent's login survive a container recreate. Nothing the image bakes under
-# /home/aoe is visible at run time: it is hidden by the mount.
+# agent's login survive a container recreate. Do not bake files under /home/aoe:
+# the mount hides them (docker copies them into a brand new volume once).
 #
 # An operator can instead name a set in CityHall's workspace settings, which
 # arrives as `CITYHALL_AGENTS` and is installed at boot by
@@ -240,12 +240,13 @@ if [ ! -d "$APP" ] && [ -n "$(ls -A "$HOME")" ]; then
         [ "$entry" = "$HOME/.config" ] && continue
         mv "$entry" "$APP.migrating/"
     done
-    mv "$APP.migrating" "$APP"
     # That install state is not at the paths the agents now use, so the markers
     # claiming it is done would stop it being redone. Kept, under another name.
-    if [ -f "$STORE/provisioned" ]; then
-        mv "$STORE/provisioned" "$STORE/provisioned.old-layout"
+    # Done before the final rename so both steps land together.
+    if [ -f "$APP.migrating/cityhall-agents/provisioned" ]; then
+        mv "$APP.migrating/cityhall-agents/provisioned" "$APP.migrating/cityhall-agents/provisioned.old-layout"
     fi
+    mv "$APP.migrating" "$APP"
 fi
 
 # The mount hides anything the image put in $HOME, so create what aoe needs,
