@@ -445,8 +445,8 @@ Only these variables can be stored, and nothing else:
 | `GEMINI_API_KEY` | Gemini |
 | `OPENROUTER_API_KEY` | OpenCode, OpenRouter |
 
-aoe v1.15.0 and later forwards each of these into its own agent, in terminal
-sessions and structured-view sessions alike.
+aoe v1.15.0 and later forwards each of these into the structured-view agent it
+belongs to.
 
 The list is closed rather than free-form because these values become the
 workspace's environment, so an arbitrary name would be a way to reconfigure the
@@ -455,8 +455,8 @@ workspace from a credential form.
 **Subscriptions depend on the mode.** CityHall brokers no subscription login. A
 login happens inside the workspace, or not at all:
 
-| Agent | Full mode: run in the workspace terminal | Composer mode (no terminal) |
-| ----- | ---------------------------------------- | --------------------------- |
+| Agent | Full mode: run in the workspace terminal (not on docker, which refuses Full mode) | Composer mode (no terminal) |
+| ----- | ------------------------------------------------------------------------------ | --------------------------- |
 | Claude | `claude auth login` | `claude setup-token` run anywhere you are logged in, stored as `CLAUDE_CODE_OAUTH_TOKEN` |
 | Codex | `codex login --device-auth` | API key |
 | Gemini | `gemini` | API key |
@@ -469,8 +469,7 @@ user's behalf like any other credential.
 The terminal logins write to `~/.claude`, `~/.codex`, `~/.gemini` and OpenCode's
 directories, which the image entrypoint keeps on the volume. They survive an idle
 stop, a restart and an aoe version change, and a destroy deletes them. CityHall
-never holds these credentials and cannot see whether one exists, and neither can
-an admin.
+never holds these credentials and cannot show whether one exists.
 
 **In Full mode, prefer `claude auth login` over a stored
 `CLAUDE_CODE_OAUTH_TOKEN`.** Anthropic's terms allow a user to sign in to the

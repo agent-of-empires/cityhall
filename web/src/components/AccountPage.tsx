@@ -245,7 +245,7 @@ export function AccountPage({ me }: { me: Me }) {
                   </div>
                 </div>
                 <p className="text-[12.5px] leading-relaxed text-text-hint">
-                  Without a terminal (Composer mode), use an API key above, or ask an admin for Full mode. Claude is the
+                  Without a terminal (Composer mode), use an API key above, or ask an admin about Full mode. Claude is the
                   exception: run <span className="font-mono text-text-dim">claude setup-token</span> anywhere you are
                   already logged in and store the result above. In Full mode, prefer{" "}
                   <span className="font-mono text-text-dim">claude auth login</span> in the terminal.
