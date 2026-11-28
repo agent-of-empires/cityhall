@@ -35,6 +35,11 @@ postgres:
   password: change-me-to-a-strong-password
   storage: 10Gi
 
+# Example namespaced Role for team members (deployments, pods, services: get and
+# list only). Off by default; bind it yourself. See docs/deployment.md.
+humanRole:
+  enabled: false
+
 service:
   port: 80
 

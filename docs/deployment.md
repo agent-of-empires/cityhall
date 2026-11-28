@@ -128,6 +128,18 @@ Notes:
   from the kustomization.
 - Store `CITYHALL_SECRET_KEY` in a real secret manager (Sealed Secrets, SOPS,
   External Secrets), not in git.
+- `db-networkpolicy.yaml` allows ingress to `cityhall-db:5432` only from the
+  CityHall pod. It needs a CNI that enforces NetworkPolicy. Remove it together
+  with `postgres.yaml`.
+- **Team members get at most `view` in the namespace.** In the CityHall
+  namespace, `secrets` get, list or watch; `pods/exec` and
+  `pods/ephemeralcontainers`; and create, update or patch of `pods` or workload
+  controllers such as `deployments` are each equivalent to every user's
+  credentials, so treat them as cluster-admin verbs. The stock `edit` and
+  `admin` ClusterRoles include all three. For a human role, start from
+  [`example-human-role.yaml`](../deploy/k8s/example-human-role.yaml) (not applied
+  by the kustomization) or `--set humanRole.enabled=true` in the chart, then
+  bind it yourself.
 
 ### Helm
 
@@ -155,6 +167,10 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
 - `config.extraEnv` passes arbitrary env vars through (e.g. `SMTP_*`, `OIDC_*`)
   for env-managed [SMTP](configuration.md#email-smtp) or
   [SSO](configuration.md#single-sign-on-oidc).
+- `postgres.enabled` also creates a NetworkPolicy that limits the database to
+  the CityHall pod.
+- `humanRole.enabled` (default `false`) renders the example team-member Role
+  described above.
 - `ingress.*` mirrors the Kustomize Ingress (className, host, cert-manager
   annotations, TLS secret).
 - `workspaces.proxy.ingress.*` exposes the workspace proxy (port 3001) on its

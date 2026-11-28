@@ -1,0 +1,22 @@
+# Only the CityHall API pod may reach Postgres. Without this, any pod in the
+# cluster, including a workspace pod, can open a connection to cityhall-db:5432.
+# Enforcement requires a CNI with NetworkPolicy support. Remove together with
+# postgres.yaml when using an external/managed Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cityhall-db
+  namespace: cityhall
+spec:
+  podSelector:
+    matchLabels:
+      app: cityhall-db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cityhall
+      ports:
+        - port: 5432

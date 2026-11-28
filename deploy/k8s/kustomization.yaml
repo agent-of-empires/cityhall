@@ -5,9 +5,11 @@ resources:
   - namespace.yaml
   - secret.yaml
   - postgres.yaml # remove when using an external/managed Postgres
+  - db-networkpolicy.yaml # remove together with postgres.yaml
   - deployment.yaml
   - service.yaml
   - ingress.yaml
   - proxy-ingress.yaml
   - workspaces-rbac.yaml
   - workspaces-networkpolicy.yaml
+# example-human-role.yaml is an optional example and is not applied here.
