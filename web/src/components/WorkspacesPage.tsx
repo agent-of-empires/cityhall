@@ -385,6 +385,14 @@ function AdminWorkspaces({ me }: { me: Me }) {
                       <td className={clsx(tdClass, "text-text-dim")} title={item.mode_note ?? undefined}>
                         {WORKSPACE_MODE_LABEL[item.mode]}
                         {item.mode_note && <span className="ml-1.5 font-mono text-xs text-waiting">limited</span>}
+                        {item.restart_pending && (
+                          <span
+                            className="ml-1.5 font-mono text-xs text-waiting"
+                            title="Running in a different mode; applies when the workspace restarts"
+                          >
+                            restart pending
+                          </span>
+                        )}
                       </td>
                       <td className={clsx(tdClass, "font-mono text-text-dim")}>
                         {item.last_active_at ? new Date(item.last_active_at).toLocaleString() : "-"}
@@ -532,6 +540,7 @@ function RowAction({
 function MemberWorkspace({ me }: { me: Me }) {
   const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
+  const [restartPending, setRestartPending] = useState(false);
   const [gitDone, setGitDone] = useState(false);
   const [agentDone, setAgentDone] = useState(false);
   const [firstRunOpen, setFirstRunOpen] = useState(false);
@@ -542,6 +551,7 @@ function MemberWorkspace({ me }: { me: Me }) {
       .then((w) => {
         setProxyOrigin(w.proxy_origin);
         setMode(modeText(w.mode, w.mode_note));
+        setRestartPending(w.restart_pending);
       })
       .catch(() => {});
   }, []);
@@ -590,6 +600,12 @@ function MemberWorkspace({ me }: { me: Me }) {
               {mode && (
                 <p className="m-0 text-[13px] text-text-dim">
                   Next start: {mode}. A change to your role applies when your workspace restarts.
+                </p>
+              )}
+              {restartPending && (
+                <p className="m-0 text-[13px] text-waiting">
+                  Restart pending: your workspace is still running in its old mode. It applies when your workspace
+                  restarts.
                 </p>
               )}
             </div>
