@@ -43,8 +43,9 @@ service:
 # namespace-scoped Role (see templates/workspaces-rbac.yaml).
 workspaces:
   enabled: true
-  # PVC size per workspace.
-  volumeSize: 5Gi
+  # PVC size per workspace; it holds the whole $HOME. Growing it needs a
+  # StorageClass with allowVolumeExpansion.
+  volumeSize: 20Gi
   # Storage class for workspace PVCs; empty uses the cluster default.
   storageClass: ""
   # Workspace proxy: serves workspace UIs to browsers on its own hostname.

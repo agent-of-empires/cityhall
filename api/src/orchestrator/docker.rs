@@ -28,9 +28,9 @@ use super::{
 
 /// Port aoe serves on inside the workspace container.
 const AOE_PORT: u16 = 8080;
-/// Where the aoe app dir lives inside the container (the reference image runs
-/// as user `aoe`); the per-user volume is mounted here.
-const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
+/// The `$HOME` of the reference image's user `aoe`; the per-user volume is
+/// mounted here, same layout as the kubernetes backend.
+const HOME_DIR: &str = "/home/aoe";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 /// Image pulls and first builds legitimately take minutes.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(600);
@@ -524,7 +524,7 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         "--label".into(),
         format!("{DAEMON_TOKEN_LABEL}={}", daemon_token_fingerprint(spec)),
         "-v".into(),
-        format!("{volume}:{AOE_DATA_DIR}"),
+        format!("{volume}:{HOME_DIR}"),
     ];
     // Written only for Full, so a Composer container is byte-identical to one
     // created before modes existed and an absent label reads as Composer.
@@ -1143,6 +1143,14 @@ mod tests {
         let args = run_args(&spec(), None, None);
         assert!(!args.iter().any(|a| a == "--env-file"), "{args:?}");
         assert!(!args.iter().any(|a| a == "-e"), "{args:?}");
+    }
+
+    /// The whole `$HOME` is the volume, same layout as the kubernetes backend.
+    #[test]
+    fn the_volume_is_mounted_at_home() {
+        let args = run_args(&spec(), None, None);
+        let mount_at = args.iter().position(|a| a == "-v").unwrap();
+        assert_eq!(args[mount_at + 1], "cityhall-workspace-u42-data:/home/aoe");
     }
 
     #[test]
