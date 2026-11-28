@@ -387,6 +387,10 @@ RUN chmod +x /usr/local/bin/provision-agents.sh
 USER aoe
 ENV HOME=/home/aoe
 
+# CityHall refuses to start an image without this: an older entrypoint would hide
+# an old-layout volume's data from the migration above.
+LABEL cityhall.home-volume=1
+
 # Where an installed agent lands, set here so `docker exec` sees it too; the
 # files under /etc cover shells that reset PATH. First on PATH so a user can
 # upgrade an agent an operator baked in.

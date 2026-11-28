@@ -180,6 +180,26 @@ impl DockerCliOrchestrator {
         if !self.image_exists(&spec.image).await? {
             return Err(self.provision_image(spec));
         }
+        // An image from before the volume became the whole $HOME has an entrypoint
+        // that would create the app dir on top of an old-layout volume, hiding its
+        // data from the migration. Refuse it loudly instead of starting it.
+        let label = self
+            .run(&[
+                "image",
+                "inspect",
+                "--format",
+                "{{index .Config.Labels \"cityhall.home-volume\"}}",
+                &spec.image,
+            ])
+            .await?
+            .unwrap_or_default();
+        if label.trim() != "1" {
+            return Err(OrchestratorError::Runtime(format!(
+                "image {} predates the whole-home volume layout; rebuild it from \
+                 deploy/aoe-image/Dockerfile or pull a current tag",
+                spec.image
+            )));
+        }
         if let Some(net) = &self.network {
             // Surface a clear error now instead of `docker run`'s "not found"
             // (which run() would misread as a missing container).

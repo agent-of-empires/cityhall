@@ -670,7 +670,9 @@ and a PVC never shrinks. The StorageClass also needs `reclaimPolicy: Delete`:
 
 **Runbook.**
 
-- A stale dotfile: delete it and restart; the seed restores the current one.
+- A stale dotfile the image seeds (`.bashrc`, `.profile`): delete it and restart;
+  the seed restores the current one. Files you created, such as `~/.gitconfig`,
+  are not recreated.
 - A tool in `~/.local/bin` shadows a newer one in the image: `which -a <tool>`.
 - After a Node major bump in the image: `npm rebuild -g`.
 - A full reset: destroy the workspace.
@@ -692,7 +694,8 @@ volume root into `~/.config/agent-of-empires` (it logs one line), so sessions an
 config carry over and nothing is deleted. The agent installs and logins from the
 old layout come along but sit in `~/.config/agent-of-empires/cityhall-agents/`,
 not where the agents look, so install and log in again once, then delete that
-directory.
+directory. A workspace image built before this layout is refused at start with
+an error (it lacks the `cityhall.home-volume` label); rebuild or pull a current one.
 
 ## Backends
 
