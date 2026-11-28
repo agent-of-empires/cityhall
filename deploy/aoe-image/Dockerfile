@@ -24,7 +24,7 @@
 #   aoe serve --host 0.0.0.0 --port 8080 --auth token --behind-proxy \
 #     --allowed-host <proxy-host> [--cityhall]
 # (--cityhall only for Composer mode; Full mode omits it)
-# and mounts a per-user volume at /home/aoe/.config/agent-of-empires.
+# and mounts a per-user volume at /home/aoe (the whole $HOME).
 #
 # For version 1.22.0 or later it also passes --dangerously-allow-plaintext-remote;
 # aoe's plaintext gate answers 426 without it. The proxy-to-workspace hop is
@@ -32,8 +32,9 @@
 # backend); a TLS sidecar is the later answer (issue #127).
 #
 # The image ships no coding agent. A user installs the one they want from
-# inside their workspace, and `entrypoint.sh` keeps that install and the
-# agent's login on the volume so both survive a container recreate.
+# inside their workspace. The whole $HOME is the volume, so that install and the
+# agent's login survive a container recreate. Do not bake files under /home/aoe:
+# the mount hides them (docker copies them into a brand new volume once).
 #
 # An operator can instead name a set in CityHall's workspace settings, which
 # arrives as `CITYHALL_AGENTS` and is installed at boot by
@@ -185,74 +186,85 @@ RUN chmod +x /usr/local/bin/aoe
 # The node base image already owns uid 1000. `aoe` has to keep that uid: it is
 # what every volume written by an earlier build of this image is owned by, and a
 # uid change would make an existing workspace's data unwritable.
+#
+# No -m: the home directory stays empty, so a fresh named volume mounted over it
+# starts empty too, which is how the entrypoint tells an old-layout volume from
+# a new one. Shell defaults come from /etc/skel instead (see the entrypoint).
 RUN userdel node \
     && rm -rf /home/node \
-    && useradd -m -d /home/aoe -u 1000 aoe \
-    # Pre-create the app dir so the named volume inherits aoe's ownership on
-    # first mount.
-    && mkdir -p /home/aoe/.config/agent-of-empires \
-    && chown -R aoe:aoe /home/aoe
+    && useradd -M -d /home/aoe -u 1000 aoe \
+    && mkdir /home/aoe \
+    && chown aoe:aoe /home/aoe
+
+# PATH and NPM_CONFIG_PREFIX for shells that do not inherit the Dockerfile ENV
+# below. Debian's /etc/profile resets PATH for a login shell, and a shell
+# started by a terminal multiplexer may be either kind, so both the login path
+# (/etc/profile.d) and the interactive non-login path (/etc/bash.bashrc) source
+# this one file. User dirs come first so a user can override a baked tool.
+COPY <<"SH" /etc/profile.d/cityhall.sh
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+case ":$PATH:" in
+*":$HOME/.local/bin:"*) ;;
+*) PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.cargo/bin:$HOME/.opencode/bin:$PATH"; export PATH ;;
+esac
+SH
+RUN echo '. /etc/profile.d/cityhall.sh' >> /etc/bash.bashrc
 
 # The entrypoint is written inline rather than COPYd because the docker
 # workspace backend builds this file on stdin, with no build context, so a
 # COPY would have nothing to copy from. Keeping it here also keeps it a single
 # copy: a sibling script plus this heredoc would be two that can drift.
 #
-# CityHall mounts one per-user volume, at the aoe data dir, and nothing else.
-# Every coding agent keeps its own state elsewhere in $HOME, so without this a
-# `codex login` or an installed CLI is gone the next time the container is
-# recreated, which happens on a version or credential change. Move those
-# locations onto the volume with symlinks so an agent the user installs, and the
-# subscription they log into, both survive a restart.
-#
-# Symlinks rather than CODEX_HOME-style relocation variables: aoe clears the
-# environment when it spawns a structured-view agent and forwards a fixed
-# allowlist those variables are not on, so an env-based approach would work in a
-# terminal session and quietly fail in structured view.
+# CityHall mounts one per-user volume at $HOME, so everything a user installs or
+# logs into (agent CLIs, their logins, clones, rc files) survives a container
+# recreate. This script therefore only seeds $HOME; it never links anything.
 COPY <<"SH" /usr/local/bin/entrypoint.sh
 #!/bin/sh
 set -e
 
-STORE="$HOME/.config/agent-of-empires/cityhall-agents"
+APP="$HOME/.config/agent-of-empires"
+STORE="$APP/cityhall-agents"
 
-# link <name-under-STORE> <path-under-$HOME> <dir|file>
+# A volume from before $HOME was the volume holds the aoe data dir at its root,
+# so under this mount that data sits in $HOME instead of in $APP and aoe would
+# start empty. Move every top-level entry into $APP, nothing is deleted.
 #
-# Already a symlink means a previous boot did this, so there is nothing to do.
-# Anything real sitting at the destination came from the image, since the
-# container filesystem is fresh on every create and only the volume persists; a
-# derived image that bakes an agent can ship default config that way. The
-# volume's copy is the user's, so it wins, and the image's copy is moved aside
-# rather than deleted. A `file` target is left absent for the agent to create
-# through the symlink on first write.
-link() {
-    src="$STORE/$1"
-    dst="$HOME/$2"
-    if [ -L "$dst" ]; then
-        return 0
+# An old layout is recognised by what only it has at the volume root: files aoe
+# itself writes into its data dir (the serve token and lock) or the agent store
+# this entrypoint keeps there. Not by an absent $APP: a user who deleted $APP on
+# a new volume must not have their whole $HOME moved into it. A leftover staging
+# dir means an earlier move was cut short, so it is finished too.
+#
+# The move targets a staging dir that is renamed into place last, so an
+# interrupted move is finished by the next start instead of leaving a half-filled
+# $APP that would hide the rest.
+old_layout=
+[ -d "$APP.migrating" ] && old_layout=1
+for marker in serve.token serve.lock cityhall-agents; do
+    [ -e "$HOME/$marker" ] && old_layout=1
+done
+if [ ! -d "$APP" ] && [ -n "$old_layout" ]; then
+    echo "entrypoint: moving the old volume layout into $APP" >&2
+    mkdir -p "$APP.migrating"
+    for entry in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        [ "$entry" = "$HOME/.config" ] && continue
+        mv "$entry" "$APP.migrating/"
+    done
+    # That install state is not at the paths the agents now use, so the markers
+    # claiming it is done would stop it being redone. Kept, under another name.
+    # Done before the final rename so both steps land together.
+    if [ -f "$APP.migrating/cityhall-agents/provisioned" ]; then
+        mv "$APP.migrating/cityhall-agents/provisioned" "$APP.migrating/cityhall-agents/provisioned.old-layout"
     fi
-    mkdir -p "$(dirname "$dst")" "$(dirname "$src")"
-    if [ -e "$dst" ]; then
-        rm -rf "$dst.image-default"
-        mv "$dst" "$dst.image-default"
-    fi
-    if [ "$3" = dir ]; then
-        mkdir -p "$src"
-    fi
-    ln -s "$src" "$dst"
-}
+    mv "$APP.migrating" "$APP"
+fi
 
-link claude        .claude               dir
-link claude.json   .claude.json          file
-link codex         .codex                dir
-link gemini        .gemini               dir
-link opencode      .config/opencode      dir
-link opencode-data .local/share/opencode dir
-# The three install prefixes an agent lands in: npm's global prefix, and the two
-# an agent's own curl installer uses. NPM_CONFIG_PREFIX and PATH are set in the
-# Dockerfile rather than here, so `docker exec` sees them too.
-link npm           .npm-global           dir
-link local-bin     .local/bin            dir
-link opencode-home .opencode             dir
+# The mount hides anything the image put in $HOME, so create what aoe needs,
+# then seed the shell defaults. cp -n never overwrites a file the user has
+# edited, and nothing writes into $HOME after this.
+mkdir -p "$APP"
+cp -rn /etc/skel/. "$HOME/"
 
 # Install the coding agents CityHall was told this workspace should arrive with,
 # if any. Deliberately not in the foreground: CityHall gives a workspace 15
@@ -386,10 +398,15 @@ RUN chmod +x /usr/local/bin/provision-agents.sh
 USER aoe
 ENV HOME=/home/aoe
 
-# Where an installed agent lands. `entrypoint.sh` keeps all three on the
-# volume. First on PATH so a user can upgrade an agent an operator baked in.
+# CityHall refuses to start an image without this: an older entrypoint would hide
+# an old-layout volume's data from the migration above.
+LABEL cityhall.home-volume=1
+
+# Where an installed agent lands, set here so `docker exec` sees it too; the
+# files under /etc cover shells that reset PATH. First on PATH so a user can
+# upgrade an agent an operator baked in.
 ENV NPM_CONFIG_PREFIX=/home/aoe/.npm-global
-ENV PATH=/home/aoe/.npm-global/bin:/home/aoe/.local/bin:/home/aoe/.opencode/bin:$PATH
+ENV PATH=/home/aoe/.local/bin:/home/aoe/.npm-global/bin:/home/aoe/.cargo/bin:/home/aoe/.opencode/bin:$PATH
 
 # CityHall passes the full `aoe serve ...` command as arguments, so the
 # entrypoint runs first and then execs it.

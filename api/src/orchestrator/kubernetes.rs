@@ -27,9 +27,9 @@ const MODE_ANNOTATION: &str = "cityhall.workspace/mode";
 
 /// Port aoe serves on inside the workspace pod.
 const AOE_PORT: u16 = 8080;
-/// Where the aoe app dir lives inside the pod (the reference image runs as
-/// user `aoe`); the PVC is mounted here.
-const AOE_DATA_DIR: &str = "/home/aoe/.config/agent-of-empires";
+/// The `$HOME` of the reference image's user `aoe`; the PVC is mounted here, so
+/// everything under it (aoe's app dir, agent logins, installs) persists.
+const HOME_DIR: &str = "/home/aoe";
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 /// Pod scheduling plus a cold image pull can far exceed the shared 15s
 /// readiness window, so this backend polls with its own budget.
@@ -54,7 +54,7 @@ pub fn secret_name(user_id: i32) -> String {
 
 pub struct KubectlOrchestrator {
     namespace: String,
-    /// PVC size request, e.g. `5Gi`.
+    /// PVC size request, e.g. `20Gi`.
     volume_size: String,
     /// Optional PVC storage class; the cluster default when unset.
     storage_class: Option<String>,
@@ -77,7 +77,7 @@ impl KubectlOrchestrator {
             volume_size: std::env::var("WORKSPACE_K8S_VOLUME_SIZE")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "5Gi".to_string()),
+                .unwrap_or_else(|| "20Gi".to_string()),
             storage_class: std::env::var("WORKSPACE_K8S_STORAGE_CLASS")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
@@ -375,8 +375,8 @@ fn render_manifests(
         "name": "aoe",
         "image": spec.image,
         // No `command`: that would override the image's entrypoint, which is
-        // where the reference image relocates each agent's config directory
-        // onto the volume. Passing the whole command as `args` instead matches
+        // where the reference image seeds `$HOME` on the
+        // volume. Passing the whole command as `args` instead matches
         // what the docker backend does, and an image with no entrypoint runs
         // these as the command anyway. The wrapper (never the entrypoint) writes
         // the daemon token, and for force-on asserts the telemetry policy, before
@@ -404,7 +404,16 @@ fn render_manifests(
         .chain(plaintext_flag(&spec.version))
         .collect()),
         "ports": [{ "containerPort": AOE_PORT }],
-        "volumeMounts": [{ "name": "data", "mountPath": AOE_DATA_DIR }],
+        // No root and no sudo in a workspace: without this a setuid binary in a
+        // derived image could still elevate. No read-only root filesystem, a
+        // workspace writes outside $HOME (tmux sockets, /tmp, installs).
+        "securityContext": {
+            "allowPrivilegeEscalation": false,
+            "capabilities": { "drop": ["ALL"] },
+            "seccompProfile": { "type": "RuntimeDefault" },
+        },
+        // `subPath` keeps the volume's `lost+found` out of `$HOME`.
+        "volumeMounts": [{ "name": "data", "mountPath": HOME_DIR, "subPath": "home" }],
     });
 
     // Which coding agents to install is not a secret, so it goes straight on the
@@ -507,6 +516,40 @@ fn render_manifests(
                     "annotations": annotations,
                 },
                 "spec": {
+                    // The workspace never talks to the Kubernetes API, so it
+                    // gets no ServiceAccount token. The reference image runs as
+                    // uid 1000; fsGroup makes the volume writable by it.
+                    "automountServiceAccountToken": false,
+                    "securityContext": {
+                        "runAsNonRoot": true,
+                        "runAsUser": 1000,
+                        "fsGroup": 1000,
+                        // The default re-applies group-write to every directory in
+                        // the volume on each pod start, and aoe refuses a $HOME
+                        // whose directories are writable by their group.
+                        "fsGroupChangePolicy": "OnRootMismatch",
+                    },
+                    // The kubelet creates a `subPath` directory root-owned and
+                    // world-writable, which fsGroup does not change, and aoe
+                    // refuses to run under a $HOME like that. So the directory
+                    // is created first, owned by uid 1000 and not writable by
+                    // anyone else. Root only here, with just the two
+                    // capabilities the chown and chmod need; the workspace
+                    // container never runs as root. Overriding `command` skips
+                    // the image entrypoint.
+                    "initContainers": [{
+                        "name": "init-home",
+                        "image": spec.image,
+                        "command": ["install", "-d", "-o", "1000", "-g", "1000", "-m", "0755", "/vol/home"],
+                        "securityContext": {
+                            "runAsUser": 0,
+                            "runAsNonRoot": false,
+                            "allowPrivilegeEscalation": false,
+                            "readOnlyRootFilesystem": true,
+                            "capabilities": { "drop": ["ALL"], "add": ["CHOWN", "FOWNER"] },
+                        },
+                        "volumeMounts": [{ "name": "data", "mountPath": "/vol" }],
+                    }],
                     "containers": [container],
                     "volumes": [{
                         "name": "data",
@@ -705,13 +748,59 @@ mod tests {
                 ["cityhall.workspace/env-fingerprint"],
             ""
         );
+        let pod = &dep["spec"]["template"]["spec"];
+        assert_eq!(pod["automountServiceAccountToken"], false);
+        assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+        assert_eq!(pod["securityContext"]["runAsUser"], 1000);
+        assert_eq!(pod["securityContext"]["fsGroup"], 1000);
+        assert_eq!(
+            pod["securityContext"]["fsGroupChangePolicy"],
+            "OnRootMismatch"
+        );
+        // The only root container creates `home` for uid 1000; the workspace
+        // container sets no user of its own, so it keeps the pod's non-root one.
+        let init = &pod["initContainers"][0];
+        assert_eq!(init["securityContext"]["runAsUser"], 0);
+        assert_eq!(init["securityContext"]["runAsNonRoot"], false);
+        assert_eq!(init["securityContext"]["allowPrivilegeEscalation"], false);
+        assert_eq!(init["securityContext"]["readOnlyRootFilesystem"], true);
+        assert_eq!(
+            init["securityContext"]["capabilities"]["drop"],
+            json!(["ALL"])
+        );
+        assert_eq!(
+            init["securityContext"]["capabilities"]["add"],
+            json!(["CHOWN", "FOWNER"])
+        );
+        assert_eq!(
+            init["command"],
+            json!([
+                "install",
+                "-d",
+                "-o",
+                "1000",
+                "-g",
+                "1000",
+                "-m",
+                "0755",
+                "/vol/home"
+            ])
+        );
+        assert_eq!(init["volumeMounts"][0]["mountPath"], "/vol");
+        // The workspace container keeps the pod's non-root user and is hardened
+        // without a read-only root filesystem.
+        let main_sc = &pod["containers"][0]["securityContext"];
+        assert_eq!(main_sc["allowPrivilegeEscalation"], false);
+        assert_eq!(main_sc["capabilities"]["drop"], json!(["ALL"]));
+        assert_eq!(main_sc["seccompProfile"]["type"], "RuntimeDefault");
+        assert!(main_sc.get("readOnlyRootFilesystem").is_none());
+        assert!(main_sc.get("runAsUser").is_none());
         let container = &dep["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["image"], "registry.example.com/aoe:v1.0.0");
         // The whole command travels in `args`, and `command` stays absent so the
         // image entrypoint still runs. Setting `command` would override it, and
-        // the reference image relocates each agent's config directory onto the
-        // volume from there, so a workspace would silently stop persisting an
-        // installed agent and its login.
+        // the reference image seeds `$HOME` from there, so a new workspace
+        // would start without its shell defaults.
         assert!(container.get("command").is_none());
         // The wrapper is always present; aoe's own argv follows the script.
         assert_eq!(container["args"][0], "sh");
@@ -726,10 +815,8 @@ mod tests {
         assert!(dep["spec"]["template"]["metadata"]["annotations"]
             .get("cityhall.workspace/agents")
             .is_none());
-        assert_eq!(
-            container["volumeMounts"][0]["mountPath"],
-            "/home/aoe/.config/agent-of-empires"
-        );
+        assert_eq!(container["volumeMounts"][0]["mountPath"], "/home/aoe");
+        assert_eq!(container["volumeMounts"][0]["subPath"], "home");
         // Workspaces are locked-down end-user clients, never full dashboards.
         let args = container["args"].as_array().unwrap();
         assert!(args.iter().any(|a| a == "--cityhall"));

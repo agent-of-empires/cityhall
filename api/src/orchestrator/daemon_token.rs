@@ -179,8 +179,7 @@ const SCRIPT_FORCE_ON: &str = concat!(preamble!(), "aoe telemetry enable\n", r#"
 
 /// `command` as the container should run it: `sh -c <script> <command...>`.
 /// Wraps rather than replaces, so the image's ENTRYPOINT still runs first (in
-/// the reference image that is what relocates each agent's config onto the
-/// volume). An image with no shell fails loudly instead of ignoring the token.
+/// the reference image that is what seeds `$HOME` on the volume). An image with no shell fails loudly instead of ignoring the token.
 pub fn wrap_command(telemetry: TelemetryPolicy, command: Vec<String>) -> Vec<String> {
     let script = if telemetry == TelemetryPolicy::ForceOn {
         SCRIPT_FORCE_ON
