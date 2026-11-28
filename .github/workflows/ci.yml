@@ -12,11 +12,13 @@ concurrency:
 jobs:
   api:
     name: API (rust)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.RUNS_ON_DISABLED == 'true') && 'ubuntu-latest' || format('runs-on={0}-api-{1}/runner=4cpu-linux-x64/family=m8a+c8i+m8i+c7i+m7i/image=ubuntu26-full-x64/volume=80gb:125mbs/extras=s3-cache', github.run_id, github.run_attempt) }}
     defaults:
       run:
         working-directory: .
     steps:
+      # Routes actions/cache to the RunsOn S3 bucket (Magic Cache); no-op on GitHub-hosted runners.
+      - uses: runs-on/action@v2.6.0
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -31,11 +33,13 @@ jobs:
 
   web:
     name: Web (react)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || vars.RUNS_ON_DISABLED == 'true') && 'ubuntu-latest' || format('runs-on={0}-web-{1}/runner=2cpu-linux-x64/family=m8a+c8i+m8i+c7i+m7i/image=ubuntu26-full-x64/volume=80gb:125mbs/extras=s3-cache', github.run_id, github.run_attempt) }}
     defaults:
       run:
         working-directory: web
     steps:
+      # Routes actions/cache to the RunsOn S3 bucket (Magic Cache); no-op on GitHub-hosted runners.
+      - uses: runs-on/action@v2.6.0
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
