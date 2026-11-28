@@ -15,13 +15,48 @@ use crate::rbac::Perms;
 pub const SESSION_COOKIE: &str = "cityhall_session";
 const SESSION_TTL_DAYS: i64 = 30;
 
-/// Build the HttpOnly session cookie carrying `token`.
-pub fn session_cookie(token: String) -> Cookie<'static> {
+/// `Domain` from `CITYHALL_COOKIE_DOMAIN` (empty: host-only) and `Secure` when
+/// `CITYHALL_BASE_URL` is https. Set and clear must share these.
+fn cookie_scope() -> (String, bool) {
+    let domain = std::env::var("CITYHALL_COOKIE_DOMAIN").unwrap_or_default();
+    let secure = std::env::var("CITYHALL_BASE_URL").is_ok_and(|u| u.starts_with("https://"));
+    (domain, secure)
+}
+
+fn scope(cookie: &mut Cookie<'static>, domain: &str, secure: bool) {
+    if !domain.is_empty() {
+        cookie.set_domain(domain.to_string());
+    }
+    if secure {
+        cookie.set_secure(true);
+    }
+}
+
+fn session_cookie_scoped(token: String, domain: &str, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::new(SESSION_COOKIE, token);
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
     cookie.set_path("/");
+    scope(&mut cookie, domain, secure);
     cookie
+}
+
+fn clear_cookie_scoped(domain: &str, secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::from(SESSION_COOKIE);
+    scope(&mut cookie, domain, secure);
+    cookie
+}
+
+/// Build the HttpOnly session cookie carrying `token`.
+pub fn session_cookie(token: String) -> Cookie<'static> {
+    let (domain, secure) = cookie_scope();
+    session_cookie_scoped(token, &domain, secure)
+}
+
+/// The removal cookie for logout, scoped like `session_cookie`.
+pub fn clear_session_cookie() -> Cookie<'static> {
+    let (domain, secure) = cookie_scope();
+    clear_cookie_scoped(&domain, secure)
 }
 
 /// How long a self-service password-reset token is valid, in hours.
@@ -210,6 +245,46 @@ mod tests {
     use crate::migration::Migrator;
     use sea_orm::Database;
     use sea_orm_migration::MigratorTrait;
+
+    fn set_cookie_header(jar: CookieJar) -> String {
+        use axum::response::IntoResponse;
+        jar.into_response()
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn cleared(c: Cookie<'static>) -> String {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("cookie", format!("{SESSION_COOKIE}=t").parse().unwrap());
+        set_cookie_header(CookieJar::from_headers(&h).remove(c))
+    }
+
+    #[test]
+    fn cookie_attrs_empty_unchanged() {
+        assert_eq!(
+            session_cookie_scoped("t".into(), "", false).to_string(),
+            "cityhall_session=t; HttpOnly; SameSite=Lax; Path=/"
+        );
+        assert_eq!(
+            cleared(clear_cookie_scoped("", false)),
+            cleared(Cookie::from(SESSION_COOKIE))
+        );
+    }
+
+    #[test]
+    fn cookie_attrs_set_and_clear_share_scope() {
+        assert_eq!(
+            session_cookie_scoped("t".into(), "cityhall.example.com", true).to_string(),
+            "cityhall_session=t; HttpOnly; SameSite=Lax; Secure; Path=/; Domain=cityhall.example.com"
+        );
+        let h = cleared(clear_cookie_scoped("cityhall.example.com", true));
+        assert!(h.contains("Domain=cityhall.example.com"), "{h}");
+        assert!(h.contains("Secure"), "{h}");
+    }
 
     async fn setup() -> DatabaseConnection {
         let db = Database::connect("sqlite::memory:").await.unwrap();
