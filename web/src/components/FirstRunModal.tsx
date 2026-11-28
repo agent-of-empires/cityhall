@@ -144,7 +144,7 @@ function TerminalLoginStep() {
   return (
     <div className="space-y-3">
       <StepHeading
-        title="Subscriptions sign in from a terminal"
+        title="Subscriptions"
         subcopy="If your workspace has a terminal (Full mode), open a terminal session and run the one you use. The login is written to the agent's own config directory, which lives on your volume, so it survives a restart. Without a terminal (Composer mode), use an API key from Account."
       />
       <pre className="overflow-x-auto rounded-md border border-border-soft bg-code-bg p-3.5 font-mono text-[12.5px] leading-[1.9] text-text">
