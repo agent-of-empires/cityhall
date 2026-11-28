@@ -269,6 +269,26 @@ pub async fn ensure_bundle_token(
         .ok_or(AppError::NotFound("workspace"))
 }
 
+/// Replace a user's bundle token, if they have a workspace row.
+///
+/// Called when the material the token protects changes (git credential, SSH
+/// key) or an admin asks. It does not touch a running workspace: the bundle
+/// token is not part of the drift check, so the old container keeps running and
+/// the new token reaches it at its next creation. The old token is refused by
+/// the bundle endpoint at once, so a copy of it stops working immediately.
+/// A user with no row needs nothing: [`get_or_create`] mints one on first use.
+pub async fn rotate_bundle_token(db: &DatabaseConnection, user_id: i32) -> Result<(), AppError> {
+    workspace::Entity::update_many()
+        .col_expr(
+            workspace::Column::BundleToken,
+            Expr::value(crate::auth::random_token(48)),
+        )
+        .filter(workspace::Column::UserId.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
 /// A fresh daemon token: 32 random bytes as 64 lowercase hex characters. aoe
 /// only adopts a `--auth token` value of exactly 64 (or 32) hex or lowercase
 /// letters, so `crate::auth::random_token` (mixed-case alphanumeric) does not
@@ -908,6 +928,51 @@ mod tests {
         // token a running workspace already holds.
         let again = get_or_create(&db, uid).await.unwrap();
         assert_eq!(again.bundle_token.as_deref(), Some(token.as_str()));
+    }
+
+    /// A rotated token replaces the old one, which the bundle endpoint (an
+    /// equality lookup on the column) then no longer finds. Without a rotation
+    /// the token is stable, so a running workspace's copy stays valid.
+    #[tokio::test]
+    async fn rotating_replaces_the_token_and_only_then() {
+        let _key = test_key();
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        let old = get_or_create(&db, uid).await.unwrap().bundle_token.unwrap();
+        assert_eq!(
+            get_or_create(&db, uid)
+                .await
+                .unwrap()
+                .bundle_token
+                .as_deref(),
+            Some(old.as_str())
+        );
+
+        rotate_bundle_token(&db, uid).await.unwrap();
+
+        let new = get_or_create(&db, uid).await.unwrap().bundle_token.unwrap();
+        assert_ne!(new, old);
+        let by_token = |t: String| {
+            workspace::Entity::find()
+                .filter(workspace::Column::BundleToken.eq(t))
+                .one(&db)
+        };
+        assert!(by_token(old).await.unwrap().is_none());
+        assert!(by_token(new).await.unwrap().is_some());
+    }
+
+    /// Rotating for a user with no workspace row is a no-op, not an error.
+    #[tokio::test]
+    async fn rotating_without_a_row_is_a_no_op() {
+        let _key = test_key();
+        let db = setup().await;
+        let uid = make_user(&db).await;
+        rotate_bundle_token(&db, uid).await.unwrap();
+        assert!(workspace::Entity::find_by_id(uid)
+            .one(&db)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// Two starts racing to backfill must agree on one token. A caller that
