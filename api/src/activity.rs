@@ -35,9 +35,12 @@ use crate::workspaces::decrypt_daemon_token;
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Per aoe call, so one wedged workspace cannot stall a tick.
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the start-of-tick batch status may take before every user falls
+/// back to a per-user status.
+const BATCH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Per user, permit wait, status lookup and fetch together: the docker and kubernetes
 /// CLIs can take far longer than [`CALL_TIMEOUT`], and a tick publishes only
-/// when every user is done. Below [`POLL_INTERVAL`].
+/// when every user is done. With [`BATCH_TIMEOUT`], within [`POLL_INTERVAL`].
 const USER_TIMEOUT: Duration = Duration::from_secs(8);
 const CONCURRENCY: usize = 8;
 /// A session list larger than this counts as unreachable.
@@ -245,8 +248,12 @@ fn bare(user_id: i32, state: State) -> UserActivity {
 /// it. Taken afresh every tick and never stored, so each is as current as a
 /// `status` call made at the same moment. A failed or slow batch yields none,
 /// and every user falls back to a per-user `status`.
-async fn batched_addrs(state: &AppState, limit: Duration) -> HashMap<i32, String> {
-    let batch = tokio::time::timeout(limit, state.orchestrator.statuses()).await;
+async fn batched_addrs(state: &AppState) -> HashMap<i32, String> {
+    // A backend whose batch has no addresses would only cost a wasted call.
+    if !state.orchestrator.statuses_carry_addr() {
+        return HashMap::new();
+    }
+    let batch = tokio::time::timeout(BATCH_TIMEOUT, state.orchestrator.statuses()).await;
     match batch {
         Ok(Ok(Some(rows))) => rows
             .into_iter()
@@ -334,7 +341,7 @@ async fn poll_once_within(
     let mut ids = running.to_vec();
     ids.extend(poller.entries.keys().filter(|id| !running.contains(id)));
     let permits = Arc::new(Semaphore::new(CONCURRENCY));
-    let mut addrs = batched_addrs(state, limit).await;
+    let mut addrs = batched_addrs(state).await;
     let mut tasks = JoinSet::new();
     // What a failed task's user had, so its park state outlives the task.
     let mut before = HashMap::new();
@@ -345,7 +352,7 @@ async fn poll_once_within(
         let task = tasks.spawn(async move {
             let kept = moved.clone();
             // The wait for a permit counts against the limit, so a tick is
-            // bounded however many users queue.
+            // bounded by BATCH_TIMEOUT plus the limit however many users queue.
             let polled = tokio::time::timeout(limit, async {
                 let _permit = permits.acquire().await;
                 poll_user(&state, user_id, batched, moved).await
@@ -562,6 +569,9 @@ mod tests {
         }
         async fn running_mode(&self, _: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
             Ok(None)
+        }
+        fn statuses_carry_addr(&self) -> bool {
+            true
         }
         async fn statuses(
             &self,

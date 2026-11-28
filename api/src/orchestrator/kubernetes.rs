@@ -331,6 +331,10 @@ impl Orchestrator for KubectlOrchestrator {
         Ok(live_mode(&json))
     }
 
+    fn statuses_carry_addr(&self) -> bool {
+        true
+    }
+
     /// One `kubectl get deployments` for the whole fleet, replacing a `get
     /// deployment` per user for status and another for the mode.
     async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {

@@ -342,6 +342,11 @@ pub trait Orchestrator: Send + Sync {
         Ok(None)
     }
 
+    /// Whether [`WorkspaceRuntime::addr`] is filled by [`Orchestrator::statuses`].
+    fn statuses_carry_addr(&self) -> bool {
+        false
+    }
+
     /// Per-workspace CPU and memory, when the backend has a metrics source.
     async fn usage(&self) -> Result<UsageReport, OrchestratorError> {
         Ok(UsageReport::Unsupported)
