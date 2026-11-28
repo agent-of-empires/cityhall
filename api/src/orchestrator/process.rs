@@ -100,6 +100,11 @@ struct RunState {
     /// real fingerprint, so every such workspace is respawned once on upgrade.
     #[serde(default)]
     daemon_token_fp: String,
+    /// Fingerprint of the bundle token this process was spawned with. Empty in
+    /// a state.json from before the field, which counts as drift but only on an
+    /// explicit restart (see `matches`).
+    #[serde(default)]
+    bundle_token_fp: String,
 }
 
 impl RunState {
@@ -119,6 +124,10 @@ impl RunState {
             // with unless this is an explicit restart.
             && (!spec.apply_mode_to_running
                 || WorkspaceMode::from_stored(Some(&self.mode)) == spec.mode)
+            // Likewise a rotated bundle token reaches a live process only on an
+            // explicit restart, so a rotation never interrupts a running session.
+            && (!spec.apply_mode_to_running
+                || self.bundle_token_fp == spec.bundle_token_fingerprint())
     }
 }
 
@@ -207,6 +216,7 @@ impl ProcessOrchestrator {
                     telemetry: spec.telemetry.as_str().to_string(),
                     mode: spec.mode.as_str().to_string(),
                     daemon_token_fp: daemon_token::fingerprint(token.expose()),
+                    bundle_token_fp: spec.bundle_token_fingerprint(),
                 },
             )?;
             match wait_ready(&addr).await {
@@ -892,6 +902,7 @@ mod tests {
             telemetry: TelemetryPolicy::default().as_str().to_string(),
             mode: String::new(),
             daemon_token_fp: fp.to_string(),
+            bundle_token_fp: String::new(),
         };
 
         let pid = live_process();
@@ -959,6 +970,7 @@ mod tests {
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
                 daemon_token_fp: String::new(),
+                bundle_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -1026,6 +1038,7 @@ mod tests {
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
                 daemon_token_fp: String::new(),
+                bundle_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -1092,6 +1105,7 @@ mod tests {
             telemetry: full.telemetry.as_str().to_string(),
             mode: "full".to_string(),
             daemon_token_fp: String::new(),
+            bundle_token_fp: String::new(),
         };
         assert!(state.matches(&full));
         // Permission removed, explicit restart: drift.
@@ -1106,6 +1120,33 @@ mod tests {
             ..state
         };
         assert!(composer.matches(&full_without_restart()));
+    }
+
+    #[test]
+    fn a_rotated_bundle_token_is_drift_only_on_explicit_restart() {
+        let with_token = |token: &str, restart: bool| WorkspaceSpec {
+            bundle: Some(super::super::BundleAccess {
+                url: "http://cityhall/api/workspace-bundle".to_string(),
+                token: token.to_string(),
+            }),
+            apply_mode_to_running: restart,
+            ..spec_for(1)
+        };
+        let spawned = with_token("old", false);
+        let state = RunState {
+            pid: 1,
+            port: 2,
+            version: spawned.version.clone(),
+            env_fingerprint: spawned.agent_env.fingerprint.clone(),
+            telemetry: spawned.telemetry.as_str().to_string(),
+            mode: String::new(),
+            daemon_token_fp: String::new(),
+            bundle_token_fp: spawned.bundle_token_fingerprint(),
+        };
+        assert!(state.matches(&with_token("old", true)));
+        // Rotated: a request-driven start leaves the live process alone.
+        assert!(state.matches(&with_token("new", false)));
+        assert!(!state.matches(&with_token("new", true)));
     }
 
     fn full_without_restart() -> WorkspaceSpec {
@@ -1151,6 +1192,7 @@ mod tests {
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
                 daemon_token_fp: String::new(),
+                bundle_token_fp: String::new(),
             },
         )
         .unwrap();
@@ -1168,6 +1210,7 @@ mod tests {
                 telemetry: TelemetryPolicy::default().as_str().to_string(),
                 mode: String::new(),
                 daemon_token_fp: String::new(),
+                bundle_token_fp: String::new(),
             },
         )
         .unwrap();
