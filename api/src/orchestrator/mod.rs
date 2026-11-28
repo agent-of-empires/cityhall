@@ -215,9 +215,11 @@ pub struct BundleAccess {
 
 /// Runtime state of every managed workspace, from one backend round-trip.
 ///
-/// Deliberately carries no address. Resolving one costs an extra call per
-/// container (`docker port`) and only the proxy ever dials a workspace; every
-/// status *display* throws the address away.
+/// Carries an address only where the backend already has one in the batch
+/// answer (kubernetes, a deterministic service name). Resolving one costs an
+/// extra call per container on docker (`docker port`), and only the proxy and
+/// the activity poller ever dial a workspace; every status *display* throws
+/// the address away.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRuntime {
     pub user_id: i32,
@@ -226,9 +228,14 @@ pub struct WorkspaceRuntime {
     /// records one.
     pub version: Option<String>,
     /// The mode the workspace is running in. `Some` only when `running`, and
-    /// only filled by a batch path that records it (docker); elsewhere use
-    /// [`Orchestrator::running_mode`].
+    /// only filled by a batch path that records it (docker, kubernetes);
+    /// elsewhere use [`Orchestrator::running_mode`].
     pub mode: Option<WorkspaceMode>,
+    /// `host:port`, `Some` only when `running` and the backend fills it
+    /// (kubernetes); elsewhere use [`Orchestrator::status`]. Valid only for
+    /// the answer it came in: callers that send a credential to it must take
+    /// the batch in the same pass, never keep it.
+    pub addr: Option<String>,
 }
 
 /// Instantaneous resource usage of one workspace.
@@ -329,9 +336,8 @@ pub trait Orchestrator: Send + Sync {
     ///
     /// `None` means this backend has no batch path, and the caller should fall
     /// back to that per-user loop. An optional capability rather than a
-    /// required method so a backend gains it when someone can actually test
-    /// the batch command against a live runtime, instead of shipping an
-    /// unverified translation of it.
+    /// required method so a backend gains it only when someone can test the
+    /// batch command against a live runtime. Docker and kubernetes have one.
     async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {
         Ok(None)
     }

@@ -421,6 +421,7 @@ mod tests {
             running: true,
             version: Some("main-20260804".to_string()),
             mode: None,
+            addr: None,
         };
 
         let orphan = attributed_runtime(None, Some(&runtime));

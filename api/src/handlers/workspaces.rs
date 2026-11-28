@@ -758,12 +758,14 @@ mod tests {
             running: true,
             version: None,
             mode: None,
+            addr: None,
         };
         let stopped = WorkspaceRuntime {
             user_id: 1,
             running: false,
             version: None,
             mode: None,
+            addr: None,
         };
         assert_eq!(runtime_status(Some(&running)), "running");
         assert_eq!(runtime_status(Some(&stopped)), "stopped");

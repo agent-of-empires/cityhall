@@ -19,7 +19,7 @@ use tokio::process::Command;
 use super::{
     daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
     refused_error, Orchestrator, OrchestratorError, Probe, TelemetryPolicy, WorkspaceMode,
-    WorkspaceSpec, WorkspaceStatus,
+    WorkspaceRuntime, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Pod template annotation recording a Full mode workspace. Absent means Composer.
@@ -330,6 +330,57 @@ impl Orchestrator for KubectlOrchestrator {
         }
         Ok(live_mode(&json))
     }
+
+    /// One `kubectl get deployments` for the whole fleet, replacing a `get
+    /// deployment` per user for status and another for the mode.
+    async fn statuses(&self) -> Result<Option<Vec<WorkspaceRuntime>>, OrchestratorError> {
+        let out = self
+            .run(
+                &[
+                    "get",
+                    "deployments",
+                    "-l",
+                    "cityhall.managed=true",
+                    "-o",
+                    "json",
+                ],
+                None,
+            )
+            .await?
+            .unwrap_or_default();
+        Ok(Some(parse_deployments(&out, |id| self.addr(id))))
+    }
+}
+
+/// The runtime rows of a `kubectl get deployments -o json` list. A Deployment
+/// with no parseable `cityhall.user_id` label is skipped, not fatal. `addr`
+/// is filled only for a ready one, the same condition `status()` reports
+/// `Running` under.
+fn parse_deployments(json: &str, addr: impl Fn(i32) -> String) -> Vec<WorkspaceRuntime> {
+    let Ok(list) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+        return Vec::new();
+    };
+    let items = list["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    items
+        .iter()
+        .filter_map(|item| {
+            let user_id: i32 = item["metadata"]["labels"]["cityhall.user_id"]
+                .as_str()?
+                .parse()
+                .ok()?;
+            let running = item["status"]["readyReplicas"].as_i64().unwrap_or(0) >= 1;
+            Some(WorkspaceRuntime {
+                user_id,
+                running,
+                version: item["spec"]["template"]["metadata"]["annotations"]
+                    ["cityhall.workspace.version"]
+                    .as_str()
+                    .map(str::to_string),
+                mode: running.then(|| live_mode(&item.to_string())).flatten(),
+                addr: running.then(|| addr(user_id)),
+            })
+        })
+        .collect()
 }
 
 /// The mode a Deployment is running in, or `None` when it is scaled to zero
@@ -1248,6 +1299,88 @@ mod tests {
     fn manifests_pin_storage_class_when_configured() {
         let m = render_manifests(&spec(), "cityhall", "10Gi", Some("fast-ssd"));
         assert_eq!(m["items"][0]["spec"]["storageClassName"], "fast-ssd");
+    }
+
+    /// A `kubectl get deployments` list item.
+    fn dep_item(
+        user: &str,
+        ready: Option<i64>,
+        replicas: i64,
+        mode: Option<&str>,
+    ) -> serde_json::Value {
+        let annotations = match mode {
+            Some(m) => json!({ MODE_ANNOTATION: m, "cityhall.workspace.version": "v1" }),
+            None => json!({ "cityhall.workspace.version": "v1" }),
+        };
+        let mut status = json!({});
+        if let Some(r) = ready {
+            status["readyReplicas"] = json!(r);
+        }
+        json!({
+            "metadata": { "labels": { "cityhall.user_id": user } },
+            "spec": { "replicas": replicas,
+                "template": { "metadata": { "annotations": annotations } } },
+            "status": status,
+        })
+    }
+
+    #[test]
+    fn running_mode_needs_a_ready_pod_and_a_live_template() {
+        // The same rule `running_mode()` applies to one `get deployment`.
+        let mode = |item: serde_json::Value| {
+            parse_deployments(&json!({ "items": [item] }).to_string(), |_| String::new())[0].mode
+        };
+        assert_eq!(
+            mode(dep_item("1", Some(1), 1, Some("full"))),
+            Some(WorkspaceMode::Full)
+        );
+        assert_eq!(
+            mode(dep_item("1", Some(1), 1, None)),
+            Some(WorkspaceMode::Composer)
+        );
+        // Not ready (scheduling or pulling) and scaled to zero: no mode.
+        assert_eq!(mode(dep_item("1", None, 1, Some("full"))), None);
+        assert_eq!(mode(dep_item("1", Some(0), 0, Some("full"))), None);
+    }
+
+    #[test]
+    fn one_deployment_list_answers_status_mode_and_address_for_all() {
+        let list = json!({ "items": [
+            dep_item("1", Some(1), 1, Some("full")),
+            dep_item("2", Some(1), 1, None),
+            dep_item("3", None, 0, None),
+            // No usable identity: skipped, not fatal.
+            dep_item("not-a-number", Some(1), 1, None),
+        ]})
+        .to_string();
+        let rows = parse_deployments(&list, |id| format!("w{id}:{AOE_PORT}"));
+        assert_eq!(
+            rows,
+            vec![
+                WorkspaceRuntime {
+                    user_id: 1,
+                    running: true,
+                    version: Some("v1".to_string()),
+                    mode: Some(WorkspaceMode::Full),
+                    addr: Some(format!("w1:{AOE_PORT}")),
+                },
+                WorkspaceRuntime {
+                    user_id: 2,
+                    running: true,
+                    version: Some("v1".to_string()),
+                    mode: Some(WorkspaceMode::Composer),
+                    addr: Some(format!("w2:{AOE_PORT}")),
+                },
+                WorkspaceRuntime {
+                    user_id: 3,
+                    running: false,
+                    version: Some("v1".to_string()),
+                    mode: None,
+                    addr: None,
+                },
+            ]
+        );
+        assert!(parse_deployments("", |_| String::new()).is_empty());
     }
 
     #[test]

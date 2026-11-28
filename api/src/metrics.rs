@@ -272,6 +272,7 @@ async fn statuses(state: &AppState) -> Result<Vec<WorkspaceRuntime>, String> {
                 // from the database covers the display.
                 version: None,
                 mode: None,
+                addr: None,
             });
         }
     }

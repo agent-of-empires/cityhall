@@ -840,6 +840,7 @@ fn parse_ps(out: &str) -> Vec<WorkspaceRuntime> {
                     .as_ref()
                     .and_then(|l| l.get(VERSION_LABEL))
                     .map(str::to_string),
+                addr: None,
             })
         })
         .collect()
@@ -1670,6 +1671,7 @@ mod tests {
                 running: true,
                 version: Some("v1.2.3".to_string()),
                 mode: Some(WorkspaceMode::Full),
+                addr: None,
             }
         );
         // Anything that is not literally "running" is not running: created,
@@ -1695,6 +1697,7 @@ mod tests {
                 running: true,
                 version: Some("v2.0.0".to_string()),
                 mode: Some(WorkspaceMode::Composer),
+                addr: None,
             }]
         );
     }
