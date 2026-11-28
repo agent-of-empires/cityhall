@@ -91,8 +91,9 @@ pub struct UserActivity {
     pub summary: Summary,
 }
 
-/// `users` holds only workspaces polled on the last tick (running ones); a user
-/// absent from it is not running. `sampled_at` is `None` until the first tick.
+/// `users` holds the workspaces polled on the last tick (running ones). A user
+/// absent from it, or listed as `not_running` when the metrics snapshot lagged
+/// a stop, is not running. `sampled_at` is `None` until the first tick.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Snapshot {
     pub sampled_at: Option<DateTime<Utc>>,
