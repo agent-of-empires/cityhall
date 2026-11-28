@@ -122,6 +122,22 @@ export interface WorkspaceItem {
   restart_pending: boolean;
 }
 
+export interface WorkspaceActivityUser {
+  user_id: number;
+  state: "ok" | "unreachable" | "auth_error" | "not_running";
+  running_sessions: number;
+  waiting_sessions: number;
+  pending_approvals: number;
+  last_session_access: string | null;
+  last_error: string | null;
+}
+
+/** Only running workspaces are listed; a user absent from `users` is not running. */
+export interface WorkspaceActivity {
+  sampled_at: string | null;
+  users: WorkspaceActivityUser[];
+}
+
 /** The aoe client a workspace starts in next. A running workspace keeps its
  *  current mode until it restarts. */
 export type WorkspaceMode = "composer" | "full";
@@ -437,6 +453,7 @@ export const api = {
   saveDashboardLayout: (layout: DashboardLayout) =>
     request<void>("/me/dashboard-layout", { method: "PUT", body: JSON.stringify(layout) }),
   listWorkspaces: () => request<WorkspaceItem[]>("/workspaces"),
+  workspaceActivity: () => request<WorkspaceActivity>("/workspaces/activity"),
   myWorkspace: () => request<MyWorkspace>("/workspaces/me"),
   startWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/start`, { method: "POST" }),
   stopWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/stop`, { method: "POST" }),
