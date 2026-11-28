@@ -170,10 +170,11 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
 - `postgres.enabled` also creates a NetworkPolicy that limits the database to
   the CityHall pod.
 - `humanRole.enabled` (default `false`) renders the example team-member Role
-  described above. The chart renders the bundled Postgres password and
-  `config.extraEnv` as plain env values, so reading a Deployment shows them;
-  use `existingSecret` and an external database if the people holding this
-  role must not see them.
+  described above. The chart renders the bundled Postgres password and every
+  `config.extraEnv` entry as a literal env value, so reading a Deployment shows
+  them. To keep them from role holders, use an external database and leave
+  `extraEnv` empty: put those variables (e.g. `SMTP_PASSWORD`) in the Secret named
+  by `existingSecret`, which is loaded with `envFrom`.
 - `ingress.*` mirrors the Kustomize Ingress (className, host, cert-manager
   annotations, TLS secret).
 - `workspaces.proxy.ingress.*` exposes the workspace proxy (port 3001) on its
