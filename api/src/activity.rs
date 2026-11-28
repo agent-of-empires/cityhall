@@ -163,8 +163,8 @@ struct AuthMark {
 }
 
 /// Per-user sampler memory, private to this module. No address is kept: it
-/// comes from `Orchestrator::status` on every tick, never from
-/// `EndpointCache`.
+/// comes from `Orchestrator::status` or a batch taken at the start of the same
+/// tick, never from `EndpointCache`.
 #[derive(Default, Clone)]
 struct Entry {
     auth_error: Option<AuthMark>,
@@ -241,10 +241,28 @@ fn bare(user_id: i32, state: State) -> UserActivity {
     }
 }
 
-/// Poll one running workspace. `None` when the user has no workspace row.
+/// Addresses from one batch status taken now, for the backends that put one in
+/// it. Taken afresh every tick and never stored, so each is as current as a
+/// `status` call made at the same moment. A failed or slow batch yields none,
+/// and every user falls back to a per-user `status`.
+async fn batched_addrs(state: &AppState, limit: Duration) -> HashMap<i32, String> {
+    let batch = tokio::time::timeout(limit, state.orchestrator.statuses()).await;
+    match batch {
+        Ok(Ok(Some(rows))) => rows
+            .into_iter()
+            .filter(|r| r.running)
+            .filter_map(|r| Some((r.user_id, r.addr?)))
+            .collect(),
+        _ => HashMap::new(),
+    }
+}
+
+/// Poll one running workspace. `batched` is its address from this tick's
+/// batch, when there was one. `None` when the user has no workspace row.
 async fn poll_user(
     state: &AppState,
     user_id: i32,
+    batched: Option<String>,
     mut entry: Entry,
 ) -> (Entry, Option<UserActivity>) {
     let row = match workspace::Entity::find_by_id(user_id).one(&state.db).await {
@@ -259,7 +277,11 @@ async fn poll_user(
     // The address is confirmed on every tick and the bearer goes nowhere
     // else: a cached address can be taken over by another user's container
     // after a restart. A status error sends nothing and keeps the park.
-    let addr = match refresh(state, user_id).await {
+    let confirmed = match batched {
+        Some(addr) => Ok(addr),
+        None => refresh(state, user_id).await,
+    };
+    let addr = match confirmed {
         Ok(addr) => addr,
         Err(State::NotRunning) => {
             return (Entry::default(), Some(bare(user_id, State::NotRunning)));
@@ -312,19 +334,21 @@ async fn poll_once_within(
     let mut ids = running.to_vec();
     ids.extend(poller.entries.keys().filter(|id| !running.contains(id)));
     let permits = Arc::new(Semaphore::new(CONCURRENCY));
+    let mut addrs = batched_addrs(state, limit).await;
     let mut tasks = JoinSet::new();
     // What a failed task's user had, so its park state outlives the task.
     let mut before = HashMap::new();
     for user_id in ids {
         let entry = poller.entries.remove(&user_id).unwrap_or_default();
         let (state, permits, moved) = (state.clone(), permits.clone(), entry.clone());
+        let batched = addrs.remove(&user_id);
         let task = tasks.spawn(async move {
             let kept = moved.clone();
             // The wait for a permit counts against the limit, so a tick is
             // bounded however many users queue.
             let polled = tokio::time::timeout(limit, async {
                 let _permit = permits.acquire().await;
-                poll_user(&state, user_id, moved).await
+                poll_user(&state, user_id, batched, moved).await
             })
             .await
             .unwrap_or_else(|_| (kept, Some(bare(user_id, State::Unreachable))));
@@ -501,6 +525,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         addr: Mutex<String>,
+        /// When set, `statuses` answers every user running at this address.
+        batch: Mutex<Option<String>>,
         /// `status` panics for this user, to exercise a failed poll task.
         panic_for: Mutex<Option<i32>>,
         /// `status` never returns for this user, like a wedged docker CLI.
@@ -536,6 +562,19 @@ mod tests {
         }
         async fn running_mode(&self, _: i32) -> Result<Option<WorkspaceMode>, OrchestratorError> {
             Ok(None)
+        }
+        async fn statuses(
+            &self,
+        ) -> Result<Option<Vec<crate::orchestrator::WorkspaceRuntime>>, OrchestratorError> {
+            Ok(self.batch.lock().unwrap().clone().map(|addr| {
+                vec![crate::orchestrator::WorkspaceRuntime {
+                    user_id: 1,
+                    running: true,
+                    version: None,
+                    mode: None,
+                    addr: Some(addr),
+                }]
+            }))
         }
     }
 
@@ -803,6 +842,35 @@ mod tests {
         let seen = new.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].0.starts_with("Bearer "));
+    }
+
+    /// The batch is taken inside every tick: its address is the one dialed
+    /// (the per-user `status` here points elsewhere and must not be asked),
+    /// and a moved address is followed with no memory of the old one.
+    #[tokio::test]
+    async fn a_batched_address_is_re_read_every_tick() {
+        let _key = test_key();
+        let first = daemon(StatusCode::OK, LIST).await;
+        let second = daemon(StatusCode::OK, LIST).await;
+        let wrong = daemon(StatusCode::OK, LIST).await;
+        let (state, orch, uid) = fixture(&wrong.addr).await;
+        assert_eq!(uid, 1);
+        let mut poller = Poller::default();
+
+        *orch.batch.lock().unwrap() = Some(first.addr.clone());
+        assert_eq!(
+            poll_once(&state, &mut poller, &[uid]).await[0].state,
+            State::Ok
+        );
+        *orch.batch.lock().unwrap() = Some(second.addr.clone());
+        assert_eq!(
+            poll_once(&state, &mut poller, &[uid]).await[0].state,
+            State::Ok
+        );
+
+        assert_eq!(first.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(second.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(wrong.hits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
