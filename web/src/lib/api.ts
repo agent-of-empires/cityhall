@@ -132,7 +132,7 @@ export interface WorkspaceActivityUser {
   last_error: string | null;
 }
 
-/** Only running workspaces are listed; a user absent from `users` is not running. */
+/** A user absent from `users` has no fresh observation; only `not_running` is an observed stop. */
 export interface WorkspaceActivity {
   sampled_at: string | null;
   users: WorkspaceActivityUser[];

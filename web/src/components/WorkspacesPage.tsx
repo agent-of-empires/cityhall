@@ -2,9 +2,9 @@ import clsx from "clsx";
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, ApiError, can, type Me, type WorkspaceActivityUser, type WorkspaceItem } from "../lib/api";
+import { api, ApiError, can, type Me, type WorkspaceItem } from "../lib/api";
 import { isOlderVersion } from "../lib/versions";
-import { activityText } from "../lib/workspaceActivity";
+import { activityText, EMPTY_FEED, type ActivityFeed } from "../lib/workspaceActivity";
 import { PageBody, PageHeader } from "./AppShell";
 import { AgentCredentialsEditor } from "./AgentCredentials";
 import { FirstRunModal } from "./FirstRunModal";
@@ -53,7 +53,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
   const canImpersonate = can(me, "workspaces.impersonate");
   const canActivity = can(me, "workspaces.activity");
   const [items, setItems] = useState<WorkspaceItem[]>([]);
-  const [activity, setActivity] = useState<Map<number, WorkspaceActivityUser>>(new Map());
+  const [activity, setActivity] = useState<ActivityFeed>(EMPTY_FEED);
   const [proxyOrigin, setProxyOrigin] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -70,8 +70,14 @@ function AdminWorkspaces({ me }: { me: Me }) {
       const activityLoad = canActivity
         ? api
             .workspaceActivity()
-            .then((a) => setActivity(new Map(a.users.map((u) => [u.user_id, u]))))
-            .catch(() => setActivity(new Map()))
+            .then((a) =>
+              setActivity({
+                users: new Map(a.users.map((u) => [u.user_id, u])),
+                sampledAt: a.sampled_at,
+                failed: false,
+              }),
+            )
+            .catch(() => setActivity({ ...EMPTY_FEED, failed: true }))
         : null;
       setItems(await api.listWorkspaces());
       await activityLoad;
@@ -331,7 +337,8 @@ function AdminWorkspaces({ me }: { me: Me }) {
             <tbody>
               {items.map((item) => {
                 const meta = STATUS_META[item.status];
-                const act = canActivity ? activityText(activity.get(item.user_id)) : null;
+                const act = canActivity ? activityText(activity.users.get(item.user_id), activity) : null;
+                const stale = act?.stale ? "Stale: the last activity sample is over a minute old" : undefined;
                 return (
                   <Fragment key={item.user_id}>
                     <tr className={trClass}>
@@ -420,11 +427,34 @@ function AdminWorkspaces({ me }: { me: Me }) {
                       </td>
                       {act && (
                         <>
-                          <td className={clsx(tdClass, "font-mono text-text-dim")}>{act.running}</td>
-                          <td className={clsx(tdClass, "font-mono text-text-dim")}>{act.waiting}</td>
-                          <td className={clsx(tdClass, "font-mono text-text-dim")}>{act.approvals}</td>
-                          <td className={clsx(tdClass, "font-mono text-text-dim")}>{act.lastAccess}</td>
-                          <td className={clsx(tdClass, "max-w-[240px] truncate text-text-dim")} title={act.lastError}>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.running}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.waiting}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.approvals}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "font-mono text-text-dim", act.stale && "opacity-50")}
+                            title={stale}
+                          >
+                            {act.lastAccess}
+                          </td>
+                          <td
+                            className={clsx(tdClass, "max-w-[240px] truncate text-text-dim", act.stale && "opacity-50")}
+                            title={act.lastError}
+                          >
                             {act.lastError}
                           </td>
                         </>
