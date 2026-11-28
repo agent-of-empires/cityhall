@@ -15,7 +15,7 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 
-use crate::agent_credentials::{self, CATALOG, STRUCTURED_VIEW_LIMITATION};
+use crate::agent_credentials::{self, CATALOG};
 use crate::auth::AuthUser;
 use crate::crypto;
 use crate::entities::{agent_credential, user};
@@ -37,8 +37,6 @@ pub struct AgentCredentialsResponse {
 pub struct AgentCredentialItem {
     pub env_var: &'static str,
     pub label: &'static str,
-    pub structured_view: bool,
-    pub limitation: Option<&'static str>,
     /// Whether a row exists for this variable.
     pub value_set: bool,
     /// Whether that row's ciphertext actually decrypts. False while
@@ -188,8 +186,6 @@ async fn build_response(
             AgentCredentialItem {
                 env_var: kind.env_var,
                 label: kind.label,
-                structured_view: kind.structured_view,
-                limitation: (!kind.structured_view).then_some(STRUCTURED_VIEW_LIMITATION),
                 value_set: row.is_some(),
                 usable: row.is_some_and(|r| {
                     agent_credentials::usable(
@@ -307,21 +303,6 @@ mod tests {
         let resp = build_response(&db, user_id).await.unwrap();
         assert_eq!(resp.credentials.len(), CATALOG.len());
         assert!(resp.credentials.iter().all(|c| !c.value_set && !c.usable));
-    }
-
-    #[tokio::test]
-    async fn limitation_is_present_only_for_non_structured_view_entries() {
-        let db = setup().await;
-        let user_id = make_user(&db).await;
-        let resp = build_response(&db, user_id).await.unwrap();
-        for item in &resp.credentials {
-            assert_eq!(
-                item.limitation.is_some(),
-                !item.structured_view,
-                "{}",
-                item.env_var
-            );
-        }
     }
 
     #[tokio::test]
