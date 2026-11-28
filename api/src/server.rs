@@ -142,12 +142,13 @@ async fn same_origin_only(req: Request, next: Next) -> Response {
             Some(origin) => {
                 let base = base_url(h);
                 // `CITYHALL_BASE_URL` may carry a path; an Origin never does.
-                let end = base.find("://").map_or(0, |i| {
-                    base[i + 3..].find('/').map_or(base.len(), |j| i + 3 + j)
-                });
-                origin
-                    .as_bytes()
-                    .eq_ignore_ascii_case(&base.as_bytes()[..end])
+                let scheme_end = base.find("://").map(|i| i + 3);
+                scheme_end.is_some_and(|i| {
+                    let end = base[i..].find('/').map_or(base.len(), |j| i + j);
+                    origin
+                        .as_bytes()
+                        .eq_ignore_ascii_case(&base.as_bytes()[..end])
+                })
             }
             None => h
                 .get("sec-fetch-site")
