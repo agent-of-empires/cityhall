@@ -628,7 +628,7 @@ run under.
 
 ```json
 {
-  "image_template": "cityhall/aoe:{version}",
+  "image_template": "ghcr.io/agent-of-empires/cityhall-aoe:{version}",
   "default_version": "v0.5.0",
   "idle_stop_minutes": 30,
   "telemetry_policy": "user_choice",

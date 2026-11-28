@@ -2,7 +2,10 @@ name: Images
 
 # Builds the app image (root Dockerfile) and the reference workspace image
 # (deploy/aoe-image/Dockerfile) and pushes them to ghcr.io on main and on
-# version tags. Pull requests build only: fork PRs get no write token.
+# version tags. Pull requests build only (amd64 only, to keep the check short):
+# fork PRs get no write token. The workspace image is built daily for the latest
+# stable aoe release, so the default image_template (<repo>:{version}) always
+# resolves to a published tag.
 
 on:
   push:
@@ -13,22 +16,19 @@ on:
       - Dockerfile
       - deploy/aoe-image/**
       - .github/workflows/images.yml
+  schedule:
+    - cron: "17 5 * * *"
   workflow_dispatch:
     inputs:
       aoe_version:
-        description: aoe release tag to build the workspace image for
-        default: v1.26.0
+        description: aoe release tag for the workspace image (default is the latest stable release)
+        required: false
 
 concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The workspace image is published once per aoe version, tagged with that
-  # version, so the default image_template (<repo>:{version}) resolves. A new
-  # aoe release gets its image by bumping this value or by running this
-  # workflow manually with aoe_version set.
-  AOE_VERSION: ${{ inputs.aoe_version || 'v1.26.0' }}
   APP_IMAGE: ghcr.io/agent-of-empires/cityhall
   WORKSPACE_IMAGE: ghcr.io/agent-of-empires/cityhall-aoe
   PUSH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
@@ -45,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: env.PUSH == 'true'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         if: env.PUSH == 'true'
@@ -83,7 +84,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ env.PUSH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -105,8 +106,29 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # The manual input if given, else the latest stable aoe release (the
+      # source CityHall's seed_default_version uses). The value is validated
+      # before any later step sees it.
+      - name: Resolve aoe version
+        id: aoe
+        env:
+          INPUT_VERSION: ${{ inputs.aoe_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="$INPUT_VERSION"
+          if [ -z "$v" ]; then
+            v=$(gh api 'repos/agent-of-empires/agent-of-empires/releases?per_page=100' \
+              --jq '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          fi
+          if ! printf '%s' "$v" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "invalid aoe version: '$v'" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: env.PUSH == 'true'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         if: env.PUSH == 'true'
@@ -121,7 +143,7 @@ jobs:
         with:
           context: deploy/aoe-image
           platforms: linux/amd64
-          build-args: AOE_VERSION=${{ env.AOE_VERSION }}
+          build-args: AOE_VERSION=${{ steps.aoe.outputs.version }}
           load: true
           tags: cityhall-aoe-check
           cache-from: type=gha,scope=workspace
@@ -134,12 +156,12 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/aoe-image
-          platforms: linux/amd64,linux/arm64
-          build-args: AOE_VERSION=${{ env.AOE_VERSION }}
+          platforms: ${{ env.PUSH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          build-args: AOE_VERSION=${{ steps.aoe.outputs.version }}
           push: ${{ env.PUSH == 'true' }}
           tags: |
-            ${{ env.WORKSPACE_IMAGE }}:${{ env.AOE_VERSION }}
-            ${{ env.WORKSPACE_IMAGE }}:${{ env.AOE_VERSION }}-sha-${{ github.sha }}
+            ${{ env.WORKSPACE_IMAGE }}:${{ steps.aoe.outputs.version }}
+            ${{ env.WORKSPACE_IMAGE }}:${{ steps.aoe.outputs.version }}-sha-${{ github.sha }}
           cache-from: type=gha,scope=workspace
           cache-to: type=gha,scope=workspace,mode=max
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

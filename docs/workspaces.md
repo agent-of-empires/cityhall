@@ -122,20 +122,24 @@ NetworkPolicy that selects the pod, then at the CNI.
   (or a selected group) to a specific version. A version change recreates the
   container on its next start, keeping the volume. The image used is the
   settings' image template with `{version}` substituted, e.g.
-  `cityhall/aoe:v0.5.0`. A version is normally a release tag, and can also be
+  `ghcr.io/agent-of-empires/cityhall-aoe:v0.5.0`. A version is normally a release tag, and can also be
   an unreleased commit ([Unreleased aoe](#unreleased-aoe)).
 
 ## Setup
 
 Workspaces are always on and provision themselves. On the docker backend a
 missing image is pulled from the registry the image template points at, and
-when that fails (the default `cityhall/aoe:{version}` template is not a
-published image) it is built locally from the reference Dockerfile; on the
+when that fails it is built locally from the reference Dockerfile; on the
 process backend a missing binary is downloaded from the version's release
 tarball. The first start of a new version therefore takes a few minutes; the
 admin Workspaces page shows the progress, and requests get a retry-shortly
 error until the artifact is ready. The kubernetes backend cannot be
 auto-built: point the image template at a registry the cluster can pull.
+
+The default template is the public `ghcr.io/agent-of-empires/cityhall-aoe`
+image, published by CI once per aoe version (the latest stable release, checked
+daily). Before the first CI run on `main` has published it, a fresh install
+falls back to the local build on docker and fails to pull on kubernetes.
 
 Local builds need BuildKit, so whatever runs CityHall needs the `buildx` docker
 CLI plugin. The published image ships it; a hand-rolled one that omits it fails
@@ -145,7 +149,7 @@ Pre-building is still possible to skip the first-start wait, or to push to a
 registry:
 
 ```sh
-docker build --build-arg AOE_VERSION=v0.5.0 -t cityhall/aoe:v0.5.0 deploy/aoe-image/
+docker build --build-arg AOE_VERSION=v0.5.0 -t ghcr.io/agent-of-empires/cityhall-aoe:v0.5.0 deploy/aoe-image/
 ```
 
 The build checks the downloaded release against the `.sha256` published beside
@@ -168,7 +172,7 @@ fails with a descriptive error.
 A version does not have to be one of the discovered releases. Tick **custom
 version** on any version field and type anything; it is substituted into the
 image template exactly as a release tag is, so `main-20260804` with the default
-template means `cityhall/aoe:main-20260804`. Nothing more happens: CityHall pulls
+template means `ghcr.io/agent-of-empires/cityhall-aoe:main-20260804`. Nothing more happens: CityHall pulls
 that image, or builds it from the reference Dockerfile's release path, and if
 neither can produce it the workspace reports a provisioning failure naming the
 image. Pointing at a different registry or repository is the image template's
@@ -181,7 +185,7 @@ to, so there is nothing to hand-assemble:
 ```sh
 SHA=$(git -C ../agent-of-empires rev-parse main)
 docker build --build-arg AOE_SOURCE=git --build-arg AOE_GIT_SHA="$SHA" \
-  -t cityhall/aoe:main-20260804 deploy/aoe-image/
+  -t ghcr.io/agent-of-empires/cityhall-aoe:main-20260804 deploy/aoe-image/
 ```
 
 `AOE_GIT_SHA` has to be a full commit id. The build refuses a branch or a tag,
@@ -440,7 +444,7 @@ allowlist that only covers the structured view.
 For a fixed set with no boot-time install at all, build a derived image:
 
 ```dockerfile
-FROM cityhall/aoe:v0.5.0
+FROM ghcr.io/agent-of-empires/cityhall-aoe:v0.5.0
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.64.2
 ```
 
@@ -686,7 +690,7 @@ root and no `apt`. Build a team image from the reference one and point the
 image template at it:
 
 ```dockerfile
-FROM cityhall/aoe:v1.26.0
+FROM ghcr.io/agent-of-empires/cityhall-aoe:v1.26.0
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev python3 python3-venv pipx \
