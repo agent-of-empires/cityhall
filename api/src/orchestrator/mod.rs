@@ -516,12 +516,14 @@ fn allowed_host_from_origin(origin: &str) -> String {
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Wait until the workspace answers HTTP so the first proxied request does
-/// not race aoe's startup.
+/// not race aoe's startup. Fails at once when aoe answers with a refusal.
 pub(crate) async fn wait_ready(addr: &str) -> Result<(), OrchestratorError> {
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     loop {
-        if http_probe(addr).await {
-            return Ok(());
+        match http_probe(addr).await {
+            Probe::Ready => return Ok(()),
+            Probe::Refused(detail) => return Err(refused_error(addr, &detail)),
+            Probe::NotReady => {}
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(OrchestratorError::Runtime(format!(
@@ -532,29 +534,88 @@ pub(crate) async fn wait_ready(addr: &str) -> Result<(), OrchestratorError> {
     }
 }
 
-/// Whether an HTTP server answers at `addr`. A bare TCP connect is not
-/// enough: docker's userland proxy accepts connections on the published port
-/// before the service inside the container listens, so the probe must
-/// actually exchange bytes.
-pub(crate) async fn http_probe(addr: &str) -> bool {
+/// What the readiness probe saw.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Probe {
+    /// No HTTP answer yet; keep polling.
+    NotReady,
+    /// aoe answered and is serving.
+    Ready,
+    /// aoe answered with a refusal; the detail names the status, aoe's error
+    /// code if any, and the likely cause.
+    Refused(String),
+}
+
+/// Statuses that mean aoe is up but refuses requests, with the likely cause.
+/// Kept narrow: any other status (401, 404, 5xx) still counts as serving, so a
+/// false refusal would block workspace starts.
+const REFUSALS: [(u16, &str); 2] = [
+    (
+        426,
+        "aoe requires TLS; check the workspace was launched with --dangerously-allow-plaintext-remote (aoe >= 1.22.0)",
+    ),
+    (
+        403,
+        "aoe's host/access policy rejected the request; check WORKSPACE_PROXY_PUBLIC_ORIGIN matches the allowed host/origin the workspace was started with",
+    ),
+];
+
+pub(crate) fn refused_error(addr: &str, detail: &str) -> OrchestratorError {
+    OrchestratorError::Runtime(format!(
+        "workspace at {addr} refused the readiness probe: {detail}"
+    ))
+}
+
+/// Probe `addr` for an HTTP answer. A bare TCP connect is not enough:
+/// docker's userland proxy accepts connections on the published port before
+/// the service inside the container listens, so the probe must actually
+/// exchange bytes.
+///
+/// The probe sends the proxy's allowed `Host`: a healthy `--behind-proxy` aoe
+/// answers any other host 403 `access_policy_denied`, while `GET /` with the
+/// allowed host answers 200 without a bearer.
+pub(crate) async fn http_probe(addr: &str) -> Probe {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let probe = async {
         let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
-        stream
-            .write_all(b"GET / HTTP/1.0\r\nHost: workspace\r\n\r\n")
-            .await
-            .ok()?;
-        let mut buf = [0u8; 1];
-        match stream.read(&mut buf).await {
-            Ok(n) if n > 0 => Some(()),
-            _ => None,
+        let request = format!("GET / HTTP/1.0\r\nHost: {}\r\n\r\n", proxy_allowed_host());
+        stream.write_all(request.as_bytes()).await.ok()?;
+        let mut buf = [0u8; 4096];
+        let mut len = 0;
+        while len < buf.len() && !buf[..len].windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut buf[len..]).await {
+                Ok(n) if n > 0 => len += n,
+                _ => break,
+            }
         }
+        (len > 0).then(|| parse_probe(&buf[..len]))
     };
     tokio::time::timeout(Duration::from_secs(2), probe)
         .await
         .ok()
         .flatten()
-        .is_some()
+        .unwrap_or(Probe::NotReady)
+}
+
+fn parse_probe(head: &[u8]) -> Probe {
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok());
+    let Some((status, hint)) = status.and_then(|s| REFUSALS.iter().find(|(c, _)| *c == s)) else {
+        return Probe::Ready;
+    };
+    let code = lines
+        .take_while(|l| !l.is_empty())
+        .find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.eq_ignore_ascii_case("aoe-error-code"))
+        })
+        .map(|(_, v)| format!(" {}", v.trim()))
+        .unwrap_or_default();
+    Probe::Refused(format!("{status}{code} ({hint})"))
 }
 
 #[cfg(test)]
@@ -733,18 +794,43 @@ mod tests {
         assert!(reg.state("other").is_none());
     }
 
+    /// Serve `response` once and hand back the address and the request seen.
+    async fn respond_once(response: &'static [u8]) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let seen = tokio::spawn(async move {
+            let (mut sock, _) = l.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = sock.read(&mut buf).await.unwrap();
+            let _ = sock.write_all(response).await;
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (addr, seen)
+    }
+
     #[tokio::test]
     async fn http_probe_requires_a_response_not_just_a_connect() {
-        use tokio::io::AsyncWriteExt;
-
-        // Accepts and answers: ready.
-        let responder = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = responder.local_addr().unwrap().to_string();
-        tokio::spawn(async move {
-            let (mut sock, _) = responder.accept().await.unwrap();
-            let _ = sock.write_all(b"HTTP/1.0 200 OK\r\n\r\n").await;
-        });
-        assert!(http_probe(&addr).await);
+        // Any non-refusal status is ready, and the probe sends the allowed Host.
+        for status in [
+            "200 OK",
+            "401 Unauthorized",
+            "404 Not Found",
+            "503 Unavailable",
+        ] {
+            let response: &'static [u8] = Box::leak(
+                format!("HTTP/1.0 {status}\r\n\r\n")
+                    .into_bytes()
+                    .into_boxed_slice(),
+            );
+            let (addr, seen) = respond_once(response).await;
+            assert_eq!(http_probe(&addr).await, Probe::Ready, "{status}");
+            let req = seen.await.unwrap();
+            assert!(
+                req.contains(&format!("Host: {}\r\n", proxy_allowed_host())),
+                "{req}"
+            );
+        }
 
         // Accepts but closes without a byte (docker-proxy with no backend
         // yet): not ready.
@@ -754,6 +840,42 @@ mod tests {
             let (sock, _) = closer.accept().await.unwrap();
             drop(sock);
         });
-        assert!(!http_probe(&addr).await);
+        assert_eq!(http_probe(&addr).await, Probe::NotReady);
+    }
+
+    #[tokio::test]
+    async fn http_probe_reports_refusals_with_code_and_cause() {
+        let (addr, _) =
+            respond_once(b"HTTP/1.0 426 Upgrade Required\r\nAoE-Error-Code: tls_required\r\n\r\n")
+                .await;
+        let Probe::Refused(d) = http_probe(&addr).await else {
+            panic!("426 must be refused");
+        };
+        assert!(
+            d.contains("426") && d.contains("tls_required") && d.contains("TLS"),
+            "{d}"
+        );
+
+        let (addr, _) =
+            respond_once(b"HTTP/1.0 403 Forbidden\r\naoe-error-code: access_policy_denied\r\n\r\n")
+                .await;
+        let Probe::Refused(d) = http_probe(&addr).await else {
+            panic!("403 must be refused");
+        };
+        assert!(
+            d.contains("403") && d.contains("access_policy_denied"),
+            "{d}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_ready_fails_at_once_on_a_refusal() {
+        let (addr, _) =
+            respond_once(b"HTTP/1.0 426 Upgrade Required\r\nAoE-Error-Code: tls_required\r\n\r\n")
+                .await;
+        let started = tokio::time::Instant::now();
+        let err = wait_ready(&addr).await.unwrap_err().to_string();
+        assert!(err.contains("426") && err.contains("tls_required"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

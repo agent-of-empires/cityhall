@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     binary_key, daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
-    wait_ready, Begin, Orchestrator, OrchestratorError, ProvisioningRegistry, TelemetryPolicy,
-    WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
+    wait_ready, Begin, Orchestrator, OrchestratorError, Probe, ProvisioningRegistry,
+    TelemetryPolicy, WorkspaceMode, WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Grace period between SIGTERM and SIGKILL on stop.
@@ -360,7 +360,9 @@ impl Orchestrator for ProcessOrchestrator {
         if let Some(state) = self.read_state(spec.user_id) {
             if alive(state.pid) {
                 let addr = format!("127.0.0.1:{}", state.port);
-                if state.matches(spec) && http_probe(&addr).await {
+                // A refusing process falls through to a respawn, whose
+                // `wait_ready` reports the refusal.
+                if state.matches(spec) && http_probe(&addr).await == Probe::Ready {
                     return Ok(addr);
                 }
                 // Version drift, a credential change, a telemetry policy
