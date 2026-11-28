@@ -24,6 +24,10 @@ use super::{
 
 /// Pod template annotation recording a Full mode workspace. Absent means Composer.
 const MODE_ANNOTATION: &str = "cityhall.workspace/mode";
+/// Fingerprint of the bundle token on the pod template. The Secret alone
+/// changing does not restart a running pod, so a rotation has to change the
+/// template to reach a pod, and only on an explicit restart (see `ensure_started`).
+const BUNDLE_TOKEN_ANNOTATION: &str = "cityhall.workspace/bundle-token";
 
 /// Port aoe serves on inside the workspace pod.
 const AOE_PORT: u16 = 8080;
@@ -201,7 +205,7 @@ impl Orchestrator for KubectlOrchestrator {
         // start: the mode annotation sits on the pod template, so applying a
         // different one would roll a healthy workspace. Only an explicit
         // restart, or a start from scaled to zero, applies the requested mode.
-        let live = if spec.apply_mode_to_running {
+        let live_json = if spec.apply_mode_to_running {
             None
         } else {
             self.run(
@@ -215,8 +219,8 @@ impl Orchestrator for KubectlOrchestrator {
                 None,
             )
             .await?
-            .and_then(|json| live_mode(&json))
         };
+        let live = live_json.as_deref().and_then(live_mode);
         let spec = &WorkspaceSpec {
             mode: live.unwrap_or(spec.mode),
             ..spec.clone()
@@ -224,12 +228,17 @@ impl Orchestrator for KubectlOrchestrator {
         // Declarative reconcile: apply always renders the desired running
         // state (replicas 1, current image), so first start, resume, and
         // version drift are all the same operation.
-        let manifests = render_manifests(
+        let mut manifests = render_manifests(
             spec,
             &self.namespace,
             &self.volume_size,
             self.storage_class.as_deref(),
         );
+        // Like the mode, a running pod keeps the bundle token it started with on a
+        // request-driven start, so a rotation does not roll a healthy workspace.
+        if let Some(fp) = live_json.as_deref().and_then(live_bundle_fingerprint) {
+            pin_bundle_fingerprint(&mut manifests, fp);
+        }
         self.run(&["apply", "-f", "-"], Some(manifests.to_string()))
             .await?;
         // `apply` only reconciles the objects it is handed, so dropping the
@@ -317,6 +326,40 @@ fn live_mode(deployment_json: &str) -> Option<WorkspaceMode> {
     Some(WorkspaceMode::from_stored(
         v["spec"]["template"]["metadata"]["annotations"][MODE_ANNOTATION].as_str(),
     ))
+}
+
+/// The bundle-token fingerprint a live Deployment's pods were created with
+/// (`Some(None)` when it carries none), or `None` when it is scaled to zero or
+/// unparseable, in which case the requested token applies.
+fn live_bundle_fingerprint(deployment_json: &str) -> Option<Option<String>> {
+    let v: serde_json::Value = serde_json::from_str(deployment_json.trim()).ok()?;
+    if v["spec"]["replicas"].as_i64().unwrap_or(0) < 1 {
+        return None;
+    }
+    Some(
+        v["spec"]["template"]["metadata"]["annotations"][BUNDLE_TOKEN_ANNOTATION]
+            .as_str()
+            .map(str::to_string),
+    )
+}
+
+/// Make the Deployment's template carry `live` (or no annotation) instead of
+/// the requested fingerprint, so applying it does not roll the pod.
+fn pin_bundle_fingerprint(manifests: &mut serde_json::Value, live: Option<String>) {
+    let Some(items) = manifests["items"].as_array_mut() else {
+        return;
+    };
+    for item in items.iter_mut().filter(|i| i["kind"] == "Deployment") {
+        let annotations = &mut item["spec"]["template"]["metadata"]["annotations"];
+        match &live {
+            Some(fp) => annotations[BUNDLE_TOKEN_ANNOTATION] = json!(fp),
+            None => {
+                if let Some(map) = annotations.as_object_mut() {
+                    map.remove(BUNDLE_TOKEN_ANNOTATION);
+                }
+            }
+        }
+    }
 }
 
 /// Every environment value the workspace needs: the bundle location and
@@ -484,6 +527,9 @@ fn render_manifests(
         annotations["cityhall.workspace/daemon-token"] =
             json!(daemon_token::fingerprint(token.expose()));
     }
+    if spec.bundle.is_some() {
+        annotations[BUNDLE_TOKEN_ANNOTATION] = json!(spec.bundle_token_fingerprint());
+    }
     if spec.telemetry != TelemetryPolicy::UserChoice {
         annotations["cityhall.workspace/telemetry-policy"] = json!(spec.telemetry.as_str());
     }
@@ -615,6 +661,56 @@ struct WaitingState {
 mod tests {
     use super::*;
     use crate::orchestrator::PLAINTEXT_FLAG;
+
+    fn bundle_spec(token: &str) -> WorkspaceSpec {
+        WorkspaceSpec {
+            bundle: Some(super::super::BundleAccess {
+                url: "http://cityhall/api/workspace-bundle".to_string(),
+                token: token.to_string(),
+            }),
+            ..spec()
+        }
+    }
+
+    fn template_annotation(manifests: &serde_json::Value) -> Option<String> {
+        manifests["items"]
+            .as_array()?
+            .iter()
+            .find(|i| i["kind"] == "Deployment")?["spec"]["template"]["metadata"]["annotations"]
+            [BUNDLE_TOKEN_ANNOTATION]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    /// A rotation changes the pod template only where it is meant to: an
+    /// explicit restart or a scaled-to-zero start renders the new fingerprint,
+    /// a running pod is pinned to the one it has.
+    #[test]
+    fn a_rotated_bundle_token_rolls_the_pod_only_when_not_pinned() {
+        let render = |token: &str| render_manifests(&bundle_spec(token), "ns", "1Gi", None);
+        let old = render("old-token");
+        let new = render("new-token");
+        let (old_fp, new_fp) = (template_annotation(&old), template_annotation(&new));
+        assert!(old_fp.is_some() && old_fp != new_fp);
+
+        let live = |m: &serde_json::Value| {
+            json!({ "spec": { "replicas": 1, "template": m["items"].as_array().unwrap()
+                .iter().find(|i| i["kind"] == "Deployment").unwrap()["spec"]["template"].clone() } })
+            .to_string()
+        };
+        let mut pinned = new.clone();
+        pin_bundle_fingerprint(&mut pinned, live_bundle_fingerprint(&live(&old)).unwrap());
+        assert_eq!(template_annotation(&pinned), old_fp);
+
+        // A Deployment from before the annotation: pinned to "none", not rolled.
+        let mut legacy = new.clone();
+        pin_bundle_fingerprint(&mut legacy, None);
+        assert_eq!(template_annotation(&legacy), None);
+
+        // Scaled to zero: the requested token applies.
+        let zero = json!({ "spec": { "replicas": 0 } }).to_string();
+        assert_eq!(live_bundle_fingerprint(&zero), None);
+    }
 
     fn spec() -> WorkspaceSpec {
         WorkspaceSpec {

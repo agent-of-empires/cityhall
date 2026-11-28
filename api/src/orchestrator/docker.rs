@@ -57,6 +57,10 @@ const USER_ID_LABEL: &str = "cityhall.user_id";
 /// before per-workspace tokens (it runs `--auth none`), which is why absence is
 /// drift here, unlike the other labels.
 const DAEMON_TOKEN_LABEL: &str = "cityhall.workspace.daemon-token";
+/// Fingerprint of the bundle token the container was created with. `docker
+/// start` reuses the stored env, so a rotated token only reaches a container
+/// that is recreated.
+const BUNDLE_TOKEN_LABEL: &str = "cityhall.workspace.bundle-token";
 const VERSION_LABEL: &str = "cityhall.workspace.version";
 
 /// The reference workspace image build, embedded so a running CityHall can
@@ -152,6 +156,7 @@ impl DockerCliOrchestrator {
                     agents_label: labels.get("cityhall.workspace.agents").cloned(),
                     mode_label: labels.get(MODE_LABEL).cloned(),
                     daemon_token_label: labels.get(DAEMON_TOKEN_LABEL).cloned(),
+                    bundle_token_label: labels.get(BUNDLE_TOKEN_LABEL).cloned(),
                 }))
             }
             None => Ok(None),
@@ -549,6 +554,9 @@ fn run_args(spec: &WorkspaceSpec, network: Option<&str>, env_file: Option<&Path>
         // change, and on upgrade from `--auth none` (no label).
         "--label".into(),
         format!("{DAEMON_TOKEN_LABEL}={}", daemon_token_fingerprint(spec)),
+        // Fingerprint only, never the token.
+        "--label".into(),
+        format!("{BUNDLE_TOKEN_LABEL}={}", spec.bundle_token_fingerprint()),
         "-v".into(),
         format!("{volume}:{HOME_DIR}"),
     ];
@@ -915,6 +923,7 @@ struct ContainerState {
     agents_label: Option<String>,
     mode_label: Option<String>,
     daemon_token_label: Option<String>,
+    bundle_token_label: Option<String>,
 }
 
 /// Whether a running container must be recreated rather than reused or
@@ -953,6 +962,14 @@ fn needs_recreate(state: &ContainerState, spec: &WorkspaceSpec, network: Option<
         || ((!state.running || spec.apply_mode_to_running)
             && WorkspaceMode::from_stored(state.mode_label.as_deref()) != spec.mode)
         || state.daemon_token_label.as_deref() != Some(daemon_token_fingerprint(spec).as_str())
+        // Like the mode: a running container keeps the token it started with
+        // (a rotation must not interrupt a live session) unless this is an
+        // explicit restart; a stopped one is recreated, since `docker start`
+        // would resume it with the revoked token. An absent label counts as
+        // drift, so a container from before this label is recreated once.
+        || ((!state.running || spec.apply_mode_to_running)
+            && state.bundle_token_label.as_deref().unwrap_or("")
+                != spec.bundle_token_fingerprint())
 }
 
 /// The fingerprint `spec`'s token should carry on the container. Empty without a
@@ -1398,6 +1415,8 @@ mod tests {
             // existing cases isolate the drift they test. The daemon-token
             // cases below use `spec_with_token()`.
             daemon_token_label: Some(String::new()),
+            // Matches `spec()`, which carries no bundle (fingerprint "").
+            bundle_token_label: Some(String::new()),
         }
     }
 
@@ -1451,6 +1470,40 @@ mod tests {
         full.mode_label = Some("full".to_string());
         assert!(needs_recreate(&full, &restart(spec()), None));
         assert!(!needs_recreate(&full, &restart(full_spec()), None));
+    }
+
+    /// A rotated bundle token reaches a stopped container (`docker start` would
+    /// resume it with the revoked one) or an explicit restart, never a running
+    /// container on a request-driven start.
+    #[test]
+    fn a_rotated_bundle_token_recreates_only_stopped_or_explicitly_restarted() {
+        let fp = spec_with_bundle().bundle_token_fingerprint();
+        let mut current = container_state("v1.0.0", None, None);
+        current.bundle_token_label = Some(fp);
+        // Same token: no drift in any state.
+        assert!(!needs_recreate(&current, &spec_with_bundle(), None));
+
+        // Rotated: the spec now carries a different token.
+        let mut rotated = spec_with_bundle();
+        rotated.bundle.as_mut().unwrap().token = "rotated".to_string();
+        assert!(current.running);
+        assert!(!needs_recreate(&current, &rotated, None));
+        current.running = false;
+        assert!(needs_recreate(&current, &rotated, None));
+        current.running = true;
+        rotated.apply_mode_to_running = true;
+        assert!(needs_recreate(&current, &rotated, None));
+    }
+
+    #[test]
+    fn the_container_records_only_a_fingerprint_of_the_bundle_token() {
+        let args = run_args(&spec_with_bundle(), None, None);
+        let label = format!(
+            "{BUNDLE_TOKEN_LABEL}={}",
+            spec_with_bundle().bundle_token_fingerprint()
+        );
+        assert!(args.contains(&label), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains(BUNDLE_PROBE)), "{args:?}");
     }
 
     /// Request-driven rediscovery (CityHall restarted, a forward failed) must

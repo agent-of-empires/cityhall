@@ -75,6 +75,10 @@ pub fn api_router(state: AppState) -> Router {
             post(workspaces::access_url),
         )
         .route("/workspaces/{user_id}/stop", post(workspaces::stop))
+        .route(
+            "/workspaces/{user_id}/rotate-bundle-token",
+            post(workspaces::rotate_bundle_token),
+        )
         .route("/settings/smtp", get(settings::get).put(settings::update))
         .route("/settings/smtp/test", post(settings::test))
         .route(

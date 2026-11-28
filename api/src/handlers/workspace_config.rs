@@ -223,6 +223,10 @@ pub async fn update_git_credential(
     // The `existing` lookup above stays: it is what lets a save omit the token and
     // keep the stored one. The write itself is a single upsert, so two concurrent
     // saves cannot both decide to insert.
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_credential::Entity::insert(git_credential::ActiveModel {
         user_id: Set(caller.user.id),
         host: Set(host),
@@ -252,6 +256,10 @@ pub async fn delete_git_credential(
     caller: AuthUser,
 ) -> Result<Json<GitCredentialResponse>, AppError> {
     caller.require("workspaces.use")?;
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_credential::Entity::delete_by_id(caller.user.id)
         .exec(&state.db)
         .await?;
@@ -323,6 +331,10 @@ pub async fn update_git_ssh_key(
             .ok_or(AppError::BadRequest("a private key is required"))?,
     };
 
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_ssh_key::Entity::insert(git_ssh_key::ActiveModel {
         user_id: Set(caller.user.id),
         key_encrypted: Set(key),
@@ -350,6 +362,10 @@ pub async fn delete_git_ssh_key(
     caller: AuthUser,
 ) -> Result<Json<GitSshKeyResponse>, AppError> {
     caller.require("workspaces.use")?;
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_ssh_key::Entity::delete_by_id(caller.user.id)
         .exec(&state.db)
         .await?;
@@ -793,6 +809,89 @@ remote = "https://github.com/agent-of-empires/cityhall.git"
                 // And losing the key does not cost Bob the rest of his identity,
                 // which is what would break his whole workspace.
                 assert_eq!(theirs.get("user_name").and_then(|v| v.as_str()), Some("bob"));
+            });
+    }
+
+    /// Every handler that changes the git credential or SSH key replaces the
+    /// owner's bundle token, so a copy taken before the change stops working.
+    #[test]
+    fn changing_a_git_credential_or_ssh_key_rotates_the_bundle_token() {
+        let _guard = crypto::guard_key_env();
+        std::env::set_var("CITYHALL_SECRET_KEY", B64.encode([7u8; 32]));
+        std::env::remove_var("CITYHALL_SECRET_KEY_PREVIOUS");
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+                opts.max_connections(1);
+                let db = sea_orm::Database::connect(opts).await.unwrap();
+                <crate::migration::Migrator as sea_orm_migration::MigratorTrait>::up(&db, None)
+                    .await
+                    .unwrap();
+                let state = crate::server::build_state(db.clone()).unwrap();
+                let alice = make_user(&db, "alice").await;
+                let caller = || crate::auth::AuthUser {
+                    user: alice.clone(),
+                    perms: crate::rbac::Perms::from_role(Some(&crate::entities::role::Model {
+                        id: 0,
+                        name: "t".to_string(),
+                        description: None,
+                        permissions: crate::rbac::encode(&["workspaces.use".to_string()]),
+                        is_system: false,
+                        created_at: Utc::now(),
+                    })),
+                };
+                let token = || async {
+                    crate::workspaces::get_or_create(&db, alice.id)
+                        .await
+                        .unwrap()
+                        .bundle_token
+                        .unwrap()
+                };
+                let cred = || UpdateGitCredentialRequest {
+                    host: "https://github.com".to_string(),
+                    username: "alice".to_string(),
+                    token: Some("tok".to_string()),
+                };
+                let ssh = || UpdateGitSshKeyRequest {
+                    key: Some(
+                        "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n"
+                            .to_string(),
+                    ),
+                    known_hosts: "github.com ssh-ed25519 AAAA\n".to_string(),
+                };
+
+                let mut last = token().await;
+                assert_eq!(token().await, last, "stable with no change");
+
+                let _ = update_git_credential(State(state.clone()), caller(), Json(cred()))
+                    .await
+                    .unwrap();
+                let now = token().await;
+                assert_ne!(now, last, "git credential save");
+                last = now;
+
+                let _ = update_git_ssh_key(State(state.clone()), caller(), Json(ssh()))
+                    .await
+                    .unwrap();
+                let now = token().await;
+                assert_ne!(now, last, "ssh key save");
+                last = now;
+
+                let _ = delete_git_credential(State(state.clone()), caller())
+                    .await
+                    .unwrap();
+                let now = token().await;
+                assert_ne!(now, last, "git credential delete");
+                last = now;
+
+                let _ = delete_git_ssh_key(State(state.clone()), caller())
+                    .await
+                    .unwrap();
+                assert_ne!(token().await, last, "ssh key delete");
             });
     }
 

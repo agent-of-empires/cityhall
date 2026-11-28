@@ -205,6 +205,17 @@ function AdminWorkspaces({ me }: { me: Me }) {
     }, "could not open workspace");
   }
 
+  async function rotateToken(item: WorkspaceItem) {
+    if (
+      !confirm(
+        `Rotate ${item.username}'s bundle token? The old one stops working now; a running workspace gets the new one when its container is next created.`,
+      )
+    ) {
+      return;
+    }
+    await run(() => api.rotateWorkspaceBundleToken(item.user_id), "could not rotate bundle token");
+  }
+
   async function destroy(item: WorkspaceItem) {
     if (!confirm(`Destroy ${item.username}'s workspace? This permanently deletes its data volume.`)) {
       return;
@@ -416,6 +427,14 @@ function AdminWorkspaces({ me }: { me: Me }) {
                               keys
                             </RowAction>
                             <RowAction
+                              onClick={() => rotateToken(item)}
+                              disabled={busy}
+                              title="Rotate bundle token (applies when the container is next created)"
+                              ariaLabel={`Rotate ${item.username}'s bundle token`}
+                            >
+                              rotate
+                            </RowAction>
+                            <RowAction
                               onClick={() => destroy(item)}
                               disabled={busy || item.status === "not_created"}
                               tone="danger"
@@ -470,7 +489,7 @@ function AdminWorkspaces({ me }: { me: Me }) {
 }
 
 /// Small mono text action used in the workspaces table's actions column (open,
-/// start, stop, keys, destroy). Not a `Button`: those carry border/height
+/// start, stop, keys, rotate, destroy). Not a `Button`: those carry border/height
 /// chrome this compact, inline row of actions does not want.
 function RowAction({
   onClick,

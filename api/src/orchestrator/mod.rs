@@ -187,6 +187,17 @@ pub fn telemetry_policy_override() -> Result<Option<TelemetryPolicy>, String> {
     })
 }
 
+impl WorkspaceSpec {
+    /// Fingerprint of the bundle token, safe to record on a container or in a
+    /// state file. Empty without a bundle.
+    pub(crate) fn bundle_token_fingerprint(&self) -> String {
+        self.bundle
+            .as_ref()
+            .map(|b| daemon_token::fingerprint(&b.token))
+            .unwrap_or_default()
+    }
+}
+
 /// How a workspace reaches its own config bundle.
 ///
 /// Delivered as two environment variables rather than a file written into the

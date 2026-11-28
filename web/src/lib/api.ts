@@ -436,6 +436,8 @@ export const api = {
   myWorkspace: () => request<MyWorkspace>("/workspaces/me"),
   startWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/start`, { method: "POST" }),
   stopWorkspace: (userId: number) => request<{ status: string }>(`/workspaces/${userId}/stop`, { method: "POST" }),
+  rotateWorkspaceBundleToken: (userId: number) =>
+    request<void>(`/workspaces/${userId}/rotate-bundle-token`, { method: "POST" }),
   destroyWorkspace: (userId: number) => request<{ destroyed: boolean }>(`/workspaces/${userId}`, { method: "DELETE" }),
   setWorkspaceVersion: (userId: number, pinnedVersion: string | null, restart = false) =>
     request<{ pinned_version: string | null }>(`/workspaces/${userId}`, {
