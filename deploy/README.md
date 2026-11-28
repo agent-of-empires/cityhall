@@ -40,4 +40,5 @@ terminated by a reverse proxy. See [Configuration](../docs/configuration.md).
 
 On Kubernetes the workspace proxy (port 3001) needs its own hostname: enable
 `workspaces.proxy.ingress` in the chart, or edit `k8s/proxy-ingress.yaml`. Set
-`CITYHALL_COOKIE_DOMAIN` to a parent domain shared by both hosts.
+`CITYHALL_COOKIE_DOMAIN` to a parent domain shared by both hosts; the API
+ignores it until #157 lands, so the proxy host rejects requests until then.

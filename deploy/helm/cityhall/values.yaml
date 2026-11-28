@@ -17,7 +17,8 @@ config:
   databaseUrl: ""
   # Domain attribute of the session cookie (CITYHALL_COOKIE_DOMAIN). Set a
   # dedicated parent of the CityHall and workspace proxy hosts so the cookie
-  # reaches the proxy host. Empty keeps the cookie host-only.
+  # reaches the proxy host. Empty keeps the cookie host-only. The API ignores
+  # this until #157 lands.
   cookieDomain: ""
   # Extra env vars passed through verbatim (e.g. SMTP_*, OIDC_*).
   extraEnv: {}

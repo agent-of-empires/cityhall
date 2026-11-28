@@ -163,7 +163,9 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
   `WORKSPACE_PROXY_PUBLIC_ORIGIN`. The Ingress carries 3600 s read and send
   timeouts for WebSocket.
 - `config.cookieDomain` sets `CITYHALL_COOKIE_DOMAIN`. Use a dedicated parent
-  of both hosts so the session cookie reaches the proxy host.
+  of both hosts so the session cookie reaches the proxy host. The API ignores
+  this variable until #157 lands; until then the cookie stays host-only and
+  workspace requests on the proxy host are rejected.
 
 Upgrades: `helm upgrade cityhall deploy/helm/cityhall …` with the same values;
 CityHall runs its own migrations on startup.
