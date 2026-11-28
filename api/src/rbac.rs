@@ -36,6 +36,12 @@ pub const CATALOG: &[(&str, &str)] = &[
         "workspaces.impersonate",
         "Open other users' workspaces (audited)",
     ),
+    // Spelled out because granting it exposes what users do in their
+    // workspaces, not just that the workspaces exist.
+    (
+        "workspaces.activity",
+        "View per-user session counts, pending approvals, last session access, and last error across all workspaces",
+    ),
     // Spelled out because granting it exposes operational metrics, not just
     // another page: a role editor should be able to see that from the label.
     (
