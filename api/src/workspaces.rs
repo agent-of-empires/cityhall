@@ -488,6 +488,11 @@ pub async fn ensure_started(state: &AppState, user_id: i32) -> Result<Endpoint, 
         state.activity.touch(user_id);
         return Ok(endpoint);
     }
+    // The row was read before the lock; a rotation may have landed while this
+    // start was queued, and a spec built from the old token would hand the new
+    // container a revoked one.
+    let row = get_or_create(&state.db, user_id).await?;
+    spec.bundle = build_spec(&cfg, &row)?.bundle;
     // Only materialize credentials once a container is actually about to be
     // created or reconciled, not on the cache-hit path above.
     spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
@@ -535,6 +540,10 @@ pub async fn restart_if_running(state: &AppState, user_id: i32) -> Result<(), Ap
     ) {
         return Ok(());
     }
+    // Re-read under the lock, as `ensure_started` does, so a rotation that landed
+    // while this restart was queued is not overwritten by a stale token.
+    let row = get_or_create(&state.db, user_id).await?;
+    spec.bundle = build_spec(&cfg, &row)?.bundle;
     spec.agent_env = crate::agent_credentials::materialize(&state.db, user_id).await?;
     spec.mode = resolve_mode(state, user_id).await?;
     // An explicit restart is where a changed mode reaches a running workspace.

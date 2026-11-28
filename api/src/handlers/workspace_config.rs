@@ -223,6 +223,10 @@ pub async fn update_git_credential(
     // The `existing` lookup above stays: it is what lets a save omit the token and
     // keep the stored one. The write itself is a single upsert, so two concurrent
     // saves cannot both decide to insert.
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_credential::Entity::insert(git_credential::ActiveModel {
         user_id: Set(caller.user.id),
         host: Set(host),
@@ -242,7 +246,6 @@ pub async fn update_git_credential(
     )
     .exec(&state.db)
     .await?;
-    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
 
     get_git_credential(State(state), caller).await
 }
@@ -253,10 +256,13 @@ pub async fn delete_git_credential(
     caller: AuthUser,
 ) -> Result<Json<GitCredentialResponse>, AppError> {
     caller.require("workspaces.use")?;
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_credential::Entity::delete_by_id(caller.user.id)
         .exec(&state.db)
         .await?;
-    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     get_git_credential(State(state), caller).await
 }
 
@@ -325,6 +331,10 @@ pub async fn update_git_ssh_key(
             .ok_or(AppError::BadRequest("a private key is required"))?,
     };
 
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_ssh_key::Entity::insert(git_ssh_key::ActiveModel {
         user_id: Set(caller.user.id),
         key_encrypted: Set(key),
@@ -342,7 +352,6 @@ pub async fn update_git_ssh_key(
     )
     .exec(&state.db)
     .await?;
-    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
 
     get_git_ssh_key(State(state), caller).await
 }
@@ -353,10 +362,13 @@ pub async fn delete_git_ssh_key(
     caller: AuthUser,
 ) -> Result<Json<GitSshKeyResponse>, AppError> {
     caller.require("workspaces.use")?;
+    // Rotated before the write, not after: a holder of the old token must not be
+    // able to read the new secret in the window between the two, and a failed
+    // write after a rotation only costs a fresh token.
+    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     git_ssh_key::Entity::delete_by_id(caller.user.id)
         .exec(&state.db)
         .await?;
-    crate::workspaces::rotate_bundle_token(&state.db, caller.user.id).await?;
     get_git_ssh_key(State(state), caller).await
 }
 
