@@ -18,8 +18,8 @@ use tokio::process::Command;
 
 use super::{
     daemon_token, http_probe, plaintext_flag, proxy_allowed_host, proxy_allowed_origin,
-    Orchestrator, OrchestratorError, TelemetryPolicy, WorkspaceMode, WorkspaceSpec,
-    WorkspaceStatus,
+    refused_error, Orchestrator, OrchestratorError, Probe, TelemetryPolicy, WorkspaceMode,
+    WorkspaceSpec, WorkspaceStatus,
 };
 
 /// Pod template annotation recording a Full mode workspace. Absent means Composer.
@@ -145,8 +145,10 @@ impl KubectlOrchestrator {
         let addr = self.addr(spec.user_id);
         let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
         loop {
-            if http_probe(&addr).await {
-                return Ok(());
+            match http_probe(&addr).await {
+                Probe::Ready => return Ok(()),
+                Probe::Refused(detail) => return Err(refused_error(&addr, &detail)),
+                Probe::NotReady => {}
             }
             if let Some(reason) = self.pod_waiting_reason(spec.user_id).await? {
                 if matches!(
