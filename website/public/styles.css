@@ -837,13 +837,9 @@ button:focus-visible {
   color: #b45309;
 }
 
-[data-theme="light"] .prose-content pre {
-  background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
-  border-color: #cbd5e1;
-}
-
 [data-theme="light"] .prose-content pre code {
-  color: #1e293b;
+  background: none;
+  color: #f1f5f9;
 }
 
 [data-theme="light"] .prose-content a {
@@ -1020,4 +1016,15 @@ button:focus-visible {
 
 [data-theme="light"] .hover\:text-white:hover {
   color: #0f172a;
+}
+
+/* Amber text/links: the 300-500 shades are tuned for dark surfaces and wash out
+   on light backgrounds. Remap to the light-mode brand for contrast. */
+[data-theme="light"] .text-brand-400,
+[data-theme="light"] .text-brand-500 {
+  color: #b45309;
+}
+[data-theme="light"] .hover\:text-brand-300:hover,
+[data-theme="light"] .hover\:text-brand-400:hover {
+  color: #92400e;
 }
