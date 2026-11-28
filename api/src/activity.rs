@@ -35,7 +35,7 @@ use crate::workspaces::decrypt_daemon_token;
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Per aoe call, so one wedged workspace cannot stall a tick.
 const CALL_TIMEOUT: Duration = Duration::from_secs(3);
-/// Per user, status lookups and fetches together: the docker and kubernetes
+/// Per user, permit wait, status lookup and fetch together: the docker and kubernetes
 /// CLIs can take far longer than [`CALL_TIMEOUT`], and a tick publishes only
 /// when every user is done. Below [`POLL_INTERVAL`].
 const USER_TIMEOUT: Duration = Duration::from_secs(8);
@@ -162,12 +162,11 @@ struct AuthMark {
     token: Secret,
 }
 
-/// Per-user sampler memory, private to this module. The address comes from
-/// `Orchestrator::status` on a miss or a connection failure, never from
+/// Per-user sampler memory, private to this module. No address is kept: it
+/// comes from `Orchestrator::status` on every tick, never from
 /// `EndpointCache`.
 #[derive(Default, Clone)]
 struct Entry {
-    addr: Option<String>,
     auth_error: Option<AuthMark>,
 }
 
@@ -179,7 +178,7 @@ struct Poller {
 enum Fetch {
     Sessions(Vec<SessionRow>),
     Unauthorized,
-    Failed { connect: bool },
+    Failed,
 }
 
 /// The body, or `None` on a read error or when it exceeds [`MAX_BODY`].
@@ -208,24 +207,20 @@ async fn fetch(state: &AppState, addr: &str, token: &Secret) -> Fetch {
         .await;
     let response = match response {
         Ok(r) => r,
-        Err(e) => {
-            return Fetch::Failed {
-                connect: e.is_connect(),
-            }
-        }
+        Err(_) => return Fetch::Failed,
     };
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         return Fetch::Unauthorized;
     }
     if !response.status().is_success() {
-        return Fetch::Failed { connect: false };
+        return Fetch::Failed;
     }
     let list = read_capped(response)
         .await
         .and_then(|body| serde_json::from_slice::<SessionList>(&body).ok());
     match list {
         Some(list) => Fetch::Sessions(list.sessions),
-        None => Fetch::Failed { connect: false },
+        None => Fetch::Failed,
     }
 }
 
@@ -261,46 +256,25 @@ async fn poll_user(
         return (entry, Some(bare(user_id, State::Unreachable)));
     };
 
+    // The address is confirmed on every tick and the bearer goes nowhere
+    // else: a cached address can be taken over by another user's container
+    // after a restart. A status error sends nothing and keeps the park.
+    let addr = match refresh(state, user_id).await {
+        Ok(addr) => addr,
+        Err(State::NotRunning) => {
+            return (Entry::default(), Some(bare(user_id, State::NotRunning)));
+        }
+        Err(unreachable) => return (entry, Some(bare(user_id, unreachable))),
+    };
     if let Some(mark) = entry.auth_error.take() {
         // Parked: only a different runtime (another address, or a rotated
-        // bearer) lifts it. A status error keeps the park, because the
-        // runtime was not seen to change.
-        match refresh(state, user_id).await {
-            Ok(addr) if addr == mark.addr && token == mark.token => {
-                entry.auth_error = Some(mark);
-                return (entry, Some(bare(user_id, State::AuthError)));
-            }
-            Ok(addr) => entry.addr = Some(addr),
-            Err(State::NotRunning) => {
-                return (Entry::default(), Some(bare(user_id, State::NotRunning)));
-            }
-            Err(unreachable) => {
-                entry.auth_error = Some(mark);
-                return (entry, Some(bare(user_id, unreachable)));
-            }
+        // bearer) lifts it.
+        if addr == mark.addr && token == mark.token {
+            entry.auth_error = Some(mark);
+            return (entry, Some(bare(user_id, State::AuthError)));
         }
     }
-
-    let mut addr = match entry.addr.clone() {
-        Some(addr) => addr,
-        None => match refresh(state, user_id).await {
-            Ok(addr) => addr,
-            Err(st) => return (Entry::default(), Some(bare(user_id, st))),
-        },
-    };
-    entry.addr = Some(addr.clone());
-    let mut result = fetch(state, &addr, &token).await;
-    if matches!(result, Fetch::Failed { connect: true }) {
-        match refresh(state, user_id).await {
-            Ok(fresh) if fresh != addr => {
-                result = fetch(state, &fresh, &token).await;
-                addr = fresh.clone();
-                entry.addr = Some(fresh);
-            }
-            Ok(_) => {}
-            Err(st) => return (Entry::default(), Some(bare(user_id, st))),
-        }
-    }
+    let result = fetch(state, &addr, &token).await;
 
     let activity = match result {
         Fetch::Sessions(sessions) => UserActivity {
@@ -313,7 +287,7 @@ async fn poll_user(
             entry.auth_error = Some(AuthMark { addr, token });
             bare(user_id, State::AuthError)
         }
-        Fetch::Failed { .. } => bare(user_id, State::Unreachable),
+        Fetch::Failed => bare(user_id, State::Unreachable),
     };
     (entry, Some(activity))
 }
@@ -345,11 +319,15 @@ async fn poll_once_within(
         let entry = poller.entries.remove(&user_id).unwrap_or_default();
         let (state, permits, moved) = (state.clone(), permits.clone(), entry.clone());
         let task = tasks.spawn(async move {
-            let _permit = permits.acquire().await;
             let kept = moved.clone();
-            let polled = tokio::time::timeout(limit, poll_user(&state, user_id, moved))
-                .await
-                .unwrap_or_else(|_| (kept, Some(bare(user_id, State::Unreachable))));
+            // The wait for a permit counts against the limit, so a tick is
+            // bounded however many users queue.
+            let polled = tokio::time::timeout(limit, async {
+                let _permit = permits.acquire().await;
+                poll_user(&state, user_id, moved).await
+            })
+            .await
+            .unwrap_or_else(|_| (kept, Some(bare(user_id, State::Unreachable))));
             (user_id, polled)
         });
         before.insert(task.id(), (user_id, entry));
@@ -802,6 +780,29 @@ mod tests {
 
         poll_once(&state, &mut poller, &[uid]).await;
         assert_eq!(d.hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_moved_address_never_receives_the_bearer() {
+        let _key = test_key();
+        let old = daemon(StatusCode::OK, LIST).await;
+        let (state, orch, uid) = fixture(&old.addr).await;
+        let mut poller = Poller::default();
+        poll_once(&state, &mut poller, &[uid]).await;
+        assert_eq!(old.hits.load(Ordering::SeqCst), 1);
+
+        // The address changed with no connect failure, like a restarted
+        // container whose old port another user's container now holds.
+        let new = daemon(StatusCode::OK, LIST).await;
+        *orch.addr.lock().unwrap() = new.addr.clone();
+        let users = poll_once(&state, &mut poller, &[uid]).await;
+
+        assert_eq!(users[0].state, State::Ok);
+        assert_eq!(old.hits.load(Ordering::SeqCst), 1, "old address was asked");
+        assert_eq!(old.seen.lock().unwrap().len(), 1);
+        let seen = new.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].0.starts_with("Bearer "));
     }
 
     #[tokio::test]
