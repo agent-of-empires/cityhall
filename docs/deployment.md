@@ -183,8 +183,9 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
 - `workspaces.proxy.ingress.*` exposes the workspace proxy (port 3001) on its
   own host, off by default. Set `enabled=true` and `host` (required), plus
   `tlsSecretName` when `tls` is on. The host also sets
-  `WORKSPACE_PROXY_PUBLIC_ORIGIN`. WebSocket connections need a 3600 s idle
-  timeout, set through the controller's annotations (see the examples below).
+  `WORKSPACE_PROXY_PUBLIC_ORIGIN`. Set a 3600 s idle timeout through the
+  controller's annotations so idle WebSocket connections survive an hour (see
+  the examples below); shorter timeouts work but drop idle connections sooner.
 - `config.cookieDomain` sets `CITYHALL_COOKIE_DOMAIN`. Use a dedicated parent
   of both hosts so the session cookie reaches the proxy host. The API ignores
   this variable until #157 lands; until then the cookie stays host-only and
@@ -193,7 +194,7 @@ Key values (see [`values.yaml`](../deploy/helm/cityhall/values.yaml) for all):
 #### Ingress controllers
 
 The chart does not assume a controller. Pass the example values that match
-yours with `-f`:
+yours with `-f` (paths from the repository root):
 
 - [`examples/values-nginx.yaml`](../deploy/helm/cityhall/examples/values-nginx.yaml):
   ingress-nginx and cert-manager, with 3600 s `proxy-read-timeout` and
@@ -222,9 +223,9 @@ Notes for the ALB:
 
 **Breaking change.** The chart defaults used to be `className: nginx`, the
 cert-manager annotation, `tls: true` and (app Ingress) `tlsSecretName:
-cityhall-tls`. Existing nginx users must add `-f examples/values-nginx.yaml` (or
-set those values) when they upgrade; otherwise the Ingress loses its class,
-annotations and TLS block.
+cityhall-tls`. Existing nginx users must add
+`-f deploy/helm/cityhall/examples/values-nginx.yaml` (or set those values) when they upgrade; otherwise the
+Ingress loses its class, annotations and TLS block.
 
 Upgrades: `helm upgrade cityhall deploy/helm/cityhall …` with the same values;
 CityHall runs its own migrations on startup.
