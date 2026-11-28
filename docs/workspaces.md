@@ -673,10 +673,12 @@ HTTP to the proxy port. The proxy ingress needs `proxy-read-timeout` and
   not automatically.
 - CityHall itself uses the bearer to poll `GET /api/sessions` of running
   workspaces, read-only, every 10 seconds. The poll never starts or touches a
-  workspace. One 401 parks polling for that user until the workspace address or
-  bearer changes or the workspace is seen not running. An in-place restart with
-  an identical address and bearer inside one 10 second tick does not lift the
-  park.
+  workspace. Every tick re-confirms the address through the orchestrator
+  (`status`), and the bearer is never sent to an address not confirmed in that
+  tick; a failed or timed-out status sends nothing. One 401 parks polling for
+  that user until the workspace address or bearer changes or the workspace is
+  seen not running. An in-place restart with an identical address and bearer
+  inside one 10 second tick does not lift the park.
 
 ### The home volume
 
